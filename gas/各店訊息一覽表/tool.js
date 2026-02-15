@@ -30,8 +30,10 @@ function getStoreConfig(botId) {
   return null;
 }
 
-// [核心] 找店家設定 (已修復 sayId 漏抓問題)
-function findStoreConfig(userId, destinationId) {
+// [核心] 找店家設定；傳入 groupId/roomId 時 Core 會打 /group/member 或 /room/member，群組內使用者名稱才正確
+function findStoreConfig(userId, destinationId, groupId, roomId) {
+  var gid = (groupId != null && String(groupId).trim()) ? String(groupId).trim() : "";
+  var rid = (roomId != null && String(roomId).trim()) ? String(roomId).trim() : "";
   var ssId = typeof CONFIG !== "undefined" && CONFIG.INTEGRATED_SHEET_SS_ID ? CONFIG.INTEGRATED_SHEET_SS_ID : null;
   var ss = ssId ? SpreadsheetApp.openById(ssId) : null;
   if (!ss) return null;
@@ -44,39 +46,44 @@ function findStoreConfig(userId, destinationId) {
     const channelId = row[2].toString().trim(); 
     const channelSecret = row[3].toString().trim(); 
     let botIdInSheet = row[4]; 
-    let sayIdInSheet = row[5]; // [重要] 取得 SayDou ID
+    let sayIdInSheet = row[5];
 
     if (!channelId || !channelSecret) continue;
 
-    // I 欄 (index 8)：isReply，false 時不自動回覆挽留文案
     var rawReply = row[8];
     var isReply = (rawReply == null || rawReply === "") ? true : (String(rawReply).toLowerCase().trim() === "false" || rawReply === 0 ? false : true);
 
-    // 情況 A: 表單有 Bot ID
     if (botIdInSheet && botIdInSheet.toString().trim() === destinationId) {
       const token = getLineAccessToken(channelId, channelSecret);
-      let userName = "未知(未加好友)";
-      if (token) {
-        const fetchedName = Core.getUserDisplayName(userId, '', '', token);
-        if (fetchedName) userName = fetchedName;
+      if (!token && typeof appendErrorLog === "function") {
+        appendErrorLog(
+          "findStoreConfig: destination match 但 token 取得失敗，store=" + String(storeName || "") + ", row=" + (i + 1) + ", channelIdTail=" + String(channelId).slice(-6),
+          "LINE token"
+        );
       }
+      // userName 改由 handleLineWebhook 統一取得，避免同一事件重複打 LINE API
+      let userName = " ";
       return { storeName, token, userName, sayId: sayIdInSheet, isReply: isReply };
     }
 
-    // 情況 B: 表單無 Bot ID (自動補填)
     if (!botIdInSheet || botIdInSheet === "") {
       const token = getLineAccessToken(channelId, channelSecret);
       if (token) {
         const checkedBotId = getBotUserIdFromToken(token);
         if (checkedBotId === destinationId) {
           sheet.getRange(i + 1, 5).setValue(destinationId); 
-          let userName = "未知(未加好友)";
-          const fetchedName = Core.getUserDisplayName(userId, '', '', token);
-          if (fetchedName) userName = fetchedName;
+          // userName 改由 handleLineWebhook 統一取得，避免同一事件重複打 LINE API
+          let userName = " ";
           return { storeName, token, userName, sayId: sayIdInSheet, isReply: isReply };
         }
       }
     }
+  }
+  if (typeof appendErrorLog === "function") {
+    appendErrorLog(
+      "findStoreConfig: 找不到 destination 對應店家，destination=" + String(destinationId || "") + ", uid=" + String(userId || ""),
+      "LINE webhook"
+    );
   }
   return null;
 }

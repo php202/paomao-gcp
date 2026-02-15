@@ -65,6 +65,10 @@ var FETCH_BATCH_SIZE = 20;
  * GET:  PAO_CAT_REPORT_API_URL?key=密鑰&action=runDailyReport
  * POST: body JSON: { "key": "密鑰", "action": "runDailyReport" }
  *
+ * 指定重跑日期（單日/區間）：
+ * - 單日：action=runAccNeed&date=2026-02-11
+ * - 區間：action=runAccNeed&startDate=2026-02-10&endDate=2026-02-11
+ *
  * 密鑰：與本專案指令碼屬性 PAO_CAT_SECRET_KEY 相同（可與 Core API 共用）。
  * action 支援：runDailyReport（執行產出各店日報，等同選單「產出各店日報」）
  */
@@ -99,7 +103,10 @@ function handleReportApiRequest(params) {
   const action = (params.action != null) ? String(params.action).trim() : '';
   if (action === 'runDailyReport' || action === 'runAccNeed') {
     try {
-      runAccNeed();
+      const date = (params.date != null) ? String(params.date).trim() : '';
+      const startDate = (params.startDate != null) ? String(params.startDate).trim() : '';
+      const endDate = (params.endDate != null) ? String(params.endDate).trim() : '';
+      runAccNeed({ date: date, startDate: startDate, endDate: endDate });
       return jsonReportOut({ status: 'ok', message: '日報產出已執行' });
     } catch (err) {
       const msg = (err && err.message) ? err.message : String(err);
@@ -135,7 +142,17 @@ function handleReportApiRequest(params) {
   return jsonReportOut({ status: 'error', message: '未知 action: ' + (action || '(未提供)') });
 }
 
-function runAccNeed() {
+function parseYmdOrNull_(value) {
+  if (!value) return null;
+  const s = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(s + 'T00:00:00');
+  if (isNaN(d.getTime())) return null;
+  return d;
+}
+
+function runAccNeed(options) {
+  options = options || {};
   const { url: coreApiUrl, key: coreApiKey, useApi } = getCoreApiParams();
   if (!useApi) {
     throw new Error('請在指令碼屬性設定 PAO_CAT_CORE_API_URL 與 PAO_CAT_SECRET_KEY，本專案改由 Core API 取得資料（不再使用 Core 程式庫）。');
@@ -157,23 +174,44 @@ function runAccNeed() {
   const timeZone = externalSs.getSpreadsheetTimeZone();
   const getFormattedDate = (date) => Utilities.formatDate(date, timeZone, 'yyyy-MM-dd');
 
-  // --- 1. 計算日期範圍 (每次執行都會重新檢查 Excel 進度) ---
+  // --- 1. 計算日期範圍：可指定重跑單日/區間，未指定時維持舊邏輯 ---
+  const rawDate = options.date ? String(options.date).trim() : '';
+  const rawStart = options.startDate ? String(options.startDate).trim() : '';
+  const rawEnd = options.endDate ? String(options.endDate).trim() : '';
+  const forceSingle = parseYmdOrNull_(rawDate);
+  const forceStart = parseYmdOrNull_(rawStart);
+  const forceEnd = parseYmdOrNull_(rawEnd);
+  const hasManualRange = !!(rawDate || rawStart || rawEnd);
+  if (rawDate && !forceSingle) throw new Error('date 格式錯誤，請使用 yyyy-MM-dd');
+  if (rawStart && !forceStart) throw new Error('startDate 格式錯誤，請使用 yyyy-MM-dd');
+  if (rawEnd && !forceEnd) throw new Error('endDate 格式錯誤，請使用 yyyy-MM-dd');
+
   const lastRowCheck = sheetAll.getLastRow();
   let startDate = new Date('2026-01-01');
+  let endDate = null;
 
-  if (lastRowCheck > 1) {
-    const dates = sheetAll.getRange('B2:B' + lastRowCheck).getValues().flat().filter(String);
-    if (dates.length > 0) {
-      const lastDate = new Date(dates[dates.length - 1]);
-      startDate = new Date(lastDate);
-      startDate.setDate(startDate.getDate() + 1); // 從最後一筆的"明天"開始
+  if (forceSingle) {
+    startDate = new Date(forceSingle);
+    endDate = new Date(forceSingle);
+    console.log(`使用指定單日重跑: ${getFormattedDate(startDate)}`);
+  } else if (forceStart || forceEnd) {
+    startDate = forceStart ? new Date(forceStart) : new Date('2026-01-01');
+    endDate = forceEnd ? new Date(forceEnd) : new Date();
+    console.log(`使用指定區間重跑: ${getFormattedDate(startDate)} ~ ${getFormattedDate(endDate)}`);
+  } else {
+    if (lastRowCheck > 1) {
+      const dates = sheetAll.getRange('B2:B' + lastRowCheck).getValues().flat().filter(String);
+      if (dates.length > 0) {
+        const lastDate = new Date(dates[dates.length - 1]);
+        startDate = new Date(lastDate);
+        startDate.setDate(startDate.getDate() + 1); // 從最後一筆的"明天"開始
+      }
     }
+    endDate = new Date(); // 抓到今天（含今日業績）
   }
 
-  const today = new Date();
-  const endDate = new Date(today); // 抓到今天（含今日業績）
-
   if (startDate > endDate) {
+    if (hasManualRange) throw new Error('日期區間錯誤：startDate 不可大於 endDate');
     console.log("資料已是最新，無需更新。");
     return;
   }

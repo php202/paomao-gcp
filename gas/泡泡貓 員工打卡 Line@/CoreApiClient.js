@@ -6,6 +6,14 @@
 var CoreApi = (function () {
   var _configCache = null;
   var _lastDebugResult = null;
+  /** getCoreConfig 快取鍵與 TTL（秒），降低每日 UrlFetch 用量，避免觸及 GAS 限制 */
+  var CORE_CONFIG_CACHE_KEY = "CoreApi_getCoreConfig";
+  var CORE_CONFIG_CACHE_TTL = 1800; // 30 分鐘
+  /** urlfetch 額度用盡時，改回傳此長期快取（6 小時），避免整日掛掉 */
+  var CORE_CONFIG_FALLBACK_KEY = "CoreApi_getCoreConfig_fb";
+  var CORE_CONFIG_FALLBACK_TTL = 21600; // 6 小時（GAS ScriptCache 上限）
+  /** Script Properties 備援鍵（讀取不耗 UrlFetch）。額度用盡時可手動設定：專案設定→指令碼屬性→新增此鍵，值為 getCoreConfig 的 data JSON 字串 */
+  var CORE_CONFIG_PROPS_KEY = "CoreApi_getCoreConfig_backup";
 
   function getApiConfig() {
     var props = PropertiesService.getScriptProperties();
@@ -84,15 +92,119 @@ var CoreApi = (function () {
     }
   }
 
+  function getScriptCacheSafe() {
+    try {
+      return CacheService.getScriptCache();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 從快取讀取 config（含 fallback 鍵），回傳 parsed 或 null */
+  function readConfigFromCache(scriptCache) {
+    if (!scriptCache) return null;
+    try {
+      var raw = scriptCache.get(CORE_CONFIG_CACHE_KEY) || scriptCache.get(CORE_CONFIG_FALLBACK_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 成功取得 config 後寫入快取與 Properties 備援（Properties 讀取不耗 UrlFetch） */
+  function saveConfigToBackups(data, scriptCache) {
+    var json = JSON.stringify(data);
+    if (scriptCache) {
+      try {
+        scriptCache.put(CORE_CONFIG_CACHE_KEY, json, CORE_CONFIG_CACHE_TTL);
+        scriptCache.put(CORE_CONFIG_FALLBACK_KEY, json, CORE_CONFIG_FALLBACK_TTL);
+      } catch (e) { /* 忽略 */ }
+    }
+    try {
+      if (json.length <= 8000) PropertiesService.getScriptProperties().setProperty(CORE_CONFIG_PROPS_KEY, json);
+    } catch (e) { /* 單鍵約 9KB 上限，略過 */ }
+  }
+
+  /** 從 Script Properties 讀取備援 config（不耗 UrlFetch） */
+  function readConfigFromProperties() {
+    try {
+      var raw = PropertiesService.getScriptProperties().getProperty(CORE_CONFIG_PROPS_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   return {
     getCoreConfig: function () {
       if (_configCache) return _configCache;
-      var r = callGet("getCoreConfig", {});
-      if (r.status === "ok" && r.data) {
-        _configCache = r.data;
+      var scriptCache = getScriptCacheSafe();
+      var cached = readConfigFromCache(scriptCache);
+      if (cached) {
+        _configCache = cached;
         return _configCache;
       }
-      throw new Error(r.message || "getCoreConfig 失敗");
+      // 先試 Properties（不耗 UrlFetch）；手動設定備援後可當日恢復，無須等額度重置
+      cached = readConfigFromProperties();
+      if (cached) {
+        _configCache = cached;
+        return _configCache;
+      }
+      // 快取為空時用 Lock 讓「只有一個執行」打 API，避免同時大量 UrlFetch（thundering herd）
+      var lock = LockService.getScriptLock();
+      var gotLock = false;
+      try {
+        gotLock = lock.tryLock(10000); // 最多等 10 秒
+        if (gotLock) {
+          cached = readConfigFromCache(scriptCache); // double-check：等待期間可能已被其他執行寫入
+          if (cached) {
+            _configCache = cached;
+            return _configCache;
+          }
+          var r = callGet("getCoreConfig", {});
+          if (r.status === "ok" && r.data) {
+            _configCache = r.data;
+            saveConfigToBackups(r.data, scriptCache);
+            return _configCache;
+          }
+          throw new Error(r.message || "getCoreConfig 失敗");
+        }
+        // 沒拿到 lock：等別人寫入快取後再讀
+        for (var w = 0; w < 4; w++) {
+          Utilities.sleep(1500);
+          cached = readConfigFromCache(scriptCache);
+          if (cached) {
+            _configCache = cached;
+            return _configCache;
+          }
+        }
+        // 最後手段：自己打 API（避免無限期等待）
+        var r = callGet("getCoreConfig", {});
+        if (r.status === "ok" && r.data) {
+          _configCache = r.data;
+          saveConfigToBackups(r.data, scriptCache);
+          return _configCache;
+        }
+        throw new Error(r.message || "getCoreConfig 失敗");
+      } catch (fetchErr) {
+        if (gotLock) try { lock.releaseLock(); } catch (e) {}
+        cached = readConfigFromCache(scriptCache);
+        if (cached) {
+          _configCache = cached;
+          console.warn("[CoreApiClient] getCoreConfig 使用快取（API 失敗: " + (fetchErr.message || fetchErr) + "）");
+          return _configCache;
+        }
+        // 快取也空時改用 Script Properties 備援（讀取不耗 UrlFetch，當日額度用盡仍可回覆）
+        cached = readConfigFromProperties();
+        if (cached) {
+          _configCache = cached;
+          console.warn("[CoreApiClient] getCoreConfig 使用 Properties 備援（API 失敗: " + (fetchErr.message || fetchErr) + "）");
+          return _configCache;
+        }
+        throw fetchErr;
+      } finally {
+        if (gotLock) try { lock.releaseLock(); } catch (e) {}
+      }
     },
     sendLineReply: function (replyToken, text, token) {
       var r = callPost({ action: "lineReply", replyToken: replyToken, text: text || "", token: token });

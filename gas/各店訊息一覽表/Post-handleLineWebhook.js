@@ -69,6 +69,143 @@ function appendErrorLog(message, context) {
   appendUnifiedErrorLog(ERROR_LOG_SOURCE, message, context);
 }
 
+// LINE API 失敗訊息精簡，避免錯誤表過長
+function summarizeErrorText(text, maxLen) {
+  var s = (text == null) ? "" : String(text);
+  s = s.replace(/\s+/g, " ").trim();
+  var limit = (maxLen && maxLen > 0) ? maxLen : 200;
+  return (s.length > limit) ? (s.substring(0, limit) + "...") : s;
+}
+
+var LINE_FETCH_BLOCK_SECONDS = 900; // 15 分鐘熔斷，避免配額超限時狂打 UrlFetch
+var DISPLAY_NAME_DB_TTL_SECONDS = 90 * 24 * 60 * 60; // 90 天
+
+function isUrlFetchQuotaExceededText(text) {
+  if (!text) return false;
+  var s = String(text);
+  return s.indexOf("1 日にサービス urlfetch を実行した回数が多すぎます") >= 0
+    || s.indexOf("Service invoked too many times for one day: urlfetch") >= 0
+    || s.indexOf("Service invoked too many times") >= 0;
+}
+
+function isLineFetchBlocked() {
+  try {
+    var untilSec = Number(PropertiesService.getScriptProperties().getProperty("LINE_FETCH_BLOCK_UNTIL_SEC") || "0");
+    return untilSec > Math.floor(Date.now() / 1000);
+  } catch (_) {
+    return false;
+  }
+}
+
+function blockLineFetch(reason) {
+  try {
+    var nowSec = Math.floor(Date.now() / 1000);
+    var untilSec = nowSec + LINE_FETCH_BLOCK_SECONDS;
+    var props = PropertiesService.getScriptProperties();
+    props.setProperty("LINE_FETCH_BLOCK_UNTIL_SEC", String(untilSec));
+    var lastLogSec = Number(props.getProperty("LINE_FETCH_BLOCK_LAST_LOG_SEC") || "0");
+    if (nowSec - lastLogSec >= 300) {
+      appendErrorLog("LINE fetch 熔斷 15 分鐘（UrlFetch 配額或限制）: " + summarizeErrorText(reason, 180), "LINE fetch breaker");
+      props.setProperty("LINE_FETCH_BLOCK_LAST_LOG_SEC", String(nowSec));
+    }
+  } catch (_) {}
+}
+
+function getDisplayNameDbKey(userId, groupId, roomId) {
+  var gid = (groupId != null && String(groupId).trim()) ? String(groupId).trim() : "";
+  var rid = (roomId != null && String(roomId).trim()) ? String(roomId).trim() : "";
+  if (gid) return "DISPLAY_NAME_DB:" + String(userId) + ":G:" + gid;
+  if (rid) return "DISPLAY_NAME_DB:" + String(userId) + ":R:" + rid;
+  return "DISPLAY_NAME_DB:" + String(userId) + ":P";
+}
+
+function getDisplayNameDbSheet() {
+  var ssId = typeof CONFIG !== "undefined" && CONFIG.INTEGRATED_SHEET_SS_ID ? CONFIG.INTEGRATED_SHEET_SS_ID : null;
+  if (!ssId) return null;
+  var ss = SpreadsheetApp.openById(ssId);
+  if (!ss) return null;
+  var sheet = ss.getSheetByName("DisplayNameDB");
+  if (!sheet) {
+    sheet = ss.insertSheet("DisplayNameDB");
+    sheet.appendRow(["key", "userId", "scope", "scopeId", "displayName", "updatedAt"]);
+  }
+  return sheet;
+}
+
+function readDisplayNameFromSheetByKey(sheet, key) {
+  if (!sheet || !key) return "";
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return "";
+  var found = sheet.getRange(2, 1, lastRow - 1, 1)
+    .createTextFinder(String(key))
+    .matchEntireCell(true)
+    .findNext();
+  if (!found) return "";
+  var row = found.getRow();
+  var name = sheet.getRange(row, 5).getValue();
+  var updatedAtVal = sheet.getRange(row, 6).getValue();
+  var n = (name != null) ? String(name).trim() : "";
+  if (!n || n === "未知用戶" || n === "未知(未加好友)" || n === "未知用户") return "";
+  if (updatedAtVal) {
+    var t = (updatedAtVal instanceof Date) ? Math.floor(updatedAtVal.getTime() / 1000) : Math.floor(new Date(updatedAtVal).getTime() / 1000);
+    if (t > 0) {
+      var now = Math.floor(Date.now() / 1000);
+      if ((now - t) > DISPLAY_NAME_DB_TTL_SECONDS) return "";
+    }
+  }
+  return n;
+}
+
+function upsertDisplayNameToSheet(sheet, key, userId, scope, scopeId, name) {
+  if (!sheet || !key || !userId || !name) return;
+  var lastRow = sheet.getLastRow();
+  var found = null;
+  if (lastRow > 1) {
+    found = sheet.getRange(2, 1, lastRow - 1, 1)
+      .createTextFinder(String(key))
+      .matchEntireCell(true)
+      .findNext();
+  }
+  var rowValues = [key, userId, scope, scopeId, name, new Date()];
+  if (found) {
+    sheet.getRange(found.getRow(), 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sheet.appendRow(rowValues);
+  }
+}
+
+function readDisplayNameFromDb(userId, groupId, roomId) {
+  if (!userId) return "";
+  try {
+    var gid = (groupId != null && String(groupId).trim()) ? String(groupId).trim() : "";
+    var rid = (roomId != null && String(roomId).trim()) ? String(roomId).trim() : "";
+    var sheet = getDisplayNameDbSheet();
+    if (!sheet) return "";
+    var scopedKey = getDisplayNameDbKey(userId, gid, rid);
+    var scoped = readDisplayNameFromSheetByKey(sheet, scopedKey);
+    if (scoped) return scoped;
+    var global = readDisplayNameFromSheetByKey(sheet, "DISPLAY_NAME_DB_GLOBAL:" + String(userId));
+    if (global) return global;
+  } catch (_) {}
+  return "";
+}
+
+function saveDisplayNameToDb(userId, groupId, roomId, name) {
+  if (!userId || !name) return;
+  var n = String(name).trim();
+  if (!n || n === "未知用戶" || n === "未知(未加好友)" || n === "未知用户") return;
+  try {
+    var gid = (groupId != null && String(groupId).trim()) ? String(groupId).trim() : "";
+    var rid = (roomId != null && String(roomId).trim()) ? String(roomId).trim() : "";
+    var sheet = getDisplayNameDbSheet();
+    if (!sheet) return;
+    var scope = gid ? "group" : (rid ? "room" : "profile");
+    var scopeId = gid || rid || "";
+    upsertDisplayNameToSheet(sheet, getDisplayNameDbKey(userId, gid, rid), String(userId), scope, scopeId, n);
+    upsertDisplayNameToSheet(sheet, "DISPLAY_NAME_DB_GLOBAL:" + String(userId), String(userId), "global", "", n);
+  } catch (_) {}
+}
+
 // ==========================================
 // 功能 1: 處理 LINE 訊息 (主程式)
 // ==========================================
@@ -114,10 +251,10 @@ function handleLineWebhook(data) {
       const replyToken = event.replyToken; 
       const botDestinationId = data.destination; 
       const timestamp = new Date();
+      const groupId = (event.source && event.source.groupId) ? String(event.source.groupId) : "";
+      const roomId = (event.source && event.source.roomId) ? String(event.source.roomId) : "";
 
-      // 辨識店家與取得 Token
-      const storeInfo = findStoreConfig(userId, botDestinationId);
-      
+      const storeInfo = findStoreConfig(userId, botDestinationId, groupId, roomId);
       let finalStoreName = "未知店家";
       let finalUserName = "未知/ID:" + userId;
       let validToken = null;
@@ -127,10 +264,19 @@ function handleLineWebhook(data) {
         finalStoreName = storeInfo.storeName;
         finalUserName = storeInfo.userName;
         validToken = storeInfo.token;
-        sayId = storeInfo.sayId; // [已修復] 這裡現在能正確取值了
+        sayId = storeInfo.sayId;
       } else {
         finalStoreName = "無法辨識(未加好友?)";
+        appendErrorLog("handleLineWebhook: storeInfo 為空，destination=" + String(botDestinationId || "") + ", uid=" + String(userId || ""), "LINE webhook");
       }
+      if (storeInfo && !storeInfo.token) {
+        appendErrorLog("handleLineWebhook: storeInfo 存在但 token 為空，store=" + String(storeInfo.storeName || "") + ", uid=" + String(userId || ""), "LINE token");
+      }
+      if (storeInfo && storeInfo.token && (!finalUserName || finalUserName === "未知(未加好友)" || finalUserName.trim() === "")) {
+        var directName = fetchDisplayNameFromLine(userId, groupId, roomId, storeInfo.token);
+        if (directName && directName.trim()) finalUserName = directName.trim();
+      }
+      if (!finalUserName || finalUserName.trim() === "" || finalUserName === "未知(未加好友)") finalUserName = " ";
 
       // 報告關鍵字已移至「員工打卡 Line@」專案，僅員工可見；客人 LINE 不回應報告關鍵字。
 
@@ -144,10 +290,7 @@ function handleLineWebhook(data) {
         // [我的會員][課程介紹] 不用出現挽留清單、也不 Reply；只有 [線上預約] 才寫入清單並有機會 Reply
         var skipList = (filterResult.desc === "會員權益" || filterResult.desc === "了解課程");
         if (!skipList && validToken) {
-          // 【勿刪】群組/聊天室須傳 groupId/roomId，否則 displayName 會取不到（/profile 只對有加好友有效）
-          const groupId = event.source && event.source.groupId ? event.source.groupId : "";
-          const roomId = event.source && event.source.roomId ? event.source.roomId : "";
-          addToRetentionList(userId, msg, validToken, filterResult, sayId, replyToken, botDestinationId, storeInfo, groupId, roomId);
+          addToRetentionList(userId, msg, validToken, filterResult, sayId, replyToken, botDestinationId, storeInfo, groupId, roomId, finalUserName);
         }
         continue;
       }
@@ -161,7 +304,9 @@ function handleLineWebhook(data) {
       var handlerCol = "";
       var phoneCol = extractedPhone || "";
       var replyTokenStr = (replyToken && typeof replyToken === "string") ? replyToken : "";
-      logSheet.appendRow([timestamp, userId, finalStoreName, finalUserName, msg, statusCol, handlerCol, phoneCol, replyTokenStr]);
+      var nameForSheet = (finalUserName && String(finalUserName).trim()) ? String(finalUserName).trim() : " ";
+      if (nameForSheet === "未知用戶" || nameForSheet === "未知(未加好友)" || nameForSheet === "未知用户" || nameForSheet.indexOf("未知/ID:") === 0) nameForSheet = " ";
+      logSheet.appendRow([timestamp, userId, finalStoreName, nameForSheet, msg, statusCol, handlerCol, phoneCol, replyTokenStr]);
       if (extractedPhone && typeof syncLineUserIdForPhoneToCustomerState === "function") {
         try { syncLineUserIdForPhoneToCustomerState(extractedPhone, userId); } catch (syncErr) {
           appendErrorLog("syncLineUserIdForPhoneToCustomerState: " + (syncErr && syncErr.message), "handleLineWebhook");
@@ -181,7 +326,7 @@ function handleLineWebhook(data) {
 // [核心] 寫入挽留清單 (支援 AI 與 固定模板)
 // I 欄 isReply 只控制「查詢空位」是否用 reply token 傳給客人；查詢空位、寫入清單照常執行
 // ==========================================
-function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToken, botDestinationId, storeInfo, groupId, roomId) {
+function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToken, botDestinationId, storeInfo, groupId, roomId, knownDisplayName) {
   var ssId = typeof CONFIG !== "undefined" && CONFIG.INTEGRATED_SHEET_SS_ID ? CONFIG.INTEGRATED_SHEET_SS_ID : null;
   var ss = ssId ? SpreadsheetApp.openById(ssId) : null;
   if (!ss) return;
@@ -192,7 +337,6 @@ function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToke
   }
   
   const data = sheet.getDataRange().getValues();
-  // A. 狀態覆蓋 (將舊的 Pending 標記為失效)
   for (let i = data.length - 1; i >= 1; i--) {
     if (data[i][0] == userId && data[i][3] == "Pending") {
       sheet.getRange(i + 1, 4).setValue("Overwritten");
@@ -200,23 +344,26 @@ function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToke
     }
   }
 
-  // B. 準備基本資料
-  // 【勿改】群組/聊天室必須用 Core.getUserDisplayName(userId, groupId, roomId, token)，不可只靠 getLineProfile；
-  // 否則群組內未加好友的成員會顯示為空（/profile API 在群組只對有加好友者有效）。未知用戶留空不顯示「未知用戶」。
+  // B. 準備基本資料：優先沿用同一 webhook 已取得的名字，避免重複打 LINE API
   let displayName = "";
-  if (typeof Core !== "undefined" && typeof Core.getUserDisplayName === "function") {
-    try {
-      const name = Core.getUserDisplayName(userId, groupId || "", roomId || "", token);
-      if (name && String(name).trim()) displayName = String(name).trim();
-    } catch (e) {
-      appendErrorLog("getUserDisplayName: " + (e && e.message), "addToRetentionList");
+  if (knownDisplayName && String(knownDisplayName).trim()) {
+    var known = String(knownDisplayName).trim();
+    if (known !== "未知用戶" && known !== "未知(未加好友)" && known !== "未知用户" && known.indexOf("未知/ID:") !== 0) {
+      displayName = known;
     }
   }
+  if (!displayName) displayName = (typeof fetchDisplayNameFromLine === "function") ? fetchDisplayNameFromLine(userId, groupId || "", roomId || "", token) : "";
+  if (!displayName && storeInfo && storeInfo.userName && String(storeInfo.userName).trim() && storeInfo.userName !== "未知(未加好友)") displayName = storeInfo.userName;
   if (!displayName) {
-    const profile = getLineProfile(userId, token);
-    if (profile && profile.displayName) displayName = profile.displayName;
+    try {
+      var profile = getLineProfile(userId, token);
+      if (profile && profile.displayName) displayName = profile.displayName;
+    } catch (e) {}
   }
-  
+  var displayNameForSheet = (displayName && String(displayName).trim()) ? String(displayName).trim() : " ";
+  if (displayNameForSheet === "未知用戶" || displayNameForSheet === "未知(未加好友)" || displayNameForSheet === "未知用户") displayNameForSheet = " ";
+  displayName = displayNameForSheet;
+
   // C. 產生文案內容
   let finalContent = "";
 
@@ -269,7 +416,7 @@ function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToke
     }
   }
   
-  // E. 寫入 Sheet（留紀錄）
+  // E. 寫入 Sheet（留紀錄）；暱稱欄用 displayName（已統一為空/未知→" "）
   const timeStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
   sheet.appendRow([userId, displayName, timeStr, rowStatus, context.desc, finalContent, replyToken, botDestinationId]);
 }
@@ -392,8 +539,69 @@ function sendLineReplyViaCoreApi(replyToken, text, token) {
   }
 }
 
-// 取得 LINE 使用者資料
+/**
+ * 直接呼叫 LINE API 取得 displayName（群組/聊天室用 /member，否則 /profile）
+ * 不依賴 Core；群組 API 非 200 時再試 /profile（有加好友才有效）
+ */
+function fetchDisplayNameFromLine(userId, groupId, roomId, token) {
+  if (!userId || !token) return "";
+  var dbName = readDisplayNameFromDb(userId, groupId, roomId);
+  if (dbName) return dbName;
+  if (isLineFetchBlocked()) return "";
+  var gid = (groupId != null && String(groupId).trim()) ? String(groupId).trim() : "";
+  var rid = (roomId != null && String(roomId).trim()) ? String(roomId).trim() : "";
+  var cache = CacheService.getScriptCache();
+  var cacheKey = "DISPLAY_NAME_V2:" + String(userId) + ":" + (gid || "-") + ":" + (rid || "-");
+  var cached = cache.get(cacheKey);
+  if (cached && cached !== " " && cached !== "未知用戶" && cached !== "未知(未加好友)" && cached !== "未知用户") return cached;
+  var url;
+  var route = "profile";
+  if (gid) {
+    url = "https://api.line.me/v2/bot/group/" + gid + "/member/" + userId;
+    route = "groupMember";
+  } else if (rid) {
+    url = "https://api.line.me/v2/bot/room/" + rid + "/member/" + userId;
+    route = "roomMember";
+  } else {
+    url = "https://api.line.me/v2/bot/profile/" + userId;
+  }
+  try {
+    var res = UrlFetchApp.fetch(url, { method: "get", headers: { Authorization: "Bearer " + token }, muteHttpExceptions: true });
+    var code = res.getResponseCode();
+    if (code === 200) {
+      var json = JSON.parse(res.getContentText());
+      var name = (json && json.displayName) ? String(json.displayName).trim() : "";
+      if (name && name !== "未知用戶" && name !== "未知(未加好友)" && name !== "未知用户") {
+        cache.put(cacheKey, name, 21600);
+        saveDisplayNameToDb(userId, gid, rid, name);
+        return name;
+      }
+    } else {
+      var body = res.getContentText();
+      if (isUrlFetchQuotaExceededText(body)) blockLineFetch(body);
+      appendErrorLog(
+        "fetchDisplayNameFromLine 非200: code=" + code + ", route=" + route + ", uid=" + userId + ", body=" + summarizeErrorText(body, 220),
+        "LINE displayName"
+      );
+    }
+    if (gid || rid) {
+      var profile = getLineProfile(userId, token);
+      if (profile && profile.displayName) {
+        var pname = String(profile.displayName).trim();
+        if (pname && pname !== "未知用戶" && pname !== "未知(未加好友)" && pname !== "未知用户") {
+          cache.put(cacheKey, pname, 21600);
+          saveDisplayNameToDb(userId, gid, rid, pname);
+          return pname;
+        }
+      }
+    }
+  } catch (e) {}
+  return "";
+}
+
+// 取得 LINE 使用者資料（/profile，僅對有加好友有效）
 function getLineProfile(userId, token) {
+  if (!userId || !token || isLineFetchBlocked()) return null;
   try {
     const url = `https://api.line.me/v2/bot/profile/${userId}`;
     const options = {
@@ -402,8 +610,21 @@ function getLineProfile(userId, token) {
       "muteHttpExceptions": true
     };
     const response = UrlFetchApp.fetch(url, options);
+    if (response.getResponseCode() !== 200) {
+      var body = response.getContentText();
+      if (isUrlFetchQuotaExceededText(body)) blockLineFetch(body);
+      appendErrorLog(
+        "getLineProfile 非200: code=" + response.getResponseCode() + ", uid=" + userId + ", body=" + summarizeErrorText(body, 220),
+        "LINE profile"
+      );
+      return null;
+    }
     return JSON.parse(response.getContentText());
-  } catch (e) { return null; }
+  } catch (e) {
+    var emsg = (e && e.message) ? e.message : String(e);
+    if (isUrlFetchQuotaExceededText(emsg)) blockLineFetch(emsg);
+    return null;
+  }
 }
 
 // AI 生成文案
@@ -542,6 +763,7 @@ function getLineAccessToken(channelId, channelSecret) {
   if (cachedToken && expirationTime && (parseInt(expirationTime) - now > 600)) {
     return cachedToken;
   }
+  if (isLineFetchBlocked()) return null;
 
   try {
     const url = 'https://api.line.me/v2/oauth/accessToken';
@@ -557,12 +779,32 @@ function getLineAccessToken(channelId, channelSecret) {
       'muteHttpExceptions': true
     };
     const response = UrlFetchApp.fetch(url, options);
+    if (response.getResponseCode() !== 200) {
+      var body = response.getContentText();
+      if (isUrlFetchQuotaExceededText(body)) blockLineFetch(body);
+      appendErrorLog(
+        "getLineAccessToken 非200: code=" + response.getResponseCode() + ", channelIdTail=" + String(channelId).slice(-6) + ", body=" + summarizeErrorText(body, 220),
+        "LINE token"
+      );
+      return null;
+    }
     const json = JSON.parse(response.getContentText());
     if (json.access_token) {
       const newExpirationTime = now + json.expires_in;
       scriptProperties.setProperty(cacheKeyToken, json.access_token);
       scriptProperties.setProperty(cacheKeyTime, newExpirationTime.toString());
       return json.access_token;
-    } else { return null; }
-  } catch (e) { return null; }
+    } else {
+      appendErrorLog(
+        "getLineAccessToken 無 access_token: channelIdTail=" + String(channelId).slice(-6) + ", body=" + summarizeErrorText(response.getContentText(), 220),
+        "LINE token"
+      );
+      return null;
+    }
+  } catch (e) {
+    var emsg = (e && e.message) ? e.message : String(e);
+    if (isUrlFetchQuotaExceededText(emsg)) blockLineFetch(emsg);
+    appendErrorLog("getLineAccessToken 例外: " + emsg, "LINE token");
+    return null;
+  }
 }

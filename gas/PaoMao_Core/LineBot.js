@@ -206,8 +206,8 @@ function getUserDisplayName(userId, groupId, roomId, token) {
   const cache = CacheService.getScriptCache();
   const cacheKey = `UNAME_${userId}`; 
   const cachedName = cache.get(cacheKey);
-
-  if (cachedName) return cachedName;
+  // 快取若為舊版誤存的「未知用戶」等字樣，視為無效、當作取不到
+  if (cachedName && cachedName !== "未知用戶" && cachedName !== "未知(未加好友)" && cachedName !== "未知用户") return cachedName;
   // ----------------
 
   try {
@@ -226,11 +226,10 @@ function getUserDisplayName(userId, groupId, roomId, token) {
     }
 
     const json = JSON.parse(res.getContentText());
-    const displayName = json.displayName || "";
-
-    // 寫入快取 (存 6 小時)
-    // 這樣下次這個人再講話，就不用問 LINE 了
-    cache.put(cacheKey, displayName, 21600);
+    var displayName = json.displayName || "";
+    if (displayName === "未知用戶" || displayName === "未知(未加好友)" || displayName === "未知用户") displayName = "";
+    // 寫入快取 (存 6 小時)；不快取「未知」字樣
+    if (displayName) cache.put(cacheKey, displayName, 21600);
 
     return displayName;
   } catch (e) { 

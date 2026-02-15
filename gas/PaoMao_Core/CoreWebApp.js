@@ -895,6 +895,7 @@ function actionNearRedirect(params) {
 /**
  * 網紅連結「只做累加」；由 near 的中間頁在「同分頁第一次」時呼叫，避免重整一直 +1。
  * 不需 key，公開呼叫。
+ * 同一 code 有多列時會合併：次數加總到第一列，其餘刪除。
  */
 function actionNearRecord(params) {
   var code = (params.code != null) ? String(params.code).trim() : "";
@@ -906,7 +907,7 @@ function actionNearRecord(params) {
 
   var lock = LockService.getScriptLock();
   try {
-    lock.tryLock(5000);
+    lock.waitLock(15000);
 
     var ss = SpreadsheetApp.openById(ssId);
     var sheet = ss.getSheetByName(sheetName);
@@ -917,15 +918,32 @@ function actionNearRecord(params) {
 
     var range = sheet.getRange(2, 1, lastRow, 5);
     var values = range.getValues();
+    var matchIndices = [];
+    var totalCount = 0;
+    var firstDisplayName = "";
+    var firstUrl = "";
     for (var i = 0; i < values.length; i++) {
       var rowCode = (values[i][0] != null) ? String(values[i][0]).trim() : "";
       if (rowCode === code) {
-        var current = Number(values[i][3] || 0);
-        if (isNaN(current)) current = 0;
-        values[i][3] = current + 1;
-        values[i][4] = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy-MM-dd HH:mm:ss");
-        range.setValues(values);
-        break;
+        matchIndices.push(i);
+        totalCount += Number(values[i][3] || 0) || 0;
+        if (matchIndices.length === 1) {
+          firstDisplayName = (values[i][1] != null) ? String(values[i][1]).trim() : "";
+          firstUrl = (values[i][2] != null) ? String(values[i][2]).trim() : "";
+        }
+      }
+    }
+    if (matchIndices.length > 0) {
+      totalCount += 1;
+      var nowStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy-MM-dd HH:mm:ss");
+      var firstIdx = matchIndices[0];
+      values[firstIdx][1] = firstDisplayName;
+      values[firstIdx][2] = firstUrl || "https://www.paopaomao.tw/near";
+      values[firstIdx][3] = totalCount;
+      values[firstIdx][4] = nowStr;
+      range.setValues(values);
+      for (var j = matchIndices.length - 1; j >= 1; j--) {
+        sheet.deleteRow(matchIndices[j] + 2);
       }
     }
   } catch (e) {}
@@ -939,6 +957,7 @@ function actionNearRecord(params) {
  * 網紅連結「記數 + 回傳導向網址」；用 JSONP 讓前端在站內呼叫，使用者不會跳轉到 script.google.com。
  * GET: action=nearHit&code=XXX&callback=函數名
  * 回傳：函數名({ "targetUrl": "https://..." })  (application/javascript)
+ * 同一 code 有多列時會合併：次數加總到第一列，其餘刪除。
  */
 function actionNearHit(params) {
   var code = (params.code != null) ? String(params.code).trim() : "";
@@ -961,7 +980,7 @@ function actionNearHit(params) {
   var lock = LockService.getScriptLock();
   var found = false;
   try {
-    lock.tryLock(5000);
+    lock.waitLock(15000);
     var ss = SpreadsheetApp.openById(ssId);
     var sheet = ss.getSheetByName(sheetName);
     if (!sheet) {
@@ -972,18 +991,34 @@ function actionNearHit(params) {
     if (lastRow >= 2) {
       var range = sheet.getRange(2, 1, lastRow, 5);
       var values = range.getValues();
+      var matchIndices = [];
+      var totalCount = 0;
+      var firstDisplayName = "";
+      var firstUrl = "";
       for (var i = 0; i < values.length; i++) {
         var rowCode = (values[i][0] != null) ? String(values[i][0]).trim() : "";
         if (rowCode === code) {
           found = true;
-          var u = (values[i][2] != null) ? String(values[i][2]).trim() : "";
-          if (u) targetUrl = u;
-          var current = Number(values[i][3] || 0);
-          if (isNaN(current)) current = 0;
-          values[i][3] = current + 1;
-          values[i][4] = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy-MM-dd HH:mm:ss");
-          range.setValues(values);
-          break;
+          matchIndices.push(i);
+          totalCount += Number(values[i][3] || 0) || 0;
+          if (matchIndices.length === 1) {
+            firstDisplayName = (values[i][1] != null) ? String(values[i][1]).trim() : "";
+            firstUrl = (values[i][2] != null) ? String(values[i][2]).trim() : "";
+            if (firstUrl) targetUrl = firstUrl;
+          }
+        }
+      }
+      if (matchIndices.length > 0) {
+        totalCount += 1;
+        var nowStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy-MM-dd HH:mm:ss");
+        var firstIdx = matchIndices[0];
+        values[firstIdx][1] = firstDisplayName;
+        values[firstIdx][2] = firstUrl || "https://www.paopaomao.tw/near";
+        values[firstIdx][3] = totalCount;
+        values[firstIdx][4] = nowStr;
+        range.setValues(values);
+        for (var j = matchIndices.length - 1; j >= 1; j--) {
+          sheet.deleteRow(matchIndices[j] + 2);
         }
       }
     }

@@ -59,7 +59,7 @@ function doPost(e) {
       }
 
       // 處理訊息紀錄
-      handleLineWebhook(data);
+      handleLineWebhook(data, paopaoToken);
       
       // 回傳標準 LINE 成功訊號
       return Core.jsonResponse({ status: "ok" });
@@ -101,6 +101,49 @@ function handleDirectStoreReplyStatus(event, paopaoToken) {
   Core.sendLineReply(event.replyToken, result.ok ? result.text : result.message, paopaoToken);
 }
 
+function summarizeErrorText(text, maxLen) {
+  var s = (text == null) ? "" : String(text);
+  s = s.replace(/\s+/g, " ").trim();
+  var limit = (maxLen && maxLen > 0) ? maxLen : 220;
+  return s.length > limit ? (s.substring(0, limit) + "...") : s;
+}
+
+function fetchDisplayNameFromLineDirect(userId, groupId, roomId, token) {
+  if (!userId || !token) return "";
+  var url;
+  var route = "profile";
+  if (groupId) {
+    url = "https://api.line.me/v2/bot/group/" + groupId + "/member/" + userId;
+    route = "groupMember";
+  } else if (roomId) {
+    url = "https://api.line.me/v2/bot/room/" + roomId + "/member/" + userId;
+    route = "roomMember";
+  } else {
+    url = "https://api.line.me/v2/bot/profile/" + userId;
+  }
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      method: "get",
+      headers: { Authorization: "Bearer " + token },
+      muteHttpExceptions: true
+    });
+    var code = res.getResponseCode();
+    if (code !== 200) {
+      if (typeof appendErrorLog === "function") {
+        appendErrorLog("PAOPAO 直打 displayName 非200: code=" + code + ", route=" + route + ", uid=" + userId + ", body=" + summarizeErrorText(res.getContentText(), 220), "LINE displayName");
+      }
+      return "";
+    }
+    var json = JSON.parse(res.getContentText());
+    return (json && json.displayName) ? String(json.displayName).trim() : "";
+  } catch (err) {
+    if (typeof appendErrorLog === "function") {
+      appendErrorLog("PAOPAO 直打 displayName 例外: " + ((err && err.message) ? err.message : String(err)), "LINE displayName");
+    }
+    return "";
+  }
+}
+
 // ==========================================
 // 子函式 1: 處理 Gogoshop Cookie 更新
 // ==========================================
@@ -123,7 +166,7 @@ function handleUpdateCookie(data) {
 // ==========================================
 // 功能 1: 處理 LINE 訊息 (批次寫入)
 // ==========================================
-function handleLineWebhook(data) {
+function handleLineWebhook(data, lineToken) {
   const events = data.events;
   const logData = []; 
 
@@ -134,7 +177,7 @@ function handleLineWebhook(data) {
     if (event.type === 'message' && event.message.type === 'text') {
       const msg = event.message.text;
       const replyToken = event.replyToken;
-      const userId = event.source.userId;
+      const userId = (event.source && event.source.userId) ? String(event.source.userId).trim() : "";
       const timestamp = new Date();
 
       // --- 處理來源 ---
@@ -147,7 +190,7 @@ function handleLineWebhook(data) {
         
         // ★★★ 修改重點：改用 Core 的函式 ★★★
         // 假設 Core 裡已經有了 getGroupName (含快取)
-        const groupName = Core.getGroupName(groupId, LINE_TOKEN_PAOPAO);
+        const groupName = Core.getGroupName(groupId, lineToken);
         sourceName = `[群] ${groupName}`; 
 
       } else if (event.source.type === 'room') {
@@ -156,7 +199,17 @@ function handleLineWebhook(data) {
       }
 
       // --- 取得發言者姓名 (Core) ---
-      const userName = Core.getUserDisplayName(userId, groupId, roomId, LINE_TOKEN_PAOPAO);
+      var userName = "";
+      if (userId && lineToken) {
+        userName = Core.getUserDisplayName(userId, groupId, roomId, lineToken) || "";
+        if (!userName) userName = fetchDisplayNameFromLineDirect(userId, groupId, roomId, lineToken) || "";
+      }
+      if (!userName && typeof appendErrorLog === "function") {
+        appendErrorLog(
+          "PAOPAO 取得姓名為空: hasUserId=" + (userId ? "Y" : "N") + ", hasToken=" + (lineToken ? "Y" : "N") + ", uid=" + userId + ", gid=" + (groupId || "") + ", rid=" + (roomId || ""),
+          "LINE displayName"
+        );
+      }
 
       logData.push([timestamp, replyToken, sourceName, userName, msg, groupId, roomId]);
     }
