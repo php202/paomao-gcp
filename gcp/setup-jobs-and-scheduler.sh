@@ -1,6 +1,7 @@
 #!/bin/bash
 # 照「執行指南_GCP 權限與步驟.md」建立 Job + Scheduler
 # 執行前：source set-env.sh，並設定試算表 ID（LINE_STAFF_SS_ID、LINE_STORE_SS_ID、OUTPUT_SS_ID、TOKEN_SHEET_SS_ID）
+# 也會建立 run acc（日報）的每日凌晨排程（pao-daily-report）
 set -e
 cd "$(dirname "$0")"
 [ -f set-env.sh ] && source set-env.sh
@@ -15,6 +16,14 @@ LINE_STAFF_SS_ID="${LINE_STAFF_SS_ID:-1GH2Xbih}"
 LINE_STORE_SS_ID="${LINE_STORE_SS_ID:-1ZV_0vjt}"
 OUTPUT_SS_ID="${OUTPUT_SS_ID:-1ZMutegY}"
 TOKEN_SHEET_SS_ID="${TOKEN_SHEET_SS_ID:-1-t4KPVK}"
+PAO_CAT_CORE_API_URL="${PAO_CAT_CORE_API_URL:-}"
+PAO_CAT_SECRET_KEY="${PAO_CAT_SECRET_KEY:-}"
+DAILY_REPORT_CRON="${DAILY_REPORT_CRON:-10 0 * * *}" # 台灣時間凌晨 00:10
+
+if [ -z "$PAO_CAT_CORE_API_URL" ] || [ -z "$PAO_CAT_SECRET_KEY" ]; then
+  echo "錯誤：daily-report 需要 PAO_CAT_CORE_API_URL 與 PAO_CAT_SECRET_KEY（請在 set-env.sh 設定）"
+  exit 1
+fi
 
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/gcp-scripts/pao-run:latest"
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
@@ -54,10 +63,26 @@ gcloud run jobs create pao-employee-report \
 gcloud run jobs update pao-employee-report --region "$REGION" \
   --command "node" --args "index.js,employee-monthly-report"
 
+# Job 3：run acc（日報，GCP 版）
+gcloud run jobs create pao-daily-report \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --task-timeout 60m \
+  --set-env-vars "TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,PAO_CAT_CORE_API_URL=$PAO_CAT_CORE_API_URL,PAO_CAT_SECRET_KEY=$PAO_CAT_SECRET_KEY,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
+  2>/dev/null || gcloud run jobs update pao-daily-report --image "$IMAGE" --region "$REGION" \
+  --set-env-vars "TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,PAO_CAT_CORE_API_URL=$PAO_CAT_CORE_API_URL,PAO_CAT_SECRET_KEY=$PAO_CAT_SECRET_KEY,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
+
+gcloud run jobs update pao-daily-report --region "$REGION" \
+  --command "node" --args "index.js,daily-report"
+
 echo "=== 5. 給 Scheduler 觸發 Job 的權限 ==="
 gcloud run jobs add-iam-policy-binding pao-check-token --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
 gcloud run jobs add-iam-policy-binding pao-employee-report --region="$REGION" \
+  --member="serviceAccount:${SA}" --role="roles/run.invoker"
+gcloud run jobs add-iam-policy-binding pao-daily-report --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
 
 echo "=== 6. 建立 Cloud Scheduler 排程 ==="
@@ -79,6 +104,23 @@ gcloud scheduler jobs create http pao-report-monthly \
   --oauth-service-account-email "${SA}" \
   2>/dev/null || echo "（pao-report-monthly 可能已存在，可略過或到 Console 編輯）"
 
+# 每天凌晨（台灣時區）跑 run acc（日報）
+gcloud scheduler jobs create http pao-daily-report-midnight \
+  --location "$REGION" \
+  --schedule "$DAILY_REPORT_CRON" \
+  --time-zone "Asia/Taipei" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/pao-daily-report:run" \
+  --http-method POST \
+  --oauth-service-account-email "${SA}" \
+  2>/dev/null || gcloud scheduler jobs update http pao-daily-report-midnight \
+  --location "$REGION" \
+  --schedule "$DAILY_REPORT_CRON" \
+  --time-zone "Asia/Taipei" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/pao-daily-report:run" \
+  --http-method POST \
+  --oauth-service-account-email "${SA}"
+
 echo "完成。請到 Console 手動執行一次 Job 測試："
 echo "  https://console.cloud.google.com/run?project=$PROJECT_ID"
-echo "試算表 ID 若尚未改成你的，請編輯 set-env.sh 後重新執行本腳本（或手動 update job）。"
+echo "新增：pao-daily-report（run acc）已排程於 Asia/Taipei $DAILY_REPORT_CRON"
+echo "試算表 ID 或 Core 參數若需調整，請編輯 set-env.sh 後重新執行本腳本（或手動 update job）。"

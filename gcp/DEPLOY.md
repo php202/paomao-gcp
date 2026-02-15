@@ -13,7 +13,31 @@ Cloud Scheduler（排程）
 ```
 
 - **Token 檢查**：建議每日一次（例如每天 9:00）
-- **員工業績月報**：建議每月一次（例如每月 1 號）
+- **員工業績月報**：見下方「員工業績月報 定期更新」建議。
+
+---
+
+## 員工業績月報 定期更新（2025 已收集完後）
+
+表已經是員工每日資料的一部分，建議**每天跑一次**，只更新「當月」或「上月+當月」，不要每次重跑整年（API 多、耗時長）。
+
+| 頻率 | 建議時間 | 跑哪幾個月 | 指令範例 |
+|------|----------|------------|----------|
+| **每日** | 凌晨 2:00 或 3:00 | 只更新**當月** | `node index.js 2026-02 2026-02` |
+| **每日** | 凌晨 2:00 | **上月 + 當月**（補遲入單） | `node index.js 2026-01 2026-02` |
+
+- **只更新當月**：每天跑、API 少、當月數字每天更新，員工早上看就是最新。
+- **上月+當月**：若常有遲入單，可每天跑兩個月；或改為「每月 1 號跑上月，每天跑當月」（需兩條排程）。
+
+**Cloud Scheduler / 本機 cron 範例（只更新當月，每日 2:00）：**
+
+```bash
+# 需動態帶入當月，例如 2026-02
+YM=$(date +%Y-%m)
+node index.js $YM $YM
+```
+
+或使用專用腳本（見 `gcp/run-monthly-report-daily.sh`）。
 
 ---
 
@@ -228,3 +252,64 @@ gcloud scheduler jobs create http pao-report-monthly \
 ---
 
 完成以上步驟後，就會在 GCP 上固定排程執行 Token 檢查與員工業績月報，不需本機常駐。
+
+---
+
+## 十、部署打卡 API 為 Cloud Run Service（HTTP 常駐服務）
+
+打卡 API（`node index.js serve`）可部署成 **Cloud Run Service**，對外提供 `POST /checkin`，供前端或 GAS 備援使用。
+
+### 前置（與 Job 相同）
+
+- 同一個 GCP 專案、已啟用 Cloud Run / Artifact Registry
+- 已建過映像（上面「三、建映像檔」的 `gcloud builds submit`），或下面腳本會自動建
+- **LINE_STAFF_SS_ID** 試算表（員工清單、管理者清單、公司列表、員工打卡紀錄）已**共用給 Cloud Run 使用的服務帳戶**（同 Job 的服務帳戶即可）
+
+### 方式 A：用腳本一鍵部署
+
+```bash
+cd node_express/gcp
+export PROJECT_ID=你的專案ID
+export LINE_STAFF_SS_ID=你的員工試算表ID
+# 可選：REGION=asia-east1、SERVICE_NAME=pao-checkin-api
+chmod +x deploy-checkin-api.sh
+./deploy-checkin-api.sh
+```
+
+結束後會印出服務 URL，例如：`https://pao-checkin-api-xxxxx.asia-east1.run.app`，打卡端點即 **該 URL + `/checkin`**。
+
+### 方式 B：手動 gcloud 指令
+
+```bash
+export REGION=asia-east1
+export PROJECT_ID=你的專案ID
+export IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/gcp-scripts/pao-run:latest
+
+# 若映像尚未存在，先建
+gcloud builds submit --tag $IMAGE
+
+# 部署為 Service，覆寫 CMD 為 node index.js serve
+gcloud run deploy pao-checkin-api \
+  --image $IMAGE \
+  --region $REGION \
+  --platform managed \
+  --allow-unauthenticated \
+  --command "node" \
+  --args "index.js,serve" \
+  --set-env-vars "LINE_STAFF_SS_ID=你的試算表ID" \
+  --min-instances 0 \
+  --max-instances 10
+```
+
+### 權限說明
+
+- Cloud Run 會使用專案預設的 Compute 服務帳戶（或你指定的帳戶）執行。
+- 不需在環境變數設定 `GOOGLE_APPLICATION_CREDENTIALS`；只要把 **LINE_STAFF_SS_ID 試算表** 共用給該服務帳戶（編輯者），即可用「應用程式預設憑證」讀寫試算表。
+
+### 取得服務 URL
+
+```bash
+gcloud run services describe pao-checkin-api --region asia-east1 --format='value(status.url)'
+```
+
+前端或備援請 POST 到 **`<上述 URL>/checkin`**，body 格式與 GAS 相同（`action`, `uuid`, `frontUuid`, `userId?`, `latitude?`, `longitude?`）。

@@ -1,6 +1,43 @@
-# 員工業績月報 GCP 版本
+# GCP 共用：員工業績月報、各店日報、打卡 API
 
-避開 Google Apps Script `urlfetch` 每日限制，在 GCP 或本機執行。
+避開 Google Apps Script `urlfetch` 每日限制；日報與打卡 API 移轉至 GCP 可減輕 GAS 負載。
+
+## 各店日報（GCP 版）
+
+使用 Node.js 直接呼叫 SayDou `dailyIncome`，並寫入「營收報表 / 營收報表_直營」。
+
+```bash
+# 跑單日
+node index.js daily-report 2026-02-11
+
+# 跑區間
+node index.js daily-report 2026-02-10 2026-02-11
+```
+
+需要環境變數：
+- `PAO_CAT_CORE_API_URL`、`PAO_CAT_SECRET_KEY`（用來取店家清單 / 核心設定）
+- `SAYDOU_BEARER_TOKEN`（或 `TOKEN_SHEET_SS_ID`）
+- `DAILY_ACCOUNT_REPORT_SS_ID`（可省略，未設會改讀 Core `getCoreConfig`）
+
+### 每天凌晨自動跑（run acc）
+
+已提供排程腳本 `setup-jobs-and-scheduler.sh`，會建立：
+- Cloud Run Job：`pao-daily-report`
+- Cloud Scheduler：`pao-daily-report-midnight`（時區 `Asia/Taipei`）
+
+快速設定：
+
+```bash
+cd gcp
+source set-env.sh
+./setup-jobs-and-scheduler.sh
+```
+
+預設凌晨時間在 `set-env.sh`：
+
+```bash
+DAILY_REPORT_CRON="10 0 * * *"   # 每天 00:10（台灣時間）
+```
 
 ## 需要您提供的權限／設定
 
@@ -76,3 +113,61 @@ gcloud run deploy employee-monthly-report \
 | `TIPS_GODSID` | 小費品項 ID（預設 201969） |
 | `FETCH_BATCH_SIZE` | 每批 API 數（預設 10） |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service Account JSON 檔案路徑 |
+
+---
+
+## 打卡 API（bind / check_in）
+
+將網頁打卡（paopaomao.tw/checkin）的 **bind**、**check_in** 改由 GCP 處理，可減少 GAS 的 doPost 與 getCoreConfig 呼叫次數。
+
+### 本機測試
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+export LINE_STAFF_SS_ID="你的員工試算表ID"
+node index.js serve
+# POST http://localhost:8080/checkin  body: { "action": "bind", "uuid": "...", "frontUuid": "..." }
+# POST http://localhost:8080/checkin  body: { "action": "check_in", "userId": "...", "uuid": "...", "frontUuid": "...", "latitude": 25.0, "longitude": 121.5 }
+```
+
+### 部署為 Cloud Run Service
+
+1. 部署時 CMD 改為 `node index.js serve`，並設定 `LINE_STAFF_SS_ID`、`GOOGLE_APPLICATION_CREDENTIALS`（或專案預設 SA）。
+2. 取得服務 URL（例：`https://xxx.run.app`）。
+3. **前端改址**：將打卡頁面目前呼叫的 GAS Web App URL 改為 `https://xxx.run.app/checkin`（POST，body 格式不變：`{ action, uuid, frontUuid, userId?, latitude?, longitude? }`）。
+
+### 試算表需求
+
+- `LINE_STAFF_SS_ID` 試算表內需有：**員工清單**、**管理者清單**、**公司列表**、**員工打卡紀錄**（欄位與 GAS 版一致），且需共用給 Service Account（編輯者）。
+
+---
+
+## LINE Webhook 備援（我要打卡 + 其他訊息轉發 GAS）
+
+當 GAS **urlfetch 每日額度用盡**時，LINE 仍可正常回覆「我要打卡」：改由 GCP 接收 LINE Webhook，由 GCP 讀試算表、產生打卡連結、回覆 LINE，完全不使用 GAS urlfetch。  
+另外，非「我要打卡」事件可轉發至 GAS 主 webhook，避免備援時其他功能整個停用。
+
+### 環境變數（`node index.js serve` 時）
+
+| 變數 | 說明 |
+|------|------|
+| `LINE_CHANNEL_SECRET` | LINE Developers → 頻道 → Basic settings → Channel secret（用於驗證 Webhook 簽章） |
+| `LINE_TOKEN_PAOSTAFF` | LINE Developers → Messaging API → Channel access token（發送回覆用） |
+| `LINE_STAFF_SS_ID` | 員工試算表（同上，需含 員工清單、管理者清單、員工打卡紀錄） |
+| `CHECK_IN_LINK` | 可選，預設 `https://www.paopaomao.tw/checkin` |
+| `GAS_WEBHOOK_URL` | 建議設定。非「我要打卡」事件會轉發到此 GAS Webhook URL（例：`https://script.google.com/macros/s/xxxx/exec`） |
+
+### 啟用備援（urlfetch 滿了時）
+
+1. 部署 GCP 服務（`node index.js serve`）到 Cloud Run，並設定上述環境變數。
+2. 到 **LINE Developers Console** → 你的頻道 → **Messaging API** → **Webhook URL**，改為：  
+   `https://你的Cloud Run網址/line-webhook`
+3. 儲存後，所有 LINE 訊息會打到 GCP：  
+   - **我要打卡**：由 GCP 直接回覆  
+   - **其他事件**：若有設定 `GAS_WEBHOOK_URL`，會自動轉發到 GAS 主 webhook 處理
+4. 若未設定 `GAS_WEBHOOK_URL`，備援模式下其他指令只會收到「目前僅支援我要打卡」提示。
+
+### 測試「urlfetch 滿了」情境
+
+- **打卡頁**：前端使用 `postCheckin(body)` 先打 GAS、失敗再打 GCP，即可在 GAS 掛掉或額度滿時仍能打卡。
+- **LINE 我要打卡**：將 Webhook URL 改為 GCP `/line-webhook` 後，在 LINE 傳「我要打卡」即可驗證；無須真的把 GAS 額度用完。詳見 `測試urlfetch滿了.md`。

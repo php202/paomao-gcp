@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node index.js employee-monthly-report",
     "report": "node index.js employee-monthly-report",
-    "check-token": "node index.js check-token"
+    "daily-report": "node index.js daily-report",
+    "check-token": "node index.js check-token",
+    "serve": "node index.js serve"
   },
   "engines": {
     "node": ">=18"

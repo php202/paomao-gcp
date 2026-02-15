@@ -1,0 +1,216 @@
+/**
+ * GCP 備援 HTTP 服務：打卡 API、LINE Webhook（當 GAS urlfetch 額度用盡時可改用此服務）
+ * 環境變數：LINE_CHANNEL_SECRET, LINE_STAFF_SS_ID, LINE_TOKEN_PAOSTAFF, CHECK_IN_LINK（可選）
+ * 執行：node index.js serve
+ */
+
+import http from 'http';
+import fetch from 'node-fetch';
+import { verifyLineSignature } from './lib/line-webhook.js';
+import { getAuth } from './lib/auth.js';
+import { handleCheckInRequest } from './scripts/line-checkin-handler.js';
+
+const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
+const LINE_TOKEN_PAOSTAFF = process.env.LINE_TOKEN_PAOSTAFF;
+const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL;
+const PORT = Number(process.env.PORT) || 8080;
+const WEBHOOK_LOG_VERBOSE = String(process.env.WEBHOOK_LOG_VERBOSE || '1') !== '0';
+
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+function send(res, statusCode, body, contentType = 'application/json') {
+  const data = typeof body === 'string' ? body : JSON.stringify(body);
+  res.writeHead(statusCode, {
+    'Content-Type': contentType,
+    'Content-Length': Buffer.byteLength(data),
+    'X-Checkin-Server': 'gcp-backup',
+  });
+  res.end(data);
+}
+
+async function handleLineWebhook(req, rawBody, res) {
+  const requestId = `lwk-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const signature = req.headers['x-line-signature'] || '';
+  if (!LINE_CHANNEL_SECRET || !verifyLineSignature(rawBody, signature, LINE_CHANNEL_SECRET)) {
+    console.warn(`[line-webhook][${requestId}] unauthorized signature`);
+    send(res, 401, { status: 'unauthorized' });
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(rawBody.toString('utf8'));
+  } catch {
+    send(res, 200, { status: 'ok' });
+    return;
+  }
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+  if (events.length === 0) {
+    console.log(`[line-webhook][${requestId}] no events`);
+    send(res, 200, { status: 'ok' });
+    return;
+  }
+  const startedAt = Date.now();
+  let localHandledCount = 0;
+  let forwardedCount = 0;
+  let forwardFailCount = 0;
+  const auth = await getAuth();
+  const forwardEvents = [];
+
+  const eventMeta = (event) => ({
+    type: event?.type || '',
+    msgType: event?.message?.type || '',
+    text: event?.message?.type === 'text' ? String(event?.message?.text || '').trim().slice(0, 80) : '',
+    userId: event?.source?.userId || '',
+    groupId: event?.source?.groupId || '',
+    roomId: event?.source?.roomId || '',
+  });
+
+  async function replyFallback(replyToken, text) {
+    if (!replyToken || !LINE_TOKEN_PAOSTAFF) return;
+    await fetch('https://api.line.me/v2/bot/message/reply', {
+      method: 'post',
+      headers: {
+        Authorization: `Bearer ${LINE_TOKEN_PAOSTAFF}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        replyToken,
+        messages: [{ type: 'text', text }],
+      }),
+    });
+  }
+
+  for (const event of events) {
+    const replyToken = event.replyToken;
+    const meta = eventMeta(event);
+    try {
+      if (WEBHOOK_LOG_VERBOSE) {
+        console.log(`[line-webhook][${requestId}] recv`, JSON.stringify(meta));
+      }
+      if (event.type === 'message' && event.message?.type === 'text') {
+        const text = String(event.message.text || '').trim();
+        const userId = event.source?.userId || '';
+        if (text === '我要打卡') {
+          console.log(`[line-webhook][${requestId}] local-handle:checkin user=${userId || '-'} `);
+          await handleCheckInRequest(auth, replyToken, userId);
+          localHandledCount += 1;
+          continue;
+        }
+      }
+      // 非「我要打卡」事件，改轉發到 GAS 主 Webhook
+      if (WEBHOOK_LOG_VERBOSE) {
+        console.log(`[line-webhook][${requestId}] queue-forward`, JSON.stringify(meta));
+      }
+      forwardEvents.push(event);
+    } catch (err) {
+      console.error('[line-webhook] event error:', err.message);
+      try {
+        await replyFallback(replyToken, '🚧 系統發生未預期的錯誤，請稍後再試或聯繫管理員。');
+      } catch (e) {
+        console.error('[line-webhook] reply error:', e.message);
+      }
+    }
+  }
+
+  if (forwardEvents.length > 0) {
+    if (!GAS_WEBHOOK_URL) {
+      console.warn(`[line-webhook][${requestId}] GAS_WEBHOOK_URL 未設定，無法轉發非打卡事件，共 ${forwardEvents.length} 筆。`);
+      for (const event of forwardEvents) {
+        try {
+          if (event.type === 'message' && event.message?.type === 'text') {
+            await replyFallback(event.replyToken, '⚠️ 備援模式目前僅支援「我要打卡」，其他功能暫時無法使用。');
+          }
+          forwardFailCount += 1;
+        } catch (e) {
+          console.error('[line-webhook] fallback reply error:', e.message);
+        }
+      }
+    } else {
+      try {
+        const forwardedPayload = { ...payload, events: forwardEvents };
+        console.log(`[line-webhook][${requestId}] forwarding ${forwardEvents.length} event(s) to GAS`);
+        const forwardRes = await fetch(GAS_WEBHOOK_URL, {
+          method: 'post',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Forwarded-By': 'gcp-backup-line-webhook',
+            ...(signature ? { 'X-Line-Signature': String(signature) } : {}),
+          },
+          body: JSON.stringify(forwardedPayload),
+        });
+        if (!forwardRes.ok) {
+          const errText = await forwardRes.text();
+          throw new Error(`status=${forwardRes.status} body=${(errText || '').slice(0, 300)}`);
+        }
+        forwardedCount = forwardEvents.length;
+        console.log(`[line-webhook][${requestId}] forward-success status=${forwardRes.status} count=${forwardedCount}`);
+      } catch (e) {
+        console.error(`[line-webhook][${requestId}] forward to GAS error:`, e.message);
+        for (const event of forwardEvents) {
+          try {
+            if (event.type === 'message' && event.message?.type === 'text') {
+              await replyFallback(event.replyToken, '🚧 主系統暫時無法使用，請稍後再試。');
+            }
+            forwardFailCount += 1;
+          } catch (replyErr) {
+            console.error('[line-webhook] forward fail reply error:', replyErr.message);
+          }
+        }
+      }
+    }
+  }
+  const elapsedMs = Date.now() - startedAt;
+  console.log(
+    `[line-webhook][${requestId}] done total=${events.length} local=${localHandledCount} forwarded=${forwardedCount} forwardFail=${forwardFailCount} elapsedMs=${elapsedMs}`,
+  );
+  send(res, 200, { status: 'ok' });
+}
+
+export function startServer() {
+  const server = http.createServer(async (req, res) => {
+    const method = req.method;
+    const url = req.url?.split('?')[0] || '/';
+
+    if (method === 'GET' && (url === '/' || url === '/health')) {
+      send(res, 200, { status: 'ok', server: 'gcp-backup' });
+      return;
+    }
+
+    if (method === 'GET' && url === '/line-webhook') {
+      send(res, 200, { status: 'ok', message: 'LINE Webhook 端點存在，請用 POST 傳送事件' });
+      return;
+    }
+
+    if (method === 'POST' && url === '/line-webhook') {
+      const rawBody = await parseBody(req);
+      await handleLineWebhook(req, rawBody, res);
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'not_found' }));
+  });
+
+  const missing = [];
+  if (!LINE_CHANNEL_SECRET) missing.push('LINE_CHANNEL_SECRET');
+  if (!LINE_TOKEN_PAOSTAFF) missing.push('LINE_TOKEN_PAOSTAFF');
+  if (!process.env.LINE_STAFF_SS_ID) missing.push('LINE_STAFF_SS_ID');
+  if (missing.length) {
+    console.warn('[GCP] LINE Webhook 備援需要以下環境變數（請在 .env 或環境中設定）：', missing.join(', '));
+  }
+  if (!GAS_WEBHOOK_URL) {
+    console.warn('[GCP] GAS_WEBHOOK_URL 未設定：非「我要打卡」事件將不會轉發，只會回覆備援提示。');
+  }
+
+  server.listen(PORT, () => {
+    console.log(`[GCP] Server listening on port ${PORT}`);
+    console.log('[GCP] GET / 健康檢查、POST /line-webhook LINE Webhook');
+  });
+}

@@ -224,6 +224,7 @@ async function buildReport(auth, bearerToken, startYm, endYm) {
   return { rows, months: Object.keys(result).sort() };
 }
 
+/** 寫入員工業績月報：一律從 A 欄開始（A1 標題，A2 起資料），更新既有列或接在後面 append */
 async function writeToSheet(auth, rows) {
   const ssId = process.env.OUTPUT_SS_ID || '1ZMutegYTLZ51XQHCbfFZ7-iAj1qTZGgSo5VTThXPQ5U';
   const sheets = google.sheets({ version: 'v4', auth });
@@ -235,6 +236,7 @@ async function writeToSheet(auth, rows) {
 
   const sheetName = sheet.properties.title;
 
+  // 標題列固定 A1:L1
   await sheets.spreadsheets.values.update({
     spreadsheetId: ssId,
     range: `'${sheetName}'!A1:L1`,
@@ -242,6 +244,7 @@ async function writeToSheet(auth, rows) {
     requestBody: { values: [OUTPUT_HEADERS] },
   });
 
+  // 既有資料讀 A2:L（A=月份、B=員工編號）
   const readRange = `'${sheetName}'!A2:L5000`;
   const existing = await readSheet(auth, ssId, readRange);
   const keyToRow = {};
@@ -268,9 +271,21 @@ async function writeToSheet(auth, rows) {
     await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: ssId, requestBody: body });
   }
   if (toAppend.length) {
-    await sheets.spreadsheets.values.append({
+    const startRow = 2 + existing.length;
+    const endRow = startRow + toAppend.length - 1;
+    const maxRows = sheet.properties?.gridProperties?.rowCount ?? 1000;
+    if (endRow > maxRows) {
+      const addRows = endRow - maxRows;
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: ssId,
+        requestBody: {
+          requests: [{ appendDimension: { sheetId: sheet.properties.sheetId, dimension: 'ROWS', length: addRows } }],
+        },
+      });
+    }
+    await sheets.spreadsheets.values.update({
       spreadsheetId: ssId,
-      range: `'${sheetName}'!A:L`,
+      range: `'${sheetName}'!A${startRow}:L${endRow}`,
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: toAppend },
     });
@@ -279,13 +294,16 @@ async function writeToSheet(auth, rows) {
 }
 
 export async function run(args = []) {
-  const startYm = args[0] || null;
-  const endYm = args[1] || (() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-  })();
+  const d = new Date();
+  const currentYm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const startYm = args[0] ?? null;
+  const endYm = args[1] ?? currentYm;
 
-  console.log(`[GCP] 員工業績月報 開始 ${startYm || '2025-01'} ~ ${endYm}`);
+  // 未帶參數時只跑「當月」（GCP 排程用），避免每次 2025-01～今天資料量過大
+  const actualStart = (startYm || args[1]) ? (startYm || '2025-01') : currentYm;
+  const actualEnd = endYm;
+
+  console.log(`[GCP] 員工業績月報 開始 ${actualStart} ~ ${actualEnd}`);
 
   const auth = await getAuth();
   const bearerToken = await getBearerToken(auth);
@@ -293,8 +311,7 @@ export async function run(args = []) {
     throw new Error('無 Bearer Token，請設 SAYDOU_BEARER_TOKEN 或 TOKEN_SHEET_SS_ID');
   }
 
-  const actualStart = startYm || '2025-01';
-  const { rows, months } = await buildReport(auth, bearerToken, actualStart, endYm);
+  const { rows, months } = await buildReport(auth, bearerToken, actualStart, actualEnd);
 
   console.log(`[GCP] 產出 ${rows.length} 筆，月份 ${months.join(',')}`);
 
