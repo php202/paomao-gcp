@@ -1,0 +1,11 @@
+{
+  "name": "paomao-ads",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "push": "clasp push --force",
+    "deploy": "echo '[泡泡貓拉廣告資料] 無 Web 部署，僅 push'",
+    "ship": "npm run push",
+    "pull": "echo '請勿 pull；以本機為準，只做 npm run push 或 npm run ship。' && exit 1"
+  }
+}

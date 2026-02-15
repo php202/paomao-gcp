@@ -1,0 +1,19 @@
+{
+  "name": "gas",
+  "version": "1.0.0",
+  "description": "GAS 專案根目錄。npm run ship = 對所有子專案 push+deploy，完成後 git push 推送到遠端。",
+  "private": true,
+  "scripts": {
+    "build:tampermonkey": "node tampermonkey/build.js",
+    "ship": "node scripts/ship.js && git push",
+    "ship-one": "node scripts/ship.js",
+    "pull": "echo '請勿執行 clasp pull；本專案以本機為準，只做 npm run ship 發布新版本。' && exit 1",
+    "pull-all": "node scripts/pull-all.js",
+    "push-all": "node push-all.js",
+    "push-linebot": "node scripts/push-linebot-to-drive.js",
+    "ship-with-linebot": "node scripts/ship.js && node scripts/push-linebot-to-drive.js && git push"
+  },
+  "devDependencies": {
+    "chrome-webstore-upload-cli": "^3.5.0"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "gcp",
+  "version": "1.0.0",
+  "description": "GCP 共用：員工業績月報、SayDou Token 檢查與寄信，避開 GAS urlfetch 限制",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js employee-monthly-report",
+    "report": "node index.js employee-monthly-report",
+    "check-token": "node index.js check-token"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0",
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^6.9.16"
+  }
+}

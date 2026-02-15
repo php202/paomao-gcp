@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "LINE Bot 客服小幫手",
+  "version": "2.1.1",
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "storage" 
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "開啟客服小幫手"
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}
+

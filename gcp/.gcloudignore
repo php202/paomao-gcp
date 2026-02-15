@@ -1,0 +1,12 @@
+# 不要上傳到 GCP（build 時會忽略）
+node_modules
+.env
+.env.example
+*.log
+.git
+.gitignore
+*-key.json
+*-credentials.json
+service-account*.json
+README.md
+DEPLOY.md

@@ -1,0 +1,285 @@
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+
+<style>
+  /* --- 樣式設定開始 --- */
+  
+  /* 外層容器：確保不被 Odoo 全域樣式影響 */
+  .locator-wrapper {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #fce4ec; 
+    padding: 20px; 
+    border-radius: 10px;
+    color: #333;
+  }
+  
+  .locator-container { max-width: 600px; margin: 0 auto; }
+  
+  /* 標題與副標題 */
+  .locator-wrapper h2 { text-align: center; color: #444; margin-bottom: 5px; font-size: 22px; font-weight: bold; }
+  .locator-wrapper .subtitle { text-align: center; color: #ec407a; font-size: 14px; margin-bottom: 20px; font-weight: bold; }
+  .locator-wrapper .highlight { color: #ec407a; font-weight: bold; font-size: 1.2em; }
+
+  /* 主按鈕樣式 */
+  .locator-btn { 
+    display: block; width: 100%; padding: 15px; 
+    border: none; border-radius: 50px; 
+    font-size: 18px; color: white; cursor: pointer; 
+    transition: 0.3s; margin-bottom: 15px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    background-color: #ccc; /* 預設灰色 */
+    pointer-events: none;   /* 預設不可點 */
+    text-align: center;
+  }
+  
+  /* 按鈕啟用狀態 */
+  .locator-btn.active {
+    background-color: #ec407a;
+    pointer-events: auto;
+  }
+  .locator-btn.active:hover { background-color: #d81b60; }
+
+  /* 卡片樣式 */
+  .store-card { 
+    background: white; 
+    padding: 15px; 
+    margin-bottom: 15px; 
+    border-radius: 12px; 
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05); 
+  }
+
+  /* ★★★ 排版對齊修正核心 ★★★ */
+  .store-header { 
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center; /* 垂直置中 */
+    gap: 15px; /* 左右間距 */
+  }
+  
+  /* 文字區塊：佔滿剩餘空間 */
+  .store-text-box {
+    flex: 1; 
+    min-width: 0;
+  }
+
+  .store-card h3 { margin: 0 0 5px 0; font-size: 18px; color: #333; line-height: 1.4; font-weight: bold; }
+  .store-card p { margin: 0; color: #666; font-size: 14px; line-height: 1.4; }
+  
+  /* 距離標籤：靠右且不變形 */
+  .dist-tag { 
+    background: #f8bbd0; color: #880e4f; 
+    padding: 6px 12px; border-radius: 12px; 
+    font-size: 13px; font-weight: bold; 
+    white-space: nowrap; 
+    flex-shrink: 0; 
+  }
+
+  /* 下方按鈕區 */
+  .actions { display: flex; gap: 10px; margin-top: 15px; }
+  .act-btn { 
+    flex: 1; padding: 10px; text-align: center; 
+    border-radius: 8px; text-decoration: none; 
+    font-size: 14px; display: block; 
+    font-weight: bold;
+  }
+  
+  .btn-map { border: 1px solid #ec407a; color: #ec407a; background: #fff; }
+  .btn-map:hover { background: #ec407a; color: #fff; }
+  
+  .btn-line { background: #06c755; color: white; border: 1px solid #06c755; }
+  .btn-line:hover { background: #05b54d; }
+  
+  /* --- 樣式設定結束 --- */
+</style>
+
+<div class="locator-wrapper">
+  <div class="locator-container">
+    <h2>尋找全台泡泡貓門市</h2>
+    <div id="status-bar" class="subtitle">連線資料庫中...</div>
+    
+    <button id="main-btn" class="locator-btn" onclick="getLocation()">
+      <i class="fas fa-spinner fa-spin"></i> 資料載入中...
+    </button>
+  
+    <div id="list-area"></div>
+  </div>
+</div>
+
+<script>
+  // Core API 網址（網紅追蹤 + 門市列表共用）
+  var CORE_NEAR_URL = "https://script.google.com/macros/s/AKfycby5ibTcUxvPD-Xj1-lOHOJ5oI27CbyyaHv2K3cvNd1PwMiPvwGCpjlzi6UbW4fwip2UaA/exec";
+  // ①【網紅追蹤】有 ?code=XXX 時在站內用 JSONP 呼叫 GAS（記數 + 取導向網址），不跳轉到 script.google.com
+  var hasNearCode = false;
+  (function() {
+    var params = new URLSearchParams(window.location.search);
+    var code = params.get("code");
+    if (code && code.trim() !== "") {
+      hasNearCode = true;
+      window._nearCb = function(data) {
+        if (data && data.targetUrl) window.location.replace(data.targetUrl);
+        else window.location.replace("https://www.paopaomao.tw/near");
+      };
+      var script = document.createElement("script");
+      script.src = CORE_NEAR_URL + "?action=nearHit&code=" + encodeURIComponent(code.trim()) + "&callback=_nearCb";
+      document.head.appendChild(script);
+      return;
+    }
+  })();
+
+  // ②【原本的門市查詢功能】—— 沒有 code 的情況才會走到這裡
+  if (hasNearCode) { /* 有 code 時不跑底下，等 JSONP 導向 */ } else {
+
+  // 門市資料 API（已整合至 Core：action=storeList；與 CORE_NEAR_URL 同部署）
+  const API_URL = CORE_NEAR_URL + "?action=storeList";
+  
+  var allStores = [];
+  var btn = document.getElementById('main-btn');
+  var statusBar = document.getElementById('status-bar');
+
+  // 1. 初始化：自動抓取資料（含逾時與錯誤處理）
+  (function() {
+    var FETCH_TIMEOUT_MS = 15000; // 15 秒逾時
+    var timeoutId;
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var signal = controller ? controller.signal : undefined;
+
+    function showError() {
+      if (statusBar) statusBar.innerHTML = "資料讀取失敗，請重新整理或稍後再試";
+      if (btn) {
+        btn.innerHTML = '<i class="fas fa-redo"></i> 重試';
+        btn.classList.add("active");
+        btn.disabled = false;
+        btn.onclick = function() { window.location.reload(); };
+      }
+      if (document.getElementById("list-area")) {
+        document.getElementById("list-area").innerHTML = "<p style='text-align:center; color:#666;'>無法連線至門市資料，請檢查網路或稍後再試。</p>";
+      }
+    }
+
+    timeoutId = setTimeout(function() {
+      if (controller) controller.abort();
+      showError();
+    }, FETCH_TIMEOUT_MS);
+
+    fetch(API_URL + "&t=" + new Date().getTime(), { signal: signal })
+      .then(function(res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function(data) {
+        clearTimeout(timeoutId);
+        allStores = Array.isArray(data) ? data : [];
+        if (statusBar) statusBar.innerHTML = allStores.length ? "( 全台共 <span class=\"highlight\">" + allStores.length + "</span> 間據點 )" : "( 暫無據點資料 )";
+        if (btn) {
+          btn.innerHTML = '<i class="fas fa-location-arrow"></i> 尋找最近門市';
+          btn.classList.add("active");
+          btn.disabled = false;
+        }
+        renderStores(allStores);
+      })
+      .catch(function(err) {
+        clearTimeout(timeoutId);
+        if (err && err.name === "AbortError") return; // 逾時時 showError 已處理
+        showError();
+        console.error("API Error:", err);
+      });
+  })();
+
+  // 2. 觸發定位
+  function getLocation() {
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 定位中...';
+    
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        // 定位成功
+        function(position) {
+          sortAndRender(position.coords.latitude, position.coords.longitude);
+          btn.innerHTML = '<i class="fas fa-check"></i> 定位完成';
+        },
+        // 定位失敗 (例如 IG 瀏覽器阻擋) -> 顯示全部
+        function(error) {
+          alert("無法取得位置，將為您列出所有門市。");
+          renderStores(allStores);
+          btn.innerHTML = '<i class="fas fa-list"></i> 顯示所有門市';
+        }
+      );
+    } else {
+      alert("您的瀏覽器不支援定位功能");
+    }
+  }
+
+  // 3. 計算距離並排序
+  function sortAndRender(lat, lng) {
+    // 深拷貝一份資料以免汙染原始數據
+    let tempStores = JSON.parse(JSON.stringify(allStores));
+    
+    tempStores.forEach(s => {
+      s.distance = calculateDistance(lat, lng, s.lat, s.lng);
+    });
+    
+    // 由近到遠排序
+    tempStores.sort((a, b) => a.distance - b.distance);
+    
+    // 取最近 5 筆
+    renderStores(tempStores.slice(0, 5));
+  }
+
+  // 4. 渲染畫面 (包含排版修正)
+  function renderStores(stores) {
+    let html = "";
+    
+    if(!stores || stores.length === 0) {
+      document.getElementById('list-area').innerHTML = "<p style='text-align:center; color:#666;'>暫無資料</p>";
+      return;
+    }
+
+    stores.forEach(s => {
+      // 處理距離標籤
+      let distHtml = "";
+      if (s.distance) {
+        let d = s.distance < 1 ? (s.distance * 1000).toFixed(0) + " m" : s.distance.toFixed(1) + " km";
+        distHtml = `<div class="dist-tag">${d}</div>`;
+      }
+      
+      // 處理 LINE 按鈕 (如果後端回傳空字串，這裡就不會顯示)
+      let lineBtn = "";
+      if (s.lineUrl) {
+        lineBtn = `<a href="${s.lineUrl}" target="_blank" class="act-btn btn-line"><i class="fab fa-line"></i> 加入 LINE</a>`;
+      }
+
+      // 地圖連結
+      let mapUrl = `https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`;
+
+      html += `
+        <div class="store-card">
+          <div class="store-header">
+            <div class="store-text-box">
+              <h3>${s.name}</h3>
+              <p>${s.address}</p>
+            </div>
+            ${distHtml}
+          </div>
+          <div class="actions">
+            <a href="${mapUrl}" target="_blank" class="act-btn btn-map"><i class="fas fa-map-marker-alt"></i> 導航</a>
+            ${lineBtn}
+          </div>
+        </div>
+      `;
+    });
+    
+    document.getElementById('list-area').innerHTML = html;
+  }
+
+  // 計算距離公式 (Haversine)
+  function calculateDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371; 
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  }
+
+  } // 結束 hasNearCode 的 else（有 code 時不跑門市查詢）
+</script>

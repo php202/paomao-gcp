@@ -1,0 +1,11 @@
+{
+  "name": "stores-message-list",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "push": "clasp push --force",
+    "deploy": "clasp deploy -i AKfycbzY1xtm_Y6JKDTgf_qDXHJHDCs5ucrLk0qqX0J4Do2_y8A4JO7VJ_aBiL_HbzLk_ZkN -d 'Updated'",
+    "ship": "npm run push && npm run deploy",
+    "pull": "echo '請勿 pull；以本機為準，只做 npm run push 或 npm run ship。' && exit 1"
+  }
+}

@@ -1,0 +1,15 @@
+# 只追蹤 gas 和 gcp，忽略其他所有檔案
+/*
+!.gitignore
+!gas/
+!gas/**
+!gcp/
+!gcp/**
+
+# gas 內部的 .git（避免被當成 submodule）
+gas/.git/
+gas/.git.bak/
+
+# 系統/敏感檔案
+.DS_Store
+gas/.env

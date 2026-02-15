@@ -1,0 +1,12 @@
+{
+  "name": "line-checkin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "泡泡貓 員工打卡 Line@。Web App URL 不可更換：僅能 clasp deploy -i 既有部署ID 更新，勿產生新部署。",
+  "scripts": {
+    "push": "clasp push --force",
+    "deploy": "clasp deploy -i AKfycby4JvdNSueVmq1_gG-mrRL0IfR4kPm1nX2itxMDg1c7MWIvEgP2xd7rmSfoxmM3Lung2w -d 'Updated'",
+    "ship": "npm run push && npm run deploy",
+    "pull": "echo '請勿 pull；以本機為準，只做 npm run push 或 npm run ship。' && exit 1"
+  }
+}

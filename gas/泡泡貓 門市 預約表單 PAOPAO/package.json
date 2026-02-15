@@ -1,0 +1,11 @@
+{
+  "name": "paopao-reservation",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "push": "clasp push --force",
+    "deploy": "clasp deploy -i AKfycbylWApG-4rne8crGM8CxfN_BIjNvZt4U9KU6RNigzj7ploTEm84p2JmZwLTMFlLMQBp -d 'Updated'",
+    "ship": "npm run push && npm run deploy",
+    "pull": "echo '請勿 pull；以本機為準，只做 npm run push 或 npm run ship。' && exit 1"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "bump": "node bump-version.js",
+    "zip": "zip -r release.zip . -x '*.git*' -x 'node_modules/*' -x 'release.zip' -x '*.md' -x 'bump-version.js'",
+    "upload": "chrome-webstore-upload upload --source release.zip --extension-id ommlaiapbacpfbcaapemonempjbpbmfp --client-id \"$CHROME_WEB_STORE_CLIENT_ID\" --client-secret \"$CHROME_WEB_STORE_CLIENT_SECRET\" --refresh-token \"$CHROME_WEB_STORE_REFRESH_TOKEN\"",
+    "deploy": "npm run bump && npm run zip && npm run upload"
+  }
+}

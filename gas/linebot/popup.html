@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { width: 350px; font-family: 'Microsoft JhengHei', sans-serif; padding: 10px; position: relative; }
+    
+    .header-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .header-store { font-size: 14px; font-weight: bold; color: #00B900; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .header-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    .header-right label { font-size: 12px; color: #666; white-space: nowrap; }
+    .header-right #operator_name { width: 64px; padding: 2px 4px; font-size: 12px; border: 1px solid #ccc; border-radius: 4px; color: #00B900; font-weight: bold; box-sizing: border-box; }
+    .btn-reload { background: none; border: 1px solid #ddd; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #666; transition: all 0.2s; flex-shrink: 0; }
+    .btn-reload:hover { background: #f0f0f0; color: #00B900; transform: rotate(180deg); }
+    .btn-info { background: none; border: 1px solid #ddd; border-radius: 50%; width: 24px; height: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #666; font-size: 12px; flex-shrink: 0; }
+    .btn-info:hover { background: #f0f0f0; color: #007bff; }
+    
+    .box-container { margin-bottom: 10px; padding: 10px; background: #fff; border: 1px solid #ddd; border-radius: 5px; }
+    .availability-section { background: #f0f8ff; border-color: #cceeff; }
+    .booking-section { background: #fff4e6; border-color: #ffcc99; }
+
+    .form-row { margin-bottom: 8px; display: flex; align-items: center; gap: 5px; }
+    .form-row label { font-size: 12px; width: 35px; color: #666; font-weight: bold; } /* 標籤固定寬度 */
+    .form-input { flex: 1; padding: 5px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
+    
+    #member-info { font-size: 13px; color: #00B900; font-weight: bold; margin-left: 5px; margin-bottom: 5px; }
+    #booking-details { display: none; margin-top: 10px; border-top: 1px dashed #ffcc99; padding-top: 10px; }
+
+    /* 進階面板（收合展開後可見） */
+    #advanced-search-panel { background:#eee; padding:10px; margin-top:5px; border-radius:5px; border:1px solid #ccc; }
+    #adv-result-container { display:none; margin-top:10px; }
+    #adv-result-text { width: 100%; height: 100px; border: 1px solid #999; font-size: 13px; line-height: 1.5; padding: 5px; box-sizing: border-box; resize: vertical; font-family: 'Consolas', monospace; color: #333; }
+    
+    .btn-action { background-color: #00B900; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; width: 100%; }
+    .btn-action:hover { background-color: #009900; }
+    .btn-action:disabled { background-color: #ccc; cursor: not-allowed; }
+    
+    .btn-check { background-color: #ff9900; }
+    .btn-check:hover { background-color: #e68a00; }
+    .btn-secondary { background-color: #6c757d; }
+    .btn-copy-result { background-color: #17a2b8; margin-top: 5px; }
+
+    .search-box { margin-bottom: 15px; position: relative; }
+    #input-search { width: 100%; padding: 8px 30px 8px 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 20px; outline: none; }
+    .search-icon { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: #999; }
+
+    .msg-item { border: 1px solid #ddd; padding: 8px; margin-bottom: 8px; border-radius: 5px; background: #f9f9f9; position: relative; }
+    .msg-header { font-size: 12px; color: #888; margin-bottom: 4px; display: flex; align-items: center; }
+    .msg-name { font-weight: bold; color: #0066cc; margin: 0 5px; cursor: pointer; user-select: text; border-bottom: 1px dashed #ccc; }
+    .msg-name:hover { color: #004499; border-bottom: 1px solid #004499; background-color: #e6f7ff; }
+    .btn-copy-name { background: none; border: none; cursor: pointer; font-size: 14px; opacity: 0.5; }
+    .msg-content { font-size: 14px; color: #333; word-break: break-all; margin-top: 5px; }
+    .msg-reply-row { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+    .msg-reply-input { flex: 1; padding: 4px 8px; font-size: 12px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    .msg-reply-input:disabled { background: #f0f0f0; color: #999; }
+    .btn-reply-msg { padding: 4px 10px; font-size: 12px; background: #00B900; color: #fff; border: 1px solid #00B900; border-radius: 4px; cursor: pointer; flex-shrink: 0; }
+    .btn-reply-msg:hover:not(:disabled) { background: #009900; }
+    .btn-reply-msg:disabled { background: #ccc; border-color: #ccc; cursor: not-allowed; }
+    .btn-done { position: absolute; top: 5px; right: 5px; background: #fff; border: 1px solid #ccc; cursor: pointer; border-radius: 4px; padding: 2px 8px; font-size: 12px; }
+    .btn-waitlist { margin-left: 4px; padding: 2px 8px; font-size: 12px; background: #c4b5fd; color: #5b21b6; border: 1px solid #a78bfa; border-radius: 4px; cursor: pointer; }
+    .waitlist-item { border: 1px solid #c4b5fd; padding: 8px; margin-bottom: 6px; border-radius: 5px; background: #fff; font-size: 13px; }
+    .waitlist-item .row-meta { color: #666; margin-bottom: 6px; }
+    .waitlist-meta-copy { user-select: text; cursor: text; }
+    .waitlist-name { color: #0066cc; font-weight: bold; cursor: pointer; border-bottom: 1px dashed #0066cc; }
+    .waitlist-name:hover { color: #004499; border-bottom-color: #004499; background-color: #e6f7ff; }
+    .waitlist-slot-ok { color: #2e7d32; font-weight: bold; }
+    .waitlist-slot-full { color: #999; }
+    .waitlist-item .row-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .waitlist-item .row-btns button { padding: 4px 10px; font-size: 12px; border-radius: 4px; cursor: pointer; border: 1px solid #ccc; background: #fff; }
+    .waitlist-item .row-btns .btn-push { background: #00B900; color: #fff; border-color: #00B900; }
+    .waitlist-item .row-btns .btn-done-wl { background: #ff9900; color: #fff; border-color: #ff9900; }
+    .waitlist-item .row-btns .btn-handled { background: #6c757d; color: #fff; border-color: #6c757d; }
+    .waitlist-item .row-btns button:disabled { opacity: 0.6; cursor: not-allowed; }
+    
+    #loading { text-align: center; color: #999; display: none; margin-top: 20px;}
+    .msg-status.msg-status--danger { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+    .msg-status.msg-status--success { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+    .msg-status.msg-status--neutral { background: #f5f5f5; color: #616161; border: 1px solid #e0e0e0; }
+    .slots-container { display:none; }
+
+    .quick-reply-section { background: #f0fff0; border-color: #a5d6a7; }
+    .quick-reply-section .section-title { font-size: 12px; font-weight: bold; color: #2e7d32; margin-bottom: 0; }
+    #quick-reply-text { width: 100%; min-height: 72px; padding: 8px; border: 1px solid #a5d6a7; border-radius: 4px; font-size: 13px; line-height: 1.4; box-sizing: border-box; resize: vertical; font-family: inherit; }
+    #quick-reply-text:focus { outline: none; border-color: #00B900; }
+    .btn-copy-quick { background-color: #2e7d32; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; margin-top: 6px; width: 100%; }
+    .btn-copy-quick:hover { background-color: #1b5e20; }
+
+    /* 可收合區塊 */
+    .collapsible-header { cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 13px; font-weight: bold; color: inherit; }
+    .collapsible-header:hover { opacity: 0.85; }
+    .collapsible-chevron { font-size: 10px; color: #666; transition: transform 0.2s ease; }
+    .collapsible-body { margin-top: 4px; }
+    .collapsible-body.collapsed { display: none; }
+  </style>
+</head>
+<body>
+  <div class="header-row">
+    <div id="store-name" class="header-store">偵測中...</div>
+    <div class="header-right">
+      <label for="operator_name">我是：</label>
+      <input type="text" id="operator_name" placeholder="名字">
+      <button id="btn-feedback" class="btn-info" title="問題回報 / 建議">i</button>
+      <button id="btn-reload-page" class="btn-reload" title="重新整理">🔄</button>
+    </div>
+  </div>
+
+  <div class="box-container availability-section">
+    <div class="collapsible-header" data-toggle="availability-body" aria-expanded="false">
+      <span>🔍 查詢空位 (進階搜尋)</span>
+      <span class="collapsible-chevron">▶</span>
+    </div>
+    <div id="availability-body" class="collapsible-body collapsed">
+    <div id="advanced-search-panel">
+      <div style="font-size:12px; font-weight:bold; margin-bottom:5px; color:#333;">設定搜尋條件：</div>
+      
+      <div class="form-row">
+        <label>範圍</label>
+        <input type="date" id="adv-start" class="form-input" style="font-size:11px;">
+        <span style="margin:0 2px;">~</span>
+        <input type="date" id="adv-end" class="form-input" style="font-size:11px;">
+      </div>
+
+      <div class="form-row">
+        <label>人數</label>
+        <input type="number" id="adv-people" class="form-input" value="1" min="1" style="width:40px;">
+        
+        <label style="width:auto; margin-left:5px;">工時</label>
+        <input type="number" id="adv-duration" class="form-input" value="1.5" step="0.5" style="width:40px;"> hr
+      </div>
+
+      <div class="form-row">
+        <label>時段</label>
+        <select id="adv-time-range" class="form-input">
+          <option value="11:00-21:00">全天 (11:00~21:00)</option>
+          <option value="13:00-17:00">下午 (13:00~17:00)</option>
+          <option value="18:00-21:00">晚上 (18:00~21:00)</option>
+        </select>
+      </div>
+
+      <div class="form-row" style="font-size:11px;">
+        <label>星期</label>
+        <div style="display:flex; gap:3px;">
+          <label><input type="checkbox" name="adv-week" value="1" checked>一</label>
+          <label><input type="checkbox" name="adv-week" value="2" checked>二</label>
+          <label><input type="checkbox" name="adv-week" value="3" checked>三</label>
+          <label><input type="checkbox" name="adv-week" value="4" checked>四</label>
+          <label><input type="checkbox" name="adv-week" value="5" checked>五</label>
+          <label><input type="checkbox" name="adv-week" value="6" checked style="accent-color:red;">六</label>
+          <label><input type="checkbox" name="adv-week" value="0" checked style="accent-color:red;">日</label>
+        </div>
+      </div>
+
+      <button id="btn-run-search" class="btn-action" style="margin-top:5px;">開始搜尋</button>
+    </div>
+
+    <div id="adv-result-container">
+      <textarea id="adv-result-text" readonly placeholder="搜尋結果將顯示於此..."></textarea>
+      <button id="btn-copy-txt" class="btn-action btn-copy-result">📋 複製結果</button>
+    </div>
+    </div>
+  </div>
+
+  <div class="box-container booking-section">
+    <div class="collapsible-header" data-toggle="booking-body" aria-expanded="false">
+      <span>📅 預約</span>
+      <span class="collapsible-chevron">▶</span>
+    </div>
+    <div id="booking-body" class="collapsible-body collapsed">
+    <div class="form-row">
+      <input type="tel" id="bk-phone" class="form-input" placeholder="輸入手機查會員">
+      <button id="btn-check-member" class="btn-action btn-check" style="width: auto;">查詢</button>
+    </div>
+    <div id="member-info"></div>
+
+    <div id="booking-details">
+      <div class="form-row">
+        <label>日期</label>
+        <input type="date" id="bk-date" class="form-input">
+      </div>
+
+      <div class="form-row">
+        <label>人數</label>
+        <input type="number" id="bk-people" class="form-input" value="1" min="1" style="width:50px;">
+        <label style="width:auto; margin-left:10px;">時長</label>
+        <input type="number" id="bk-duration" class="form-input" value="1.5" step="0.5" style="width:50px;"> hr
+      </div>
+
+      <div class="form-row">
+        <label>時間</label>
+        <input type="time" id="bk-time" class="form-input" value="13:00">
+      </div>
+
+      <div class="form-row">
+        <label>備註</label>
+        <input type="text" id="bk-remark" class="form-input" placeholder="例如: 想做四項">
+      </div>
+      
+      <button id="btn-submit-booking" class="btn-action">🚀 確認預約</button>
+    </div>
+    </div>
+  </div>
+
+  <div class="box-container quick-reply-section">
+    <div class="collapsible-header" data-toggle="quick-reply-body" aria-expanded="false">
+      <span class="section-title">常用文字（可自行修改）</span>
+      <span class="collapsible-chevron">▶</span>
+    </div>
+    <div id="quick-reply-body" class="collapsible-body collapsed">
+    <textarea id="quick-reply-text" placeholder="輸入常用回覆文字..."></textarea>
+    <button type="button" id="btn-copy-quick" class="btn-copy-quick">📋 複製</button>
+    </div>
+  </div>
+
+  <div class="box-container waitlist-section" id="waitlist-section" style="display: none; background: #f5f0ff; border-color: #c4b5fd;">
+    <div class="collapsible-header" data-toggle="waitlist-body" aria-expanded="false">
+      <span class="section-title" style="color: #5b21b6;">候補清單</span>
+      <span class="collapsible-chevron">▶</span>
+    </div>
+    <div id="waitlist-body" class="collapsible-body collapsed">
+    <div id="waitlist-list"></div>
+    </div>
+  </div>
+
+  <div class="search-box">
+    <input type="text" id="input-search" placeholder="搜尋名字或訊息...">
+    <span class="search-icon" id="btn-clear-search" title="清除搜尋">✖</span>
+  </div>
+
+  <div id="msg-status" class="msg-status" style="display: none; padding: 8px 10px; border-radius: 6px; margin-bottom: 8px; font-weight: bold; font-size: 14px; text-align: center;"></div>
+
+  <div id="loading">讀取資料中...</div>
+  <div id="error"></div>
+  <div id="msg-list"></div>
+
+  <div id="waitlist-modal" style="display: none; position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: 100; justify-content: center; align-items: center;">
+    <div style="background: #fff; padding: 16px; border-radius: 8px; width: 280px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
+      <div style="font-weight: bold; margin-bottom: 10px;">排候補</div>
+      <div class="form-row">
+        <label>日期</label>
+        <input type="date" id="waitlist-date" class="form-input" required>
+      </div>
+      <div class="form-row">
+        <label>時段</label>
+        <input type="text" id="waitlist-time" class="form-input" placeholder="選填，如 14:00">
+      </div>
+      <div class="form-row">
+        <label>人數</label>
+        <input type="number" id="waitlist-people" class="form-input" value="1" min="1" style="width:56px;" placeholder="1">
+      </div>
+      <div class="form-row">
+        <label>備註</label>
+        <input type="text" id="waitlist-remark" class="form-input" placeholder="選填，如 項目數">
+      </div>
+      <div style="display: flex; gap: 8px; margin-top: 12px;">
+        <button type="button" id="waitlist-modal-submit" class="btn-action" style="flex:1;">送出</button>
+        <button type="button" id="waitlist-modal-cancel" class="btn-secondary" style="flex:1;">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <textarea id="slots-result" style="display:none;"></textarea>
+  <script src="popup.js"></script>
+</body>
+</html>

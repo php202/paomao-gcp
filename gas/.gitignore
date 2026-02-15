@@ -1,0 +1,12 @@
+# 忽略依賴包和編譯檔
+node_modules/
+dist/
+build/
+# 勿 commit 含憑證的 .env（放在 gas/ 目錄，linebot deploy 時會繼承）
+.env
+# Tampermonkey 產出（含憑證，由 npm run build:tampermonkey 產生）
+tampermonkey/SayDou-Auto-Login.js
+# 忽略大型數據或日誌
+*.log
+*.json  # 如果你有超大的數據 json
+*.csv

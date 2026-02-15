@@ -1,0 +1,237 @@
+<style>
+  /* 所有的樣式都只在 .bubble-cat-wrapper 這個範圍內生效 */
+  .bubble-cat-wrapper {
+    /* 模擬原本 body 的設定，但只影響這個區塊 */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft JhengHei", sans-serif;
+    background-color: #f5f5f5; /* 灰色背景 */
+    padding: 2rem;
+    border-radius: 8px; /* 加一點圓角讓嵌入更自然 */
+    color: #333;
+    line-height: 1.5;
+  }
+
+  /* 強制將內部元素的盒模型設為 border-box */
+  .bubble-cat-wrapper * { 
+    box-sizing: border-box; 
+  }
+
+  /* 改名 container 為 bubble-cat-card 以避免衝突 */
+  .bubble-cat-wrapper .bubble-cat-card { 
+    max-width: 720px; 
+    margin: 0 auto; 
+    background: #fff; 
+    border-radius: 8px; 
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1); 
+    padding: 1.5rem; 
+  }
+
+  /* 針對內部的標題設定 */
+  .bubble-cat-wrapper h2.status-title { 
+    margin: 0 0 1rem; 
+    font-size: 1.25rem; 
+    color: #333; 
+    border: none;
+    font-weight: bold;
+    text-transform: none;
+  }
+
+  /* 狀態標籤 */
+  .bubble-cat-wrapper .state { padding: 0.75rem; border-radius: 6px; margin-bottom: 1rem; font-size: 1rem;}
+  .bubble-cat-wrapper .state.loading { background: #e3f2fd; color: #1565c0; }
+  .bubble-cat-wrapper .state.error { background: #ffebee; color: #c62828; }
+  .bubble-cat-wrapper .state.success { background: #e8f5e9; color: #2e7d32; display: none; }
+
+  /* 欄位設定 */
+  .bubble-cat-wrapper .field { display: flex; border-bottom: 1px solid #eee; padding: 0.5rem 0; align-items: flex-start; }
+  .bubble-cat-wrapper .field:last-child { border-bottom: none; }
+  
+  .bubble-cat-wrapper .field-name { 
+    flex: 0 0 120px; /* 稍微縮小寬度適應嵌入版面 */
+    font-weight: 600; 
+    color: #555; 
+    font-size: 0.95rem;
+  }
+  
+  .bubble-cat-wrapper .field-value { 
+    flex: 1; 
+    word-break: break-word; 
+    white-space: pre-wrap; 
+    font-size: 0.95rem;
+  }
+  
+  /* AI 分析區塊 */
+  .bubble-cat-wrapper .ai-block { 
+    background: #fafafa; 
+    padding: 1rem; 
+    border-radius: 6px; 
+    margin-top: 0.5rem; 
+    border-left: 4px solid #2196f3; 
+  }
+
+  /* 建議區：僅意見調整輸入與送出 */
+  .bubble-cat-wrapper .suggestion-section { margin-top: 1.5rem; }
+  .bubble-cat-wrapper .suggestion-label { font-weight: 600; color: #555; margin-bottom: 0.5rem; display: block; }
+  .bubble-cat-wrapper .suggestion-textarea { width: 100%; min-height: 80px; padding: 0.75rem; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; font-size: 0.95rem; box-sizing: border-box; resize: vertical; }
+  .bubble-cat-wrapper .suggestion-btn { margin-top: 0.5rem; padding: 0.5rem 1rem; background: #2196f3; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
+  .bubble-cat-wrapper .suggestion-btn:hover { background: #1976d2; }
+  .bubble-cat-wrapper .suggestion-btn:disabled { background: #ccc; cursor: not-allowed; }
+  .bubble-cat-wrapper .suggestion-msg { margin-top: 0.5rem; font-size: 0.9rem; }
+  .bubble-cat-wrapper .suggestion-msg.ok { color: #2e7d32; }
+  .bubble-cat-wrapper .suggestion-msg.err { color: #c62828; }
+</style>
+
+<div class="bubble-cat-wrapper">
+  <div class="bubble-cat-card">
+    <h2 class="status-title">分析客人狀況</h2>
+    <div id="status-display" class="state loading">正在載入…</div>
+    <div id="status-content"></div>
+    <div id="suggestion-section" class="suggestion-section" style="display: none;">
+      <span class="suggestion-label">建議 AI 生成的意見調整</span>
+      <textarea id="suggestion-textarea" class="suggestion-textarea" placeholder="在此輸入要追加的建議…" maxlength="1500"></textarea>
+      <button type="button" id="suggestion-btn" class="suggestion-btn">送出</button>
+      <div id="suggestion-msg" class="suggestion-msg"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    // ==========================================
+    // ▼ 請務必將下方的 URL 換成你真實的 GAS 部署網址 ▼
+    var GAS_BASE_URL = "https://script.google.com/macros/s/AKfycbzY1xtm_Y6JKDTgf_qDXHJHDCs5ucrLk0qqX0J4Do2_y8A4JO7VJ_aBiL_HbzLk_ZkN/exec"; 
+    // ==========================================
+
+    function getToken() {
+      var params = new URLSearchParams(window.location.search);
+      return params.get("token") || "";
+    }
+    function getUserId() {
+      var params = new URLSearchParams(window.location.search);
+      return params.get("userId") || "";
+    }
+
+    function showState(className, text) {
+      var el = document.getElementById("status-display");
+      if (el) {
+        // 為了避免 class 覆蓋錯誤，這裡重置 class
+        el.className = "state " + className;
+        el.textContent = text;
+        el.style.display = "block";
+      }
+    }
+
+    function renderData(data) {
+      // 僅呈現 AI 內容本身（不顯示左側標籤），讓手機版面寬一點
+      var val = data["AI分析結果"];
+      if (val == null) val = "";
+      if (typeof val !== "string") val = String(val);
+      var html = '<div class="ai-block">' + escapeHtml(val) + '</div>';
+      var contentEl = document.getElementById("status-content");
+      if (contentEl) contentEl.innerHTML = html;
+
+      // 顯示建議區（僅意見調整輸入）
+      var section = document.getElementById("suggestion-section");
+      if (section) section.style.display = "block";
+    }
+
+    function escapeHtml(s) {
+      if (!s) return "";
+      var div = document.createElement("div");
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    // 主程式（token 必填；userId 由 LINE 點入時帶入，用於追蹤是誰傳送建議）
+    var token = getToken();
+    var userId = getUserId();
+
+    // 檢查使用者是否忘記更換 ID
+    if (GAS_BASE_URL.indexOf("你的部署ID") !== -1) {
+        showState("error", "設定錯誤：請編輯嵌入程式碼，將 'GAS_BASE_URL' 替換為您真實的 GAS 網址。");
+        return;
+    }
+
+    if (!token) {
+      showState("error", "請確認網址含有 token 參數 (例如: ?token=...)");
+      return;
+    }
+
+    function refreshCustomerDisplay() {
+      var fetchUrl = GAS_BASE_URL + (GAS_BASE_URL.indexOf("?") >= 0 ? "&" : "?") + "action=getCustomerInfo&token=" + encodeURIComponent(token);
+      fetch(fetchUrl, { method: "GET", redirect: "follow" })
+        .then(function (res) { if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
+        .then(function (json) {
+          if (json.status === "ok" && json.data) {
+            var stateEl = document.getElementById("status-display");
+            if (stateEl) stateEl.style.display = "none";
+            renderData(json.data);
+          }
+        })
+        .catch(function () {});
+    }
+
+    var fetchUrl = GAS_BASE_URL + (GAS_BASE_URL.indexOf("?") >= 0 ? "&" : "?") + "action=getCustomerInfo&token=" + encodeURIComponent(token);
+
+    fetch(fetchUrl, { method: "GET", redirect: "follow" })
+      .then(function (res) { 
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.json(); 
+      })
+      .then(function (json) {
+        if (json.status === "ok" && json.data) {
+          // 成功後隱藏狀態列，只顯示內容
+          var stateEl = document.getElementById("status-display");
+          if(stateEl) stateEl.style.display = 'none';
+          renderData(json.data);
+
+          // 送出建議：改為 GET 呼叫 GAS，避免嵌入 Odoo 時 POST 觸發 CORS 預檢導致 Failed to fetch
+          var btn = document.getElementById("suggestion-btn");
+          var textarea = document.getElementById("suggestion-textarea");
+          var msgEl = document.getElementById("suggestion-msg");
+          if (btn && textarea && msgEl) {
+            btn.addEventListener("click", function () {
+              var suggestion = (textarea && textarea.value) ? textarea.value.trim() : "";
+              if (!suggestion) {
+                msgEl.className = "suggestion-msg err";
+                msgEl.textContent = "請輸入要追加的建議。";
+                return;
+              }
+              btn.disabled = true;
+              msgEl.textContent = "送出中…";
+              msgEl.className = "suggestion-msg";
+              var sep = GAS_BASE_URL.indexOf("?") >= 0 ? "&" : "?";
+              var getUrl = GAS_BASE_URL + sep + "action=updateAiAdjustmentSuggestion&token=" + encodeURIComponent(token) + "&suggestion=" + encodeURIComponent(suggestion);
+              if (userId) getUrl += "&userId=" + encodeURIComponent(userId);
+              fetch(getUrl, { method: "GET", redirect: "follow" })
+                .then(function (res) { return res.json(); })
+                .then(function (result) {
+                  if (result && result.status === "ok") {
+                    msgEl.className = "suggestion-msg ok";
+                    msgEl.textContent = "已寫入建議。";
+                    textarea.value = "";
+                  } else {
+                    msgEl.className = "suggestion-msg err";
+                    msgEl.textContent = result && result.message ? result.message : "寫入失敗";
+                  }
+                })
+                .catch(function (err) {
+                  msgEl.className = "suggestion-msg err";
+                  msgEl.textContent = "連線失敗：" + (err && err.message ? err.message : "未知錯誤");
+                })
+                .then(function () { btn.disabled = false; });
+            });
+          }
+        } else {
+          showState("error", json.message || "無法取得客人資料");
+        }
+      })
+      .catch(function (err) {
+        var msg = (err && err.message) ? err.message : String(err);
+        if (msg === "Failed to fetch" || msg.indexOf("fetch") >= 0) {
+            showState("error", "連線失敗。請確認 GAS 網址正確且權限已設為「任何人(Anyone)」。");
+        } else {
+            showState("error", "連線失敗：" + msg);
+        }
+      });
+  })();
+</script>

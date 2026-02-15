@@ -1,0 +1,12 @@
+{
+  "name": "paomao-core",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PaoMao_Core（Core API）。固定 Web App URL。deploy 的 -i 僅能是「管理部署」裡類型「網路應用程式」、URL 結尾 /exec 的那筆部署 ID。",
+  "scripts": {
+    "push": "clasp push --force",
+    "deploy": "clasp deploy -i AKfycby5ibTcUxvPD-Xj1-lOHOJ5oI27CbyyaHv2K3cvNd1PwMiPvwGCpjlzi6UbW4fwip2UaA -d 'Updated'",
+    "ship": "npm run push && npm run deploy",
+    "pull": "echo '請勿 pull；以本機為準，只做 npm run push 或 npm run ship。' && exit 1"
+  }
+}

@@ -1,0 +1,11 @@
+# 從 PaoMao_Core 同步到各專案的共用檔案（一行一個檔名，目前已改為僅依賴 Core 程式庫、不再複製）
+# 在 core 維護這些檔案後，執行 sync-from-core.sh 即可同步到其他專案
+Config.js
+Utils.js
+Odoo.js
+SDapi.js
+SDconsume.js
+Invoice.js
+LineBot.js
+LineStaff.js
+SayDou.js

@@ -1,0 +1,354 @@
+<style>
+  .bubble-cat-wrapper {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft JhengHei", sans-serif;
+    background-color: #f5f5f5;
+    padding: 1.5rem;
+    border-radius: 8px;
+    color: #333;
+    line-height: 1.5;
+  }
+  .bubble-cat-wrapper * { box-sizing: border-box; }
+  .bubble-cat-wrapper .bubble-cat-card {
+    max-width: 920px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    padding: 1.5rem;
+  }
+  .bubble-cat-wrapper h2,
+  .bubble-cat-wrapper h3 { margin: 0 0 0.75rem; }
+  .bubble-cat-wrapper h3 { margin-top: 1.25rem; font-size: 1.05rem; }
+  .bubble-cat-wrapper .state { padding: 0.75rem; border-radius: 6px; margin-bottom: 1rem; font-size: 1rem;}
+  .bubble-cat-wrapper .state.loading { background: #e3f2fd; color: #1565c0; }
+  .bubble-cat-wrapper .state.error { background: #ffebee; color: #c62828; }
+  .bubble-cat-wrapper .section { margin-bottom: 1.25rem; }
+  .bubble-cat-wrapper .store-block {
+    border: 1px solid #eee;
+    border-radius: 6px;
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+  .bubble-cat-wrapper .store-header { display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+  .bubble-cat-wrapper .store-header .store-date { align-self: flex-start; font-size: 0.85rem; color: #666; }
+  .bubble-cat-wrapper .kv { display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.95rem; }
+  .bubble-cat-wrapper .tag { background: #f0f0f0; padding: 0.15rem 0.5rem; border-radius: 4px; }
+  .bubble-cat-wrapper .list { margin: 0.25rem 0 0; padding-left: 1.2rem; }
+  .bubble-cat-wrapper .share-box { margin-top: 1rem; }
+  .bubble-cat-wrapper .pay-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.4rem 0.8rem; margin-top: 0.4rem; }
+  .bubble-cat-wrapper .pay-item { font-size: 0.9rem; }
+  .bubble-cat-wrapper .two-col-list { column-count: 2; column-gap: 1.5rem; }
+  .bubble-cat-wrapper .section-title { margin-top: 1rem; font-weight: 600; }
+  .bubble-cat-wrapper .divider { height: 1px; background: #eee; margin: 1rem 0; }
+  .bubble-cat-wrapper .top-courses-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem 1.2rem; }
+  .bubble-cat-wrapper .loading-bar { height: 6px; background: #e0e0e0; border-radius: 999px; overflow: hidden; margin-top: 0.5rem; }
+  .bubble-cat-wrapper .loading-bar > div { height: 100%; width: 0%; background: #1565c0; transition: width 1s linear; }
+  .bubble-cat-wrapper textarea { width: 100%; min-height: 80px; padding: 0.6rem; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; }
+  .bubble-cat-wrapper button { margin-top: 0.5rem; padding: 0.5rem 1rem; background: #2196f3; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+  .bubble-cat-wrapper button:disabled { background: #ccc; cursor: not-allowed; }
+  .bubble-cat-wrapper .small { font-size: 0.9rem; color: #666; }
+  .bubble-cat-wrapper #manager-date-bar { margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .bubble-cat-wrapper #manager-date-bar label { font-weight: 600; }
+  .bubble-cat-wrapper #manager-date-bar input[type="date"] { padding: 0.35rem 0.5rem; border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
+  .bubble-cat-wrapper #manager-date-bar button { padding: 0.35rem 0.75rem; background: #2196f3; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }
+  .bubble-cat-wrapper #manager-date-bar button:hover { background: #1976d2; }
+</style>
+
+<div class="bubble-cat-wrapper">
+  <div class="bubble-cat-card">
+    <h2>泡泡日報</h2>
+    <div id="manager-date-bar" style="display:none;">
+      <label for="report-date">選擇日期：</label>
+      <input type="date" id="report-date" />
+      <button type="button" id="report-date-btn">查詢</button>
+    </div>
+    <div id="status" class="state loading">
+      正在載入…（60s）
+      <div class="loading-bar"><div id="loading-bar-inner"></div></div>
+    </div>
+    <div id="content"></div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var GAS_BASE_URL = "https://script.google.com/macros/s/AKfycby5ibTcUxvPD-Xj1-lOHOJ5oI27CbyyaHv2K3cvNd1PwMiPvwGCpjlzi6UbW4fwip2UaA/exec";
+
+    function getToken() {
+      var params = new URLSearchParams(window.location.search);
+      return params.get("token") || "";
+    }
+
+    function showError(msg) {
+      var el = document.getElementById("status");
+      if (!el) return;
+      el.className = "state error";
+      el.textContent = msg;
+    }
+
+    function clearStatus() {
+      var el = document.getElementById("status");
+      if (el) el.style.display = "none";
+    }
+
+    function startCountdown(totalSeconds) {
+      var el = document.getElementById("status");
+      var bar = document.getElementById("loading-bar-inner");
+      if (!el || !bar) return null;
+      bar.style.width = "0%";
+      el.innerHTML = '正在載入…<div class="loading-bar"><div id="loading-bar-inner"></div></div>';
+      bar = document.getElementById("loading-bar-inner");
+      var start = Date.now();
+      var maxProgress = 92;
+      var timer = setInterval(function () {
+        var elapsed = (Date.now() - start) / 1000;
+        if (elapsed >= totalSeconds) {
+          clearInterval(timer);
+          if (bar) bar.style.width = maxProgress + "%";
+          return;
+        }
+        var t = elapsed / totalSeconds;
+        var progress = maxProgress * (1 - Math.pow(1 - t, 1.2)) + (Math.sin(elapsed * 0.5) * 2);
+        if (progress > maxProgress) progress = maxProgress;
+        if (progress < 0) progress = 0;
+        if (bar) bar.style.width = progress + "%";
+      }, 120);
+      return timer;
+    }
+
+    function avgTicketColor(storeAvg, globalAvg) {
+      if (globalAvg == null || globalAvg === 0) return "";
+      var store = Number(storeAvg) || 0;
+      var global = Number(globalAvg) || 0;
+      var ratio = (store - global) / global;
+      var r, g, b;
+      if (ratio <= 0) {
+        r = 255;
+        g = b = Math.round(180 + 75 * (1 + ratio));
+        if (g < 180) g = 180; if (b < 180) b = 180;
+      } else {
+        g = 255;
+        r = b = Math.round(180 + 75 * (1 - ratio));
+        if (r < 180) r = 180; if (b < 180) b = 180;
+      }
+      return "rgb(" + r + "," + g + "," + b + ")";
+    }
+
+    function renderStoreBlock(store, dateText, globalAvg) {
+      var adv = store.advancedCounts || {};
+      var empAdv = store.employeeAdvancedCounts || {};
+      var pay = store.paymentSummary || null;
+      var advOrder = ["活氧", "晶淨", "嘟唇", "逆齡", "頸緻"];
+      var advTags = advOrder.map(function (k) {
+        var val = adv[k] || 0;
+        return '<span class="tag">' + k + ': ' + val + '</span>';
+      }).join(" ");
+      var empLines = Object.keys(empAdv).map(function (k) {
+        var courseMap = empAdv[k] || {};
+        var parts = advOrder.map(function (c) { return c + ":" + (courseMap[c] || 0); }).join(" ");
+        return '<li>' + k + " " + parts + '</li>';
+      }).join("");
+      var payLabels = [
+        { key: "cashTotal", label: "現金總額(勿動)" },
+        { key: "cashBusiness", label: "消費紀錄(現金)" },
+        { key: "cashUnearn", label: "儲值(現金)" },
+        { key: "thirdPayTotal", label: "第三方支付總額(勿動)" },
+        { key: "transferRecord", label: "消費紀錄(轉帳)" },
+        { key: "lineRecord", label: "消費紀錄(line)" },
+        { key: "transferUnearn", label: "儲值(轉帳)" },
+        { key: "lineUnearn", label: "儲值(line)" }
+      ];
+      var payHtml = '<div class="pay-grid">' + payLabels.map(function (p) {
+        var val = (pay && pay[p.key] != null && pay[p.key] !== "") ? pay[p.key] : "－";
+        return '<div class="pay-item">' + p.label + "：" + val + '</div>';
+      }).join("") + '</div>';
+      var todayServiceVal = (pay && pay.todayService != null && pay.todayService !== "") ? pay.todayService : "－";
+      var avgColor = avgTicketColor(store.avgTicket, globalAvg);
+      var avgStyle = avgColor ? (' style="background-color:' + avgColor + ';color:#333"') : '';
+      return (
+        '<div class="store-block">' +
+          '<div class="store-header">' +
+            '<strong>' + store.storeName + '</strong>' +
+            (dateText ? ('<span class="store-date">' + dateText + '</span>') : '') +
+          '</div>' +
+          (payHtml ? ('<div class="small section-title">業績：' + todayServiceVal + '</div>' + payHtml) : '') +
+          '<div class="kv">' +
+            '<span class="tag"' + avgStyle + '>平均客單價: $' + (store.avgTicket != null ? Number(store.avgTicket).toFixed(1) : '0.0') + '</span>' +
+            '<span class="tag">訂單數: ' + (store.orderCount || 0) + '</span>' +
+            (advTags ? (' ' + advTags) : '') +
+          '</div>' +
+          '<div class="section-title">同事進階課程件數</div>' +
+          '<ul class="list two-col-list">' + (empLines || "<li>無資料</li>") + '</ul>' +
+        '</div>'
+      );
+    }
+
+    function renderTopCourses(topCourses) {
+      if (!topCourses) return "";
+      var keys = Object.keys(topCourses);
+      if (!keys.length) return "";
+      var html = '<div class="section"><h3>全台泡泡貓本日推廣排名</h3><div class="top-courses-grid">';
+      keys.forEach(function (k) {
+        var list = topCourses[k] || [];
+        if (!list.length) return;
+        var items = list.map(function (x, idx) {
+          return '<li>No.' + (idx + 1) + ' ' + x.storeName + '：' + x.count + '</li>';
+        }).join("");
+        html += '<div><strong>' + k + '</strong><ul class="list">' + items + '</ul></div>';
+      });
+      html += '</div></div>';
+      return html;
+    }
+
+    function renderTopAvgTicket(list) {
+      if (!list || !list.length) return "";
+      var items = list.map(function (x) {
+        var stores = (x.stores && x.stores.length) ? ("（" + x.stores.join("、") + "）") : "";
+        var name = x.employeeName ? (" " + x.employeeName) : "";
+        return '<li>' + x.employeeCode + name + '：' + (x.avgTicket != null ? Number(x.avgTicket).toFixed(1) : '0.0') + ' / ' + x.orderCount + ' 單 ' + stores + '</li>';
+      }).join("");
+      return '<div class="section"><h3>全品牌平均客單 Top5</h3><ul class="list">' + items + '</ul></div>';
+    }
+
+    function renderGlobalAvg(avg) {
+      if (avg == null) return "";
+      return '<div class="section"><h3>全台泡泡貓：平均客單價</h3><div class="tag">$' + (avg != null ? Number(avg).toFixed(1) : '') + '</div></div>';
+    }
+
+    function renderShareForm(sessionId) {
+      if (!sessionId) return "";
+      return (
+        '<div class="section share-box">' +
+          '<h3>心得分享</h3>' +
+          '<div class="small">僅全品牌平均客單前五名可填寫。</div>' +
+          '<textarea id="share-content" maxlength="1500" placeholder="輸入你的心得分享…"></textarea>' +
+          '<button type="button" id="share-btn">送出</button>' +
+          '<div id="share-msg" class="small"></div>' +
+        '</div>'
+      );
+    }
+
+    function buildSingleDayHtml(data, dateStr, top5, isManager, canShare, shareSessionId) {
+      var dateText = dateStr ? String(dateStr).slice(0, 10) : "";
+      var html = '<div class="section"><h3>' + (isManager ? "日報" : "今日日報") + '</h3></div>';
+      html += (data && data.stores || []).map(function (s) { return renderStoreBlock(s, dateText, data.globalAvgTicket); }).join("");
+      html += renderGlobalAvg(data ? data.globalAvgTicket : null);
+      html += renderTopCourses(data ? data.topCourses : null);
+      html += renderTopAvgTicket(top5);
+      if (canShare && shareSessionId) html += renderShareForm(shareSessionId);
+      return html;
+    }
+
+    function bindShare(sessionId) {
+      var btn = document.getElementById("share-btn");
+      var textarea = document.getElementById("share-content");
+      var msg = document.getElementById("share-msg");
+      if (!btn || !textarea || !msg) return;
+      btn.addEventListener("click", function () {
+        var content = textarea.value.trim();
+        if (!content) {
+          msg.textContent = "請輸入心得內容。";
+          return;
+        }
+        btn.disabled = true;
+        msg.textContent = "送出中…";
+        var url = GAS_BASE_URL + (GAS_BASE_URL.indexOf("?") >= 0 ? "&" : "?") +
+          "action=submitReportShare&sessionId=" + encodeURIComponent(sessionId) +
+          "&content=" + encodeURIComponent(content);
+        fetch(url, { method: "GET", redirect: "follow" })
+          .then(function (res) { return res.json(); })
+          .then(function (json) {
+            if (json && json.status === "ok") {
+              msg.textContent = "已送出心得，等待審核。";
+              textarea.value = "";
+            } else {
+              msg.textContent = (json && json.message) ? json.message : "送出失敗";
+            }
+          })
+          .catch(function () {
+            msg.textContent = "送出失敗，請稍後再試。";
+          })
+          .then(function () { btn.disabled = false; });
+      });
+    }
+
+    var token = getToken();
+    if (!token) {
+      showError("請確認網址含有 token 參數 (例如: ?token=...)");
+      return;
+    }
+    if (GAS_BASE_URL.indexOf("你的部署ID") !== -1) {
+      showError("設定錯誤：請編輯嵌入程式碼，將 'GAS_BASE_URL' 替換為您真實的 GAS 網址。");
+      return;
+    }
+
+    var fetchUrl = GAS_BASE_URL + (GAS_BASE_URL.indexOf("?") >= 0 ? "&" : "?") +
+      "action=consumeReportToken&token=" + encodeURIComponent(token);
+
+    var countdown = startCountdown(60);
+    fetch(fetchUrl, { method: "GET", redirect: "follow" })
+      .then(function (res) { return res.json(); })
+      .then(function (json) {
+        if (!json || json.status !== "ok") {
+          if (countdown) clearInterval(countdown);
+          showError((json && json.message) ? json.message : "連結已失效");
+          return;
+        }
+        if (countdown) clearInterval(countdown);
+        clearStatus();
+        var content = document.getElementById("content");
+        if (!content) return;
+        var html = "";
+        var daily = (json.data && json.data.daily) ? json.data.daily : [];
+        if (daily.length > 0) {
+          html += '<div class="section"><h3>當月日報清單</h3></div>';
+          daily.forEach(function (d) {
+            var dateText = (d.dateStr && String(d.dateStr).indexOf("GMT") >= 0) ? new Date(d.dateStr).toISOString().slice(0, 10) : (d.dateStr || "");
+            html += '<div class="section">';
+            (d.stores || []).forEach(function (s) { html += renderStoreBlock(s, dateText, d.globalAvgTicket); });
+            html += renderGlobalAvg(d.globalAvgTicket);
+            html += renderTopCourses(d.topCourses);
+            html += '</div>';
+          });
+        } else {
+          html = buildSingleDayHtml(json.data, json.dateStr, json.topAvgTicketEmployees || [], json.role === "manager", json.canShare, json.shareSessionId);
+        }
+        content.innerHTML = html;
+        if (json.canShare && json.shareSessionId) bindShare(json.shareSessionId);
+        if (json.role === "manager" && json.reportSessionId) {
+          var dateBar = document.getElementById("manager-date-bar");
+          var dateInput = document.getElementById("report-date");
+          var dateBtn = document.getElementById("report-date-btn");
+          if (dateBar && dateInput && dateBtn) {
+            dateBar.style.display = "flex";
+            dateInput.value = (json.dateStr || "").slice(0, 10);
+            var sessionId = json.reportSessionId;
+            var gasBase = GAS_BASE_URL;
+            function loadDate() {
+              var dateStr = dateInput.value;
+              if (!dateStr) return;
+              content.innerHTML = '<div class="section">載入中…</div>';
+              var url = gasBase + (gasBase.indexOf("?") >= 0 ? "&" : "?") + "action=getReportByDate&sessionId=" + encodeURIComponent(sessionId) + "&date=" + encodeURIComponent(dateStr);
+              fetch(url, { method: "GET", redirect: "follow" })
+                .then(function (res) { return res.json(); })
+                .then(function (res) {
+                  if (!res || res.status !== "ok") {
+                    content.innerHTML = '<div class="section state error">' + ((res && res.message) ? res.message : "載入失敗") + "</div>";
+                    return;
+                  }
+                  content.innerHTML = buildSingleDayHtml(res.data, res.dateStr, res.topAvgTicketEmployees || [], true, false, "");
+                })
+                .catch(function () {
+                  content.innerHTML = '<div class="section state error">連線失敗，請稍後再試。</div>';
+                });
+            }
+            dateBtn.addEventListener("click", loadDate);
+            dateInput.addEventListener("change", loadDate);
+          }
+        }
+      })
+      .catch(function () {
+        showError("連線失敗，請稍後再試。");
+      });
+  })();
+</script>

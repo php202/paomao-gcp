@@ -1,0 +1,11 @@
+{
+  "name": "wednesday-refund",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "push": "clasp push --force",
+    "deploy": "echo '[每週三：顧客退費] 無 Web 部署，僅 push'",
+    "ship": "npm run push",
+    "pull": "echo '請勿 pull；以本機為準，只做 npm run push 或 npm run ship。' && exit 1"
+  }
+}
