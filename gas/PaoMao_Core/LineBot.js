@@ -196,9 +196,10 @@ function sendReengagementFlexMessage(lineUserId, customerName, lastVisitDate, da
   }
 }
 
-// 取得使用者名稱
+// 取得使用者名稱（群組/聊天室用 /group/{groupId}/member/{userId} 或 /room/{roomId}/member/{userId}，否則 /profile 只對有加好友有效）
+// 【勿改】取不到時回傳 ""，不要回傳「未知用戶」等字樣（產品要求留空）。
 function getUserDisplayName(userId, groupId, roomId, token) {
-  if (!userId) return "未知用戶";
+  if (!userId) return "";
 
   // --- 快取機制 ---
   // 使用 userId 作為主要 Key，這樣同一個人在不同群組講話也能吃到快取
@@ -221,11 +222,11 @@ function getUserDisplayName(userId, groupId, roomId, token) {
     });
 
     if (res.getResponseCode() !== 200) {
-      return "未知用戶";
+      return "";
     }
 
     const json = JSON.parse(res.getContentText());
-    const displayName = json.displayName || "未知用戶";
+    const displayName = json.displayName || "";
 
     // 寫入快取 (存 6 小時)
     // 這樣下次這個人再講話，就不用問 LINE 了
@@ -234,7 +235,7 @@ function getUserDisplayName(userId, groupId, roomId, token) {
     return displayName;
   } catch (e) { 
     console.error(`[Core] getUserDisplayName Error: ${e}`);
-    return "未知用戶"; 
+    return ""; 
   }
 }
 function getGroupName(groupId, token) {

@@ -142,10 +142,11 @@ var CoreApi = (function () {
       if (r.status === "ok" && r.result) return r.result;
       return { status: false, error: r.message || "查詢失敗", data: [] };
     },
+    // 【勿改】取不到時回傳 ""，不要回傳「未知用戶」（產品要求留空）
     getUserDisplayName: function (userId, groupId, roomId, token) {
       var r = callGet("getUserDisplayName", { userId: userId, token: token, groupId: groupId || "", roomId: roomId || "" });
       if (r.status === "ok" && r.displayName != null) return r.displayName;
-      return "未知用戶";
+      return "";
     },
     syncLastMonthTipsConsolidated: function () {
       var r = callGet("syncLastMonthTipsConsolidated", {});

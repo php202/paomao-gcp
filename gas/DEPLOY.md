@@ -13,6 +13,7 @@
 ## 平常：以本機為準，只做 push / ship
 
 - 平常**不執行**單獨的 `clasp pull`；以本機程式碼為準，只做 `npm run push` 或 `npm run ship` 發布新版本。
+- **若執行 `npm run pull-all` 或 `clasp pull`，會以 GAS 遠端覆寫本機檔案**。若遠端是舊版（例如還沒改 displayName 用 Core + groupId/roomId、或未知用戶留空），本機修正會消失。因此 pull 後請確認關鍵邏輯仍在，或改完本機後只做 ship、不要 pull。
 - 若在 GAS 編輯器改過程式，請把修改貼回本機後再 ship。
 - 跑 `npm run ship` 前請確認本機 Core API 相關註解為「**網路應用程式**」部署網址。
 

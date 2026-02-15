@@ -74,5 +74,5 @@ gcloud run deploy employee-monthly-report \
 | `LINE_STORE_SS_ID` | 店家基本資料試算表 |
 | `OUTPUT_SS_ID` | 員工業績月報產出試算表 |
 | `TIPS_GODSID` | 小費品項 ID（預設 201969） |
-| `FETCH_BATCH_SIZE` | 每批 API 數（預設 20） |
+| `FETCH_BATCH_SIZE` | 每批 API 數（預設 10） |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Service Account JSON 檔案路徑 |

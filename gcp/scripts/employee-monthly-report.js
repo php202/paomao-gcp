@@ -18,7 +18,9 @@ const EMPLOYEE_SHEET_NAME = '員工清單';
 const STORE_SHEET_NAME = '店家基本資料';
 const OUTPUT_SHEET_NAME = '員工業績月報';
 const OUTPUT_SHEET_GID = 833948053;
+const OUTPUT_HEADERS = ['月份', '員工編號', '姓名', '店家', '業績', '', '', '', '9萬', '10萬', '11萬', '12萬'];
 
+/** 與 GAS 一致：月份起迄用日曆日期 yyyy-MM-dd（不依賴伺服器時區） */
 function getMonthDateRange(yearMonth) {
   if (!yearMonth || typeof yearMonth !== 'string') return null;
   const parts = yearMonth.trim().split('-');
@@ -26,10 +28,12 @@ function getMonthDateRange(yearMonth) {
   const y = parseInt(parts[0], 10);
   const m = parseInt(parts[1], 10);
   if (isNaN(y) || isNaN(m) || m < 1 || m > 12) return null;
-  const start = new Date(y, m - 1, 1);
-  const end = new Date(y, m, 0);
-  const fmt = (d) => d.toISOString().slice(0, 10);
-  return { startDate: fmt(start), endDate: fmt(end) };
+  const pad = (n) => String(n).padStart(2, '0');
+  const lastDay = new Date(y, m, 0).getDate();
+  return {
+    startDate: `${y}-${pad(m)}-01`,
+    endDate: `${y}-${pad(m)}-${pad(lastDay)}`,
+  };
 }
 
 function listMonthsFrom2025(endYearMonth) {
@@ -62,26 +66,30 @@ function parseRealTotal(json) {
   return 0;
 }
 
+/** 員工清單欄位：A?, B店家(1), C姓名(2), D LineId(3), E職稱(4), F?(5), ..., H狀態(7), ..., L員工編號(11) */
 async function getEmployeeData(auth) {
   const ssId = process.env.LINE_STAFF_SS_ID || '1GH2XbihFIY0AX8SMF9Tk6igrVKPpA_vMJVlkDkJjpe4';
   const rows = await readSheet(auth, ssId, `'${EMPLOYEE_SHEET_NAME}'!A2:L2000`);
   const empCodes = [];
   const empMap = {};
   const storeIdByCode = {};
+  const storeNameByCode = {}; // B 欄店家名稱，報表顯示用
   let excluded = 0;
   for (const row of rows) {
     const code = (row[11] ?? '').toString().trim();
     const name = (row[2] ?? '').toString().trim();
     const statusH = (row[7] ?? '').toString().trim();
     const storeId = (row[5] ?? '').toString().trim();
+    const storeName = (row[1] ?? '').toString().trim();
     if (!code) continue;
     if (statusH.indexOf('離職') >= 0) { excluded++; continue; }
     empCodes.push(code);
     empMap[code] = name || code;
     storeIdByCode[code] = storeId;
+    if (storeName) storeNameByCode[code] = storeName;
   }
   if (excluded > 0) console.log(`[GCP] H 欄離職已排除 ${excluded} 人`);
-  return { empCodes, empMap, storeIdByCode };
+  return { empCodes, empMap, storeIdByCode, storeNameByCode };
 }
 
 async function getStoreIdToName(auth) {
@@ -97,30 +105,41 @@ async function getStoreIdToName(auth) {
   return map;
 }
 
+const API_PAGE_SIZE = 10;
+const FETCH_RETRIES = 3;
+const BATCH_DELAY_MS = 3000;
+
+/** 單次請求，使用 API 回傳的 data.realTotal（不分頁），失敗會重試 */
 async function fetchTransactionStatistic(bearerToken, keyword, startDate, endDate, godsid = 0) {
   const godnam = godsid ? encodeURIComponent('小費') : '';
-  const url = `https://saywebdatafeed.saydou.com/api/management/finance/transactionStatistic?page=0&limit=20&sort=ordrsn&order=desc` +
+  const url = `https://saywebdatafeed.saydou.com/api/management/finance/transactionStatistic?page=0&limit=${API_PAGE_SIZE}&sort=ordrsn&order=desc` +
     `&keyword=${encodeURIComponent(keyword || '')}&start=${encodeURIComponent(startDate)}&end=${encodeURIComponent(endDate)}` +
     `&searchMemberCtrl=null&searchProductCtrl=null&searchStaffCtrl=null&membid=0&godsid=${godsid}` +
     `&usrsid=0&memnam=&godnam=${godnam}&usrnam=&assign=all&licnum=&goctString=`;
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${bearerToken}` },
-    signal: AbortSignal.timeout(60000),
-  });
-  const text = await res.text();
-  try {
-    return parseRealTotal(JSON.parse(text));
-  } catch {
-    return 0;
+  let lastErr;
+  for (let attempt = 1; attempt <= FETCH_RETRIES; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${bearerToken}` },
+        signal: AbortSignal.timeout(60000),
+      });
+      const text = await res.text();
+      return parseRealTotal(JSON.parse(text));
+    } catch (e) {
+      lastErr = e;
+      if (attempt < FETCH_RETRIES) await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
   }
+  if (lastErr) console.warn('[GCP] API 重試後仍失敗:', lastErr.message);
+  return 0;
 }
 
 async function buildReport(auth, bearerToken, startYm, endYm) {
   const tipsGodsid = parseInt(process.env.TIPS_GODSID || '201969', 10);
-  const batchSize = parseInt(process.env.FETCH_BATCH_SIZE || '20', 10);
+  const batchSize = parseInt(process.env.FETCH_BATCH_SIZE || '10', 10);
 
-  const { empCodes, empMap, storeIdByCode } = await getEmployeeData(auth);
+  const { empCodes, empMap, storeIdByCode, storeNameByCode } = await getEmployeeData(auth);
   const storeIdToName = await getStoreIdToName(auth);
 
   const months = listMonthsFrom2025(endYm);
@@ -162,7 +181,7 @@ async function buildReport(auth, bearerToken, startYm, endYm) {
       }
     }
     console.log(`[GCP] 已完成 ${Math.min(i + batchSize, requests.length)}/${requests.length}`);
-    if (i + batchSize < requests.length) await new Promise((r) => setTimeout(r, 500));
+    if (i + batchSize < requests.length) await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
   }
 
   for (const ym of toRun) {
@@ -176,8 +195,8 @@ async function buildReport(auth, bearerToken, startYm, endYm) {
   }
 
   const storeMap = {};
-  for (const [code, sid] of Object.entries(storeIdByCode || {})) {
-    storeMap[code] = (storeIdToName[sid] || sid || '').trim();
+  for (const code of empCodes) {
+    storeMap[code] = (storeNameByCode[code] || storeIdToName[storeIdByCode[code]] || storeIdByCode[code] || '').trim();
   }
 
   const rows = [];
@@ -192,6 +211,13 @@ async function buildReport(auth, bearerToken, startYm, endYm) {
         empMap[code] || '',
         storeMap[code] || '',
         amt,
+        '',
+        '',
+        '',
+        amt >= 90000 ? '1' : '0',
+        amt >= 100000 ? '1' : '0',
+        amt >= 110000 ? '1' : '0',
+        amt >= 120000 ? '1' : '0',
       ]);
     }
   }
@@ -208,7 +234,15 @@ async function writeToSheet(auth, rows) {
   if (!sheet) throw new Error('找不到員工業績月報工作表');
 
   const sheetName = sheet.properties.title;
-  const readRange = `'${sheetName}'!A2:E5000`;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: ssId,
+    range: `'${sheetName}'!A1:L1`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [OUTPUT_HEADERS] },
+  });
+
+  const readRange = `'${sheetName}'!A2:L5000`;
   const existing = await readSheet(auth, ssId, readRange);
   const keyToRow = {};
   for (let i = 0; i < existing.length; i++) {
@@ -223,7 +257,7 @@ async function writeToSheet(auth, rows) {
     const key = (row[0] ?? '') + '|' + (row[1] ?? '');
     const rowIdx = keyToRow[key];
     if (rowIdx) {
-      toUpdate.push({ range: `'${sheetName}'!A${rowIdx}:E${rowIdx}`, values: [row] });
+      toUpdate.push({ range: `'${sheetName}'!A${rowIdx}:L${rowIdx}`, values: [row] });
     } else {
       toAppend.push(row);
     }
@@ -234,10 +268,9 @@ async function writeToSheet(auth, rows) {
     await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: ssId, requestBody: body });
   }
   if (toAppend.length) {
-    const appendRange = `'${sheetName}'!A:E`;
     await sheets.spreadsheets.values.append({
       spreadsheetId: ssId,
-      range: appendRange,
+      range: `'${sheetName}'!A:L`,
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: toAppend },
     });

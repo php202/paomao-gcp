@@ -144,7 +144,10 @@ function handleLineWebhook(data) {
         // [我的會員][課程介紹] 不用出現挽留清單、也不 Reply；只有 [線上預約] 才寫入清單並有機會 Reply
         var skipList = (filterResult.desc === "會員權益" || filterResult.desc === "了解課程");
         if (!skipList && validToken) {
-          addToRetentionList(userId, msg, validToken, filterResult, sayId, replyToken, botDestinationId, storeInfo);
+          // 【勿刪】群組/聊天室須傳 groupId/roomId，否則 displayName 會取不到（/profile 只對有加好友有效）
+          const groupId = event.source && event.source.groupId ? event.source.groupId : "";
+          const roomId = event.source && event.source.roomId ? event.source.roomId : "";
+          addToRetentionList(userId, msg, validToken, filterResult, sayId, replyToken, botDestinationId, storeInfo, groupId, roomId);
         }
         continue;
       }
@@ -178,7 +181,7 @@ function handleLineWebhook(data) {
 // [核心] 寫入挽留清單 (支援 AI 與 固定模板)
 // I 欄 isReply 只控制「查詢空位」是否用 reply token 傳給客人；查詢空位、寫入清單照常執行
 // ==========================================
-function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToken, botDestinationId, storeInfo) {
+function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToken, botDestinationId, storeInfo, groupId, roomId) {
   var ssId = typeof CONFIG !== "undefined" && CONFIG.INTEGRATED_SHEET_SS_ID ? CONFIG.INTEGRATED_SHEET_SS_ID : null;
   var ss = ssId ? SpreadsheetApp.openById(ssId) : null;
   if (!ss) return;
@@ -198,9 +201,21 @@ function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToke
   }
 
   // B. 準備基本資料
-  let displayName = "未知用戶";
-  const profile = getLineProfile(userId, token);
-  if (profile && profile.displayName) displayName = profile.displayName;
+  // 【勿改】群組/聊天室必須用 Core.getUserDisplayName(userId, groupId, roomId, token)，不可只靠 getLineProfile；
+  // 否則群組內未加好友的成員會顯示為空（/profile API 在群組只對有加好友者有效）。未知用戶留空不顯示「未知用戶」。
+  let displayName = "";
+  if (typeof Core !== "undefined" && typeof Core.getUserDisplayName === "function") {
+    try {
+      const name = Core.getUserDisplayName(userId, groupId || "", roomId || "", token);
+      if (name && String(name).trim()) displayName = String(name).trim();
+    } catch (e) {
+      appendErrorLog("getUserDisplayName: " + (e && e.message), "addToRetentionList");
+    }
+  }
+  if (!displayName) {
+    const profile = getLineProfile(userId, token);
+    if (profile && profile.displayName) displayName = profile.displayName;
+  }
   
   // C. 產生文案內容
   let finalContent = "";

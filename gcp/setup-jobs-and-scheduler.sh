@@ -27,17 +27,17 @@ if [ -n "$SERVICE_ACCOUNT" ]; then
 fi
 
 echo "=== 4. 建立兩個 Cloud Run Job ==="
-# Job 1：Token 檢查（用 Secret）
+# Job 1：Token 檢查（每次從試算表「預約表單」C2 讀 Token，不依賴 Secret）
 gcloud run jobs create pao-check-token \
   --image "$IMAGE" \
   --region "$REGION" \
   --task-timeout 5m \
-  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com" \
-  --set-secrets "SAYDOU_BEARER_TOKEN=saydou-token:latest,GMAIL_USER=gmail-user:latest,GMAIL_APP_PASSWORD=gmail-app-password:latest" \
+  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID" \
+  --set-secrets "GMAIL_USER=gmail-user:latest,GMAIL_APP_PASSWORD=gmail-app-password:latest" \
   $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
   2>/dev/null || gcloud run jobs update pao-check-token --image "$IMAGE" --region "$REGION" \
-  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com" \
-  --set-secrets "SAYDOU_BEARER_TOKEN=saydou-token:latest,GMAIL_USER=gmail-user:latest,GMAIL_APP_PASSWORD=gmail-app-password:latest" \
+  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID" \
+  --set-secrets "GMAIL_USER=gmail-user:latest,GMAIL_APP_PASSWORD=gmail-app-password:latest" \
   $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
 
 # Job 2：員工業績月報（用試算表 ID）
@@ -45,10 +45,10 @@ gcloud run jobs create pao-employee-report \
   --image "$IMAGE" \
   --region "$REGION" \
   --task-timeout 60m \
-  --set-env-vars "LINE_STAFF_SS_ID=$LINE_STAFF_SS_ID,LINE_STORE_SS_ID=$LINE_STORE_SS_ID,OUTPUT_SS_ID=$OUTPUT_SS_ID,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID" \
+  --set-env-vars "LINE_STAFF_SS_ID=$LINE_STAFF_SS_ID,LINE_STORE_SS_ID=$LINE_STORE_SS_ID,OUTPUT_SS_ID=$OUTPUT_SS_ID,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
   $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
   2>/dev/null || gcloud run jobs update pao-employee-report --image "$IMAGE" --region "$REGION" \
-  --set-env-vars "LINE_STAFF_SS_ID=$LINE_STAFF_SS_ID,LINE_STORE_SS_ID=$LINE_STORE_SS_ID,OUTPUT_SS_ID=$OUTPUT_SS_ID,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID" \
+  --set-env-vars "LINE_STAFF_SS_ID=$LINE_STAFF_SS_ID,LINE_STORE_SS_ID=$LINE_STORE_SS_ID,OUTPUT_SS_ID=$OUTPUT_SS_ID,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
   $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
 
 gcloud run jobs update pao-employee-report --region "$REGION" \
