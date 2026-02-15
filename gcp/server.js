@@ -9,10 +9,12 @@ import fetch from 'node-fetch';
 import { verifyLineSignature } from './lib/line-webhook.js';
 import { getAuth } from './lib/auth.js';
 import { handleCheckInRequest } from './scripts/line-checkin-handler.js';
+import { handleStaffCommand } from './scripts/line-staff-handler.js';
 
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const LINE_TOKEN_PAOSTAFF = process.env.LINE_TOKEN_PAOSTAFF;
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL;
+const FORWARD_UNKNOWN_TO_GAS = String(process.env.FORWARD_UNKNOWN_TO_GAS || '0') === '1';
 const PORT = Number(process.env.PORT) || 8080;
 const WEBHOOK_LOG_VERBOSE = String(process.env.WEBHOOK_LOG_VERBOSE || '1') !== '0';
 
@@ -103,12 +105,37 @@ async function handleLineWebhook(req, rawBody, res) {
           localHandledCount += 1;
           continue;
         }
+        const handled = await handleStaffCommand({
+          authClient: auth,
+          text,
+          event,
+          replyText: async (msg) => replyFallback(replyToken, msg),
+          replyMessages: async (messages) => {
+            if (!replyToken || !LINE_TOKEN_PAOSTAFF) return;
+            await fetch('https://api.line.me/v2/bot/message/reply', {
+              method: 'post',
+              headers: {
+                Authorization: `Bearer ${LINE_TOKEN_PAOSTAFF}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ replyToken, messages }),
+            });
+          },
+        });
+        if (handled) {
+          localHandledCount += 1;
+          continue;
+        }
       }
-      // 非「我要打卡」事件，改轉發到 GAS 主 Webhook
-      if (WEBHOOK_LOG_VERBOSE) {
-        console.log(`[line-webhook][${requestId}] queue-forward`, JSON.stringify(meta));
+      if (FORWARD_UNKNOWN_TO_GAS) {
+        if (WEBHOOK_LOG_VERBOSE) {
+          console.log(`[line-webhook][${requestId}] queue-forward`, JSON.stringify(meta));
+        }
+        forwardEvents.push(event);
+      } else {
+        await replyFallback(replyToken, '⚠️ 目前此指令尚未完成 GCP 搬遷，請稍後再試。');
+        localHandledCount += 1;
       }
-      forwardEvents.push(event);
     } catch (err) {
       console.error('[line-webhook] event error:', err.message);
       try {
@@ -206,7 +233,10 @@ export function startServer() {
     console.warn('[GCP] LINE Webhook 備援需要以下環境變數（請在 .env 或環境中設定）：', missing.join(', '));
   }
   if (!GAS_WEBHOOK_URL) {
-    console.warn('[GCP] GAS_WEBHOOK_URL 未設定：非「我要打卡」事件將不會轉發，只會回覆備援提示。');
+    console.warn('[GCP] GAS_WEBHOOK_URL 未設定：若啟用 FORWARD_UNKNOWN_TO_GAS，非本地指令將無法轉發。');
+  }
+  if (!FORWARD_UNKNOWN_TO_GAS) {
+    console.log('[GCP] FORWARD_UNKNOWN_TO_GAS=0：優先走 GCP 本地指令，不再預設轉發 GAS。');
   }
 
   server.listen(PORT, () => {

@@ -9,7 +9,8 @@
     "report": "node index.js employee-monthly-report",
     "daily-report": "node index.js daily-report",
     "check-token": "node index.js check-token",
-    "serve": "node index.js serve"
+    "serve": "node index.js serve",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"

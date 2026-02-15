@@ -142,10 +142,10 @@ node index.js serve
 
 ---
 
-## LINE Webhook 備援（我要打卡 + 其他訊息轉發 GAS）
+## LINE Webhook 備援（GCP 本地指令 + 可選轉發 GAS）
 
-當 GAS **urlfetch 每日額度用盡**時，LINE 仍可正常回覆「我要打卡」：改由 GCP 接收 LINE Webhook，由 GCP 讀試算表、產生打卡連結、回覆 LINE，完全不使用 GAS urlfetch。  
-另外，非「我要打卡」事件可轉發至 GAS 主 webhook，避免備援時其他功能整個停用。
+當 GAS **urlfetch 每日額度用盡**時，LINE 可由 GCP 直接處理主要員工指令（如：我要打卡、查詢打卡記錄、Line問題集、店家回覆狀態、神美日報、上月小費等）。  
+若仍有未搬遷指令，可用 `FORWARD_UNKNOWN_TO_GAS=1` 轉發到 GAS 主 webhook。
 
 ### 環境變數（`node index.js serve` 時）
 
@@ -154,8 +154,14 @@ node index.js serve
 | `LINE_CHANNEL_SECRET` | LINE Developers → 頻道 → Basic settings → Channel secret（用於驗證 Webhook 簽章） |
 | `LINE_TOKEN_PAOSTAFF` | LINE Developers → Messaging API → Channel access token（發送回覆用） |
 | `LINE_STAFF_SS_ID` | 員工試算表（同上，需含 員工清單、管理者清單、員工打卡紀錄） |
+| `LINE_HQ_SS_ID` | 門市資料試算表（`Line問題集` 會用到「問題集」工作表） |
+| `LINE_STORE_SS_ID` | 訊息一覽表（`店家回覆狀態` 會用到「店家基本資料」「訊息一覽」） |
+| `PAO_CAT_CORE_API_URL` | Core API Web App URL（神美日報、上月小費、客人 AI 等指令） |
+| `PAO_CAT_SECRET_KEY` | Core API 金鑰（需與 PaoMao_Core 一致） |
 | `CHECK_IN_LINK` | 可選，預設 `https://www.paopaomao.tw/checkin` |
 | `GAS_WEBHOOK_URL` | 建議設定。非「我要打卡」事件會轉發到此 GAS Webhook URL（例：`https://script.google.com/macros/s/xxxx/exec`） |
+| `FORWARD_UNKNOWN_TO_GAS` | 可選，`1`=未搬遷指令轉發 GAS；`0`=僅走 GCP（預設） |
+| `WEBHOOK_LOG_VERBOSE` | 可選，`1` 詳細事件 log；`0` 精簡 log |
 
 ### 啟用備援（urlfetch 滿了時）
 
@@ -163,9 +169,9 @@ node index.js serve
 2. 到 **LINE Developers Console** → 你的頻道 → **Messaging API** → **Webhook URL**，改為：  
    `https://你的Cloud Run網址/line-webhook`
 3. 儲存後，所有 LINE 訊息會打到 GCP：  
-   - **我要打卡**：由 GCP 直接回覆  
-   - **其他事件**：若有設定 `GAS_WEBHOOK_URL`，會自動轉發到 GAS 主 webhook 處理
-4. 若未設定 `GAS_WEBHOOK_URL`，備援模式下其他指令只會收到「目前僅支援我要打卡」提示。
+   - **已搬遷指令**：由 GCP 直接回覆  
+   - **未搬遷指令**：若 `FORWARD_UNKNOWN_TO_GAS=1` 且有 `GAS_WEBHOOK_URL`，會轉發到 GAS 主 webhook
+4. 建議先以 `FORWARD_UNKNOWN_TO_GAS=0` 測 GCP 本地處理，確認後再視需要開啟轉發。
 
 ### 測試「urlfetch 滿了」情境
 
