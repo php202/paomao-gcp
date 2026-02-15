@@ -5,3 +5,4 @@ node_modules/
 service-account*.json
 gen-lang-client-*.json
 gcp-service-account*.json
+set-env.sh

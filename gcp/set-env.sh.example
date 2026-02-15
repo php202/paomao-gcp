@@ -1,0 +1,16 @@
+#!/bin/bash
+# 複製為 set-env.sh 並填入實際值：cp set-env.sh.example set-env.sh
+# 執行：source set-env.sh
+# 試算表 ID 請與 gas/PaoMao_Core/Config.js 一致；勿提交 set-env.sh
+export PROJECT_ID=your-gcp-project-id
+export REGION=asia-east1
+export TOKEN_SHEET_SS_ID=
+export LINE_STAFF_SS_ID=
+export LINE_STORE_SS_ID=
+export OUTPUT_SS_ID=
+export FETCH_BATCH_SIZE=10
+export PAO_CAT_CORE_API_URL=
+export PAO_CAT_SECRET_KEY=
+export DAILY_REPORT_CRON="10 0 * * *"
+echo "Set PROJECT_ID=$PROJECT_ID REGION=$REGION"
+echo "請在 set-env.sh 填入試算表 ID 與 Core API 參數（勿提交 set-env.sh）"
