@@ -17,6 +17,8 @@ import {
 } from './staff-keyword-routes.js';
 
 const REPORT_PAGE_URL = process.env.REPORT_PAGE_URL || 'https://www.paopaomao.tw/report';
+/** 報告頁在官網/Odoo 開啟時，需帶 api_base 指向 GCP report-api（例：https://xxx.run.app/report-api） */
+const REPORT_API_BASE = (process.env.REPORT_API_BASE || '').trim();
 const TOMORROW_BRIEFING_WEB_APP_URL = process.env.TOMORROW_BRIEFING_WEB_APP_URL || '';
 const PAO_CAT_CORE_API_URL = process.env.PAO_CAT_CORE_API_URL || '';
 const PAO_CAT_SECRET_KEY = process.env.PAO_CAT_SECRET_KEY || '';
@@ -458,6 +460,15 @@ async function handleAttendanceCommand({
       await replyText('⚠️ 查無此區間的員工或打卡資料，無法產生檔案。');
       return true;
     }
+    const errorId =
+      new Date()
+        .toLocaleString('sv-SE', { timeZone: 'Asia/Taipei', hour12: false })
+        .replace(/-/g, '')
+        .replace(/:/g, '')
+        .replace(' ', '_')
+        .slice(0, 15) +
+      '_' +
+      String(Math.random()).slice(2, 6);
     try {
       const title =
         `泡泡貓_出勤記錄_` +
@@ -490,13 +501,22 @@ async function handleAttendanceCommand({
       }
       await replyText(`📂 你的打卡紀錄 Excel 檔案已準備好！\n🔗 下載連結：${url}`);
     } catch (e) {
+      const logPayload = {
+        errorId,
+        feature: '店家本月出勤',
+        userId,
+        yyyyMM,
+        message: e?.message,
+        stack: e?.stack,
+        responseData: e?.response?.data ?? null,
+      };
       console.error(
-        '[handleAttendanceCommand] createAttendanceSpreadsheetAndShare:',
-        e?.message,
-        e?.stack,
-        e?.response?.data ? JSON.stringify(e.response.data) : '',
+        '[handleAttendanceCommand] createAttendanceSpreadsheetAndShare failed',
+        JSON.stringify(logPayload, null, 2),
       );
-      await replyText('產出試算表時發生錯誤，請稍後再試或聯繫管理員。');
+      await replyText(
+        `產出試算表時發生錯誤，請稍後再試或聯繫管理員。\n（錯誤代碼：${errorId}，提供此代碼可加速排查）`,
+      );
     }
     return true;
   }
@@ -1189,7 +1209,10 @@ export async function handleStaffCommand({
       await replyText(msg);
       return true;
     }
-    const uri = `${REPORT_PAGE_URL}${REPORT_PAGE_URL.includes('?') ? '&' : '?'}token=${encodeURIComponent(r.token)}`;
+    let uri = `${REPORT_PAGE_URL}${REPORT_PAGE_URL.includes('?') ? '&' : '?'}token=${encodeURIComponent(r.token)}`;
+    if (REPORT_API_BASE) {
+      uri += `${uri.includes('?') ? '&' : '?'}api_base=${encodeURIComponent(REPORT_API_BASE)}`;
+    }
     await replyMessages([
       {
         type: 'template',

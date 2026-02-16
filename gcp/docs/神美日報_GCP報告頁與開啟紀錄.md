@@ -19,8 +19,9 @@
 1. **試算表**：在「泡泡貓 門市資料」試算表（ID: `1-t4KPVK-uzJ2xUoy_NR3d4XcUohLHVETEFXTlvj4baE`）中，新增或確認有名為「神美日報_開啟紀錄」的工作表，第一列為標題：`Timestamp`, `Date`, `Role`, `UserId`, `EmployeeCode`, `EmployeeName`, `StoreIds`。
 2. **環境變數**（`set-env.sh` 或 Cloud Run 環境）：
    - `LINE_HQ_SS_ID=1-t4KPVK-uzJ2xUoy_NR3d4XcUohLHVETEFXTlvj4baE`（或設 `REPORT_ACCESS_LOG_SS_ID` 指向同一份試算表）。
-   - `REPORT_PAGE_URL=https://<你的 Cloud Run 服務網址>/report`（例如 `https://pao-checkin-api-xxx.run.app/report`），讓 LINE「神美日報」按鈕產生的連結改為開啟 GCP 報告頁。
-3. **Odoo／官網**：若官網或 Odoo 有嵌入報告頁，可改為嵌入 `https://<Cloud Run 服務網址>/report?token=...`（token 仍由 LINE 神美日報按鈕產生），開啟時會由 GCP 寫入「神美日報_開啟紀錄」。
+   - **方式 A**：`REPORT_PAGE_URL=https://<Cloud Run 服務網址>/report`，連結直接開 GCP 報告頁。
+   - **方式 B（報告頁在官網）**：維持 `REPORT_PAGE_URL=https://www.paopaomao.tw/report`，並設定 `REPORT_API_BASE=https://<Cloud Run 服務網址>/report-api`；LINE 產生的連結會自動帶上 `api_base` 參數，官網報告頁即可正確呼叫 GCP report-api。
+3. **Odoo／官網**：若官網或 Odoo 有嵌入報告頁，可改為嵌入 `https://<Cloud Run 服務網址>/report?token=...`（token 仍由 LINE 神美日報按鈕產生），或使用方式 B 讓連結維持官網網址並帶 `api_base`，開啟時會由 GCP 寫入「神美日報_開啟紀錄」。
 
 ## 流程對照
 
