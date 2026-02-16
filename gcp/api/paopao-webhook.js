@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import { verifyLineSignature } from '../lib/line-webhook.js';
-import { appendSheet, readSheet, writeSheet } from '../lib/sheets.js';
+import { appendSheet, writeSheet } from '../lib/sheets.js';
+import { getDirectStoreReplyStatusText } from '../lib/store-reply-status.js';
 import { sendJson } from './http-utils.js';
 
 const PAOPAO_STORE_SS_ID = (process.env.PAOPAO_STORE_SS_ID || '').trim();
@@ -71,8 +72,8 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     if (event?.type === 'message' && event?.message?.type === 'text') {
       const text = String(event.message.text || '').trim();
       if (text.includes('店家回覆狀態')) {
-        // Reuse Core API behavior via GCP /core (same service) should be handled upstream; keep here minimal.
-        await replyText(event.replyToken, '請改用「店家回覆狀態」(GCP 版)；若仍顯示此訊息請聯繫管理員。');
+        const result = await getDirectStoreReplyStatusText(authClient, PAOPAO_STORE_SS_ID);
+        await replyText(event.replyToken, result.ok ? result.text : (result.message || '無法取得店家回覆狀態，請稍後再試。'));
       }
     }
   }
