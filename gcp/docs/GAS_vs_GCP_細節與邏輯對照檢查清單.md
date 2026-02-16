@@ -26,10 +26,11 @@
 | **我要打卡** | 回傳請傳送位置 | 同左 | ✅ |
 | **查詢打卡記錄** | Quick Reply 本月/上月/店家今天/本月/上月/可預約時間 | 同左 | ✅ |
 | **出勤指令** | 店家今天出勤、店家本月出勤、店家上月出勤、本月出勤、上月出勤、店家可預約時間 | 同左 | ✅ |
+| **本月/上月出勤 顯示格式** | getAtt.js formatAtt()：👤 員工: 姓名 (店名)、🔹 日期 出勤紀錄、✅ 上班/下班 HH:mm:ss | buildAttendanceMessage 對齊 formatAtt；店名由 getStoreDisplayName(storeNameMap) 解析，日期排序 | ✅ |
 | **最新活動 / 特約商店 / 我要開店** | 文字+連結或 Quick Reply | 同左 | ✅ |
 | **Line問題集** | 讀 LINE_HQ_SS_ID 問題集、待處理列表 | 同左 | ✅ |
 | **店家回覆狀態** | 僅管理者、直營店未回覆數與完成率 | 同左 | ✅ |
-| **明天/明日預約清單** | 管理者看 managedStores、員工看 workStores；Flex 或文字+Quick Reply；店名由 API 或 Core 回傳 | 同左；GCP 另以「店家基本資料」解析店碼→店名，優先顯示店名（例：總公司、竹北光明） | ✅ |
+| **明天/明日預約清單** | 管理者看 managedStores、員工看 workStores；Flex 或文字+Quick Reply；店名由 API 或 Core 回傳 | 同左；**店別一律用 getStoreDisplayName**：店家對照表→API 店名→「店碼 xxx」，不得顯示【0001】等代碼 | ✅ |
 | **明日預約（僅四字）** | 回「此功能暫時關閉，敬請見諒。」 | 已補：完全匹配時同左 | ✅ |
 | **我要了解客人 + 手機** | Core getCustomerAIResult，回傳 AI 分析結果 | 同左（callCoreApiPost） | ✅ |
 | **上月小費** | Core lastMonthTipsReport，回報表連結 | 同左 | ✅ |

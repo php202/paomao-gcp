@@ -15,6 +15,7 @@ import { handleStores } from './api/stores-api.js';
 import { handleStoreLineWebhook } from './api/store-line-webhook.js';
 import { handlePaopaoWebhook } from './api/paopao-webhook.js';
 import { handleAdmin } from './api/admin-api.js';
+import { appendWebhookError } from './lib/webhook-error-log.js';
 
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const LINE_TOKEN_PAOSTAFF = process.env.LINE_TOKEN_PAOSTAFF;
@@ -155,10 +156,12 @@ async function handleLineWebhook(req, rawBody, res) {
       }
     } catch (err) {
       console.error('[line-webhook] event error:', err.message);
+      await appendWebhookError(auth, 'line-webhook', err.message, `eventId=${event?.webhookEventId || '-'} userId=${meta?.userId?.slice(0, 12) || '-'} text=${(meta?.text || '').slice(0, 50)}`);
       try {
         await replyFallback(replyToken, '🚧 系統發生未預期的錯誤，請稍後再試或聯繫管理員。');
       } catch (e) {
         console.error('[line-webhook] reply error:', e.message);
+        await appendWebhookError(auth, 'line-webhook', e.message, 'reply fallback');
       }
     }
   }
@@ -174,6 +177,7 @@ async function handleLineWebhook(req, rawBody, res) {
           forwardFailCount += 1;
         } catch (e) {
           console.error('[line-webhook] fallback reply error:', e.message);
+          await appendWebhookError(auth, 'line-webhook', e.message, 'GAS_WEBHOOK_URL 未設定時 fallback reply');
         }
       }
     } else {
@@ -197,6 +201,7 @@ async function handleLineWebhook(req, rawBody, res) {
         console.log(`[line-webhook][${requestId}] forward-success status=${forwardRes.status} count=${forwardedCount}`);
       } catch (e) {
         console.error(`[line-webhook][${requestId}] forward to GAS error:`, e.message);
+        await appendWebhookError(auth, 'line-webhook', e.message, `forward to GAS requestId=${requestId}`);
         for (const event of forwardEvents) {
           try {
             if (event.type === 'message' && event.message?.type === 'text') {
@@ -205,6 +210,7 @@ async function handleLineWebhook(req, rawBody, res) {
             forwardFailCount += 1;
           } catch (replyErr) {
             console.error('[line-webhook] forward fail reply error:', replyErr.message);
+            await appendWebhookError(auth, 'line-webhook', replyErr.message, 'forward fail 後 reply');
           }
         }
       }

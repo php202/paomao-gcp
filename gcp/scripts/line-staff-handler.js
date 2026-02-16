@@ -1,9 +1,20 @@
 import fetch from 'node-fetch';
 import { nowTaipeiStr } from '../lib/date-tz.js';
 import { readSheet, appendSheet } from '../lib/sheets.js';
+import {
+  getCachedAttendanceSheetUrl,
+  createAttendanceSpreadsheetAndShare,
+  saveAttendanceRequestCache,
+} from '../lib/attendance-sheet.js';
 import { isUserAuthorized } from './line-checkin-handler.js';
 import { getTomorrowReservationList } from '../api/stores-api.js';
 import { findAvailableSlotsAction } from '../api/core-api.js';
+import {
+  ATT_KEYWORDS,
+  MSG_NO_ACTION_PERMISSION,
+  MSG_NO_MANAGED_STORES,
+  MSG_USE_STORE_LAST_MONTH,
+} from './staff-keyword-routes.js';
 
 const REPORT_PAGE_URL = process.env.REPORT_PAGE_URL || 'https://www.paopaomao.tw/report';
 const TOMORROW_BRIEFING_WEB_APP_URL = process.env.TOMORROW_BRIEFING_WEB_APP_URL || '';
@@ -14,14 +25,8 @@ const LINE_HQ_SS_ID = process.env.LINE_HQ_SS_ID || '';
 const STORE_INFO_SS_ID = process.env.LINE_STORE_SS_ID || process.env.INTEGRATED_SHEET_SS_ID || '';
 const WORKFLOW_SHEET_SS_ID = (process.env.WORKFLOW_SHEET_SS_ID || '').trim();
 
-const ATT_KEYWORDS = new Set([
-  '店家今天出勤',
-  '店家本月出勤',
-  '店家上月出勤',
-  '本月出勤',
-  '上月出勤',
-  '店家可預約時間',
-]);
+// 店別顯示規則：所有【店別】區塊一律使用 getStoreDisplayName(storeNameMap, storeId, apiStoreName)，
+// 不得直接使用 storeId 或 resolveStoreName(...) || storeId，避免出現【0001】等代碼。
 
 function splitStoreIds(list) {
   const out = [];
@@ -149,9 +154,16 @@ async function readStoreNameMap(auth, sheetReader) {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     const name = String(row[1] || '').trim();
+    if (!name) continue;
+    // F 欄 = SayDou 店家 ID（例 201969）；A 欄 = 店碼（例 0001、1437），管理者清單 C 欄多用店碼
     const saydouId = String(row[5] || '').trim();
-    if (!saydouId || !name) continue;
-    for (const key of storeIdCandidates(saydouId)) map.set(key, name);
+    const storeCode = String(row[0] || '').trim();
+    if (saydouId) {
+      for (const key of storeIdCandidates(saydouId)) map.set(key, name);
+    }
+    if (storeCode) {
+      for (const key of storeIdCandidates(storeCode)) map.set(key, name);
+    }
   }
   return map;
 }
@@ -164,7 +176,28 @@ function resolveStoreName(storeNameMap, storeId) {
   return '';
 }
 
-function buildAttendanceMessage(records, employeeMap) {
+/**
+ * 一律回傳「店名」用於顯示，不得直接顯示 storeId。
+ * 優先：店家對照表 → API 回傳店名 →  fallback「店碼 xxx」。
+ * 所有【店別】區塊請只用此函數，避免再出現【0001】等代碼。
+ */
+function getStoreDisplayName(storeNameMap, storeId, apiStoreName) {
+  const fromMap = resolveStoreName(storeNameMap, storeId);
+  if (fromMap && String(fromMap).trim()) return String(fromMap).trim();
+  if (apiStoreName && String(apiStoreName).trim()) return String(apiStoreName).trim();
+  const id = String(storeId || '').trim();
+  return id ? `店碼 ${id}` : '—';
+}
+
+/**
+ * 組「本月出勤／上月出勤」回覆文案。
+ * 對齊 GAS：gas/泡泡貓 員工打卡 Line@/getAtt.js 的 formatAtt()、sendAtt.js 本月/上月出勤。
+ * 格式：👤 員工: 姓名 (店名)、🔹 日期 出勤紀錄、✅ 上班: HH:mm:ss 、…、✅ 下班: …（無則留空）
+ * @param {Array} records - 打卡紀錄 { userId, time, type }
+ * @param {Map} employeeMap - lineId -> { name, store, ... }（同 GAS formatManagedStores 的 employeesByLineId）
+ * @param {Map} [storeNameMap] - 店碼→店名；有則顯示店名（如 泡泡貓｜台中廣三店），無則用 emp.store（員工清單 B 欄）
+ */
+function buildAttendanceMessage(records, employeeMap, storeNameMap = new Map()) {
   if (!records.length) return '⚠️ 查無打卡紀錄';
   const byUser = new Map();
   for (const r of records) {
@@ -173,24 +206,26 @@ function buildAttendanceMessage(records, employeeMap) {
     byUser.set(r.userId, arr);
   }
   const lines = [];
-  for (const [userId, items] of byUser.entries()) {
-    const emp = employeeMap.get(userId);
+  for (const [uid, items] of byUser.entries()) {
+    const emp = employeeMap.get(uid);
     if (!emp) continue;
-    lines.push(`👤 員工: ${emp.name} (${emp.store || '未設定門市'})`);
+    const storeLabel = getStoreDisplayName(storeNameMap, emp.store, null) || emp.store || '未設定門市';
+    lines.push(`👤 員工: ${emp.name} (${storeLabel})`);
     const byDate = new Map();
     for (const it of items) {
-      // Group by Asia/Taipei date to match how humans read attendance.
       const key = fmtDate(it.time);
       const a = byDate.get(key) || [];
       a.push(it);
       byDate.set(key, a);
     }
-    for (const [date, dayItems] of byDate.entries()) {
+    const sortedDates = [...byDate.keys()].sort();
+    for (const date of sortedDates) {
+      const dayItems = byDate.get(date);
       const on = dayItems.filter((x) => String(x.type).includes('上班')).map((x) => fmtDateTime(x.time).slice(11, 19));
       const off = dayItems.filter((x) => String(x.type).includes('下班')).map((x) => fmtDateTime(x.time).slice(11, 19));
       lines.push(`🔹 ${date} 出勤紀錄`);
-      lines.push(`✅ 上班: ${on.join(' 、') || '無'}`);
-      lines.push(`✅ 下班: ${off.join(' 、') || '無'}`);
+      lines.push(`✅ 上班: ${on.join(' 、') || ''}`);
+      lines.push(`✅ 下班: ${off.join(' 、') || ''}`);
     }
     lines.push('');
   }
@@ -389,7 +424,7 @@ async function handleAttendanceCommand({
     } catch {}
     // #endregion
 
-    await replyText(buildAttendanceMessage(records, maps.byLineId));
+    await replyText(buildAttendanceMessage(records, maps.byLineId, storeNameMap));
     return true;
   }
 
@@ -412,61 +447,99 @@ async function handleAttendanceCommand({
         yy -= 1;
       }
     }
+    const yyyyMM = `${yy}-${String(ym).padStart(2, '0')}`;
     const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
     const lastDay = new Date(yy, ym, 0).getDate();
     const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
-    const lines = [`📅 ${isThisMonth ? '本月' : '上月'}出勤（${yy}年${ym}月）`, ''];
+
+    // 與 GAS 一致：同人同月先回傳既有試算表連結
+    const cachedUrl = await getCachedAttendanceSheetUrl(
+      authClient,
+      sheetReader,
+      LINE_STAFF_SS_ID,
+      userId,
+      yyyyMM,
+    );
+    if (cachedUrl) {
+      await replyText(`📂 你的打卡紀錄 Excel 檔案已準備好！\n🔗 下載連結：${cachedUrl}`);
+      return true;
+    }
+
+    // 組各店出勤資料（與 GAS SendExcel.js 格式一致：店名、表頭、日期×上班下班）
+    const perStoreData = [];
+    const sortedDates = [];
+    for (let d = new Date(monthStart.getTime()); d <= monthEnd; d.setDate(d.getDate() + 1)) {
+      sortedDates.push(fmtDate(d));
+    }
     for (const storeId of managedStores) {
-      const members = maps.byStore.get(storeId) || [];
+      const members = (maps.byStore.get(storeId) || []).filter(
+        (m) => m.lineId && String(m.lineId) !== '#N/A',
+      );
       if (!members.length) continue;
+      const storeName = getStoreDisplayName(storeNameMap, storeId);
       const records = await readAttendance(
         authClient,
-        members.map((i) => i.lineId).filter(Boolean),
+        members.map((m) => m.lineId),
         monthStart,
         monthEnd,
         sheetReader,
       );
-      const byUser = new Map();
+      const byDateUser = {};
       for (const r of records) {
-        const arr = byUser.get(r.userId) || [];
-        arr.push(r);
-        byUser.set(r.userId, arr);
-      }
-      const attended = [];
-      const absent = [];
-      const unregistered = [];
-      for (const mbr of members) {
-        if (!mbr.lineId || mbr.lineId === '#N/A') {
-          unregistered.push(mbr.name);
-          continue;
+        const dateStr = fmtDate(r.time);
+        if (!byDateUser[dateStr]) byDateUser[dateStr] = {};
+        if (!byDateUser[dateStr][r.userId])
+          byDateUser[dateStr][r.userId] = { checkIn: '-', checkOut: '-' };
+        const cell = byDateUser[dateStr][r.userId];
+        const t = fmtDateTime(r.time).slice(11, 16);
+        if (String(r.type).includes('上班')) {
+          cell.checkIn = cell.checkIn === '-' ? t : cell.checkIn + '\n' + t;
         }
-        const rs = byUser.get(mbr.lineId) || [];
-        const hasClockIn = rs.some((r) => String(r.type).includes('上班'));
-        if (hasClockIn) {
-          const detail = rs
-            .sort((a, b) => a.time - b.time)
-            .map((r) => `${fmtDate(r.time)} ${fmtDateTime(r.time).slice(11, 16)}`)
-            .join('、');
-          attended.push(`${mbr.name}: ${detail}`);
-        } else {
-          absent.push(mbr.name);
+        if (String(r.type).includes('下班')) {
+          cell.checkOut = cell.checkOut === '-' ? t : cell.checkOut + '\n' + t;
         }
       }
-      const storeName = resolveStoreName(storeNameMap, storeId);
-      lines.push(`【${storeName || storeId}】`);
-      lines.push(`✅ 有上班：\n${attended.join('\n') || '無'}`);
-      lines.push(`❌ 沒上班：${absent.join('、') || '無'}`);
-      lines.push(`⚠️ 尚未註冊：${unregistered.join('、') || '無'}`);
-      lines.push('');
+      const headerRow1 = [storeName, ...members.flatMap((m) => [m.name, ''])];
+      const headerRow2 = ['日期', ...members.flatMap(() => ['上班', '下班'])];
+      const dataRows = sortedDates.map((dateStr) => [
+        dateStr,
+        ...members.flatMap((m) => {
+          const c = byDateUser[dateStr]?.[m.lineId] || { checkIn: '-', checkOut: '-' };
+          return [c.checkIn, c.checkOut];
+        }),
+      ]);
+      perStoreData.push({ sheetTitle: storeName, headerRow1, headerRow2, dataRows });
     }
-    const body = lines.join('\n').trim();
-    if (!body || body === lines[0]) {
-      await replyText(
-        (body || '查無負責店家的出勤資料。') +
-          '\n\n若您有管理店家，請確認「管理者清單」C 欄與「員工清單」B 欄的店家代碼一致。',
+    if (perStoreData.length === 0) {
+      await replyText('⚠️ 查無此區間的員工或打卡資料，無法產生檔案。');
+      return true;
+    }
+    try {
+      const title =
+        `泡泡貓_出勤記錄_` +
+        new Date()
+          .toLocaleString('sv-SE', {
+            timeZone: 'Asia/Taipei',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          })
+          .replace(/-/g, '')
+          .replace(/:/g, '')
+          .replace(' ', '_');
+      const { url } = await createAttendanceSpreadsheetAndShare(
+        authClient,
+        title,
+        perStoreData,
       );
-    } else {
-      await replyText(body);
+      await saveAttendanceRequestCache(authClient, LINE_STAFF_SS_ID, userId, yyyyMM, url);
+      await replyText(`📂 你的打卡紀錄 Excel 檔案已準備好！\n🔗 下載連結：${url}`);
+    } catch (e) {
+      console.error('[handleAttendanceCommand] createAttendanceSpreadsheetAndShare:', e.message);
+      await replyText('產出試算表時發生錯誤，請稍後再試或聯繫管理員。');
     }
     return true;
   }
@@ -478,8 +551,7 @@ async function handleAttendanceCommand({
     for (const storeId of managedStores) {
       // 0001 通常是總公司代碼，不提供可預約時段；避免整段都看起來壞掉
       if (String(storeId) === '0001') {
-        const storeName = resolveStoreName(storeNameMap, storeId);
-        lines.push(`【${storeName || storeId}】`);
+        lines.push(`【${getStoreDisplayName(storeNameMap, storeId)}】`);
         lines.push('(此代碼不提供可預約時段)');
         lines.push('');
         continue;
@@ -525,8 +597,7 @@ async function handleAttendanceCommand({
             : null;
       }
 
-      const storeName = resolveStoreName(storeNameMap, storeId);
-      lines.push(`【${storeName || storeId}】`);
+      lines.push(`【${getStoreDisplayName(storeNameMap, storeId)}】`);
 
       const slotDays = Array.isArray(result?.data) ? result.data : [];
       if (!result || result.status !== true || slotDays.length === 0) {
@@ -581,8 +652,7 @@ async function handleAttendanceCommand({
         absent.push(mbr.name);
       }
     }
-    const storeName = resolveStoreName(storeNameMap, storeId);
-    lines.push(`【${storeName || storeId}】`);
+      lines.push(`【${getStoreDisplayName(storeNameMap, storeId)}】`);
     lines.push(`✅ 有上班：\n${attended.join('\n') || '無'}`);
     lines.push(`❌ 沒上班：${absent.join('、') || '無'}`);
     lines.push(`⚠️ 尚未註冊：${unregistered.join('、') || '無'}`);
@@ -649,12 +719,20 @@ async function getWorkflowLink(authClient, keyword, sheetReader) {
 }
 
 async function handleStoreReplyStatus(replyText, authClient, sheetReader) {
-  if (!LINE_STORE_SS_ID) {
-    await replyText('系統尚未設定 LINE_STORE_SS_ID。');
+  if (!STORE_INFO_SS_ID) {
+    await replyText('系統尚未設定訊息一覽表（請設定 LINE_STORE_SS_ID 或 INTEGRATED_SHEET_SS_ID）。');
     return true;
   }
-  const stores = await sheetReader(authClient, LINE_STORE_SS_ID, "'店家基本資料'!A:L");
-  const msgs = await sheetReader(authClient, LINE_STORE_SS_ID, "'訊息一覽'!A:F");
+  let stores;
+  let msgs;
+  try {
+    stores = await sheetReader(authClient, STORE_INFO_SS_ID, "'店家基本資料'!A:L");
+    msgs = await sheetReader(authClient, STORE_INFO_SS_ID, "'訊息一覽'!A:F");
+  } catch (e) {
+    console.error('[handleStoreReplyStatus] sheet read error:', e.message);
+    await replyText('讀取訊息一覽表失敗，請確認試算表已共用給此服務的帳號，或聯繫管理員。');
+    return true;
+  }
   const direct = [];
   for (let i = 1; i < stores.length; i++) {
     const row = stores[i];
@@ -788,8 +866,7 @@ function formatTomorrowListPayload(data, storeNameMap = new Map()) {
     const items = Array.isArray(s.items) ? s.items : [];
     const slotsText = String(s.availableSlotsText || '').trim();
     const hasValidSlots = slotsText && slotsText !== '—' && slotsText !== '0 個空位' && slotsText.indexOf('還有') >= 0;
-    const displayName = resolveStoreName(storeNameMap, s.storeId) || s.storeName || s.storeId || '-';
-    lines.push(`\n【${displayName}】`);
+    lines.push(`\n【${getStoreDisplayName(storeNameMap, s.storeId, s.storeName)}】`);
     if (hasValidSlots) lines.push(`明日可預約空位 : ${slotsText}`);
     lines.push(`明天預約人數 : ${items.length}`);
     if (!items.length) {
@@ -957,9 +1034,12 @@ export async function handleStaffCommand({
     }
     const r = await callCoreApiPost('getCustomerAIResult', { phone }, fetcher);
     if (!r || r.status !== 'ok') {
-      const msg = !r && (!PAO_CAT_CORE_API_URL || !PAO_CAT_SECRET_KEY)
+      let msg = !r && (!PAO_CAT_CORE_API_URL || !PAO_CAT_SECRET_KEY)
         ? 'Core API 未設定，請聯繫管理員。'
         : (r && r.message) || '查詢時發生錯誤，請稍後再試。' + (phone.length === 9 ? ' 若為 10 碼手機請補齊再試。' : '');
+      if (msg.includes('查無此客人')) {
+        msg += '\n\n若該客人出現在「明日預約清單」，可點擊清單中的手機連結，系統會先產出資料後再顯示。';
+      }
       await replyText(msg);
       return true;
     }

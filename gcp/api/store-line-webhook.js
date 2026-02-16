@@ -3,6 +3,7 @@ import { findAvailableSlotsAction } from './core-api.js';
 import { nowTaipeiStr } from '../lib/date-tz.js';
 import { verifyLineSignature } from '../lib/line-webhook.js';
 import { appendSheet, readSheet, batchUpdateValues } from '../lib/sheets.js';
+import { appendWebhookError } from '../lib/webhook-error-log.js';
 import { sendJson } from './http-utils.js';
 
 const INTEGRATED_SHEET_SS_ID = (process.env.INTEGRATED_SHEET_SS_ID || process.env.LINE_STORE_SS_ID || '').trim();
@@ -161,7 +162,9 @@ async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, ac
 
 export async function handleStoreLineWebhook(req, res, { authClient, rawBody }) {
   if (!INTEGRATED_SHEET_SS_ID) {
-    sendJson(res, 200, { status: 'error', message: 'missing INTEGRATED_SHEET_SS_ID/LINE_STORE_SS_ID' });
+    const msg = 'missing INTEGRATED_SHEET_SS_ID/LINE_STORE_SS_ID';
+    await appendWebhookError(authClient, 'store-line-webhook', msg, 'env 未設定');
+    sendJson(res, 200, { status: 'error', message: msg });
     return;
   }
 
@@ -175,14 +178,20 @@ export async function handleStoreLineWebhook(req, res, { authClient, rawBody }) 
 
   const destinationId = String(payload?.destination || '').trim();
   if (!destinationId) {
+    console.warn('[store-line-webhook] missing destination in payload');
     sendJson(res, 200, { status: 'error', message: 'missing destination' });
     return;
   }
 
   const store = await findStoreByDestinationId(authClient, destinationId);
   if (!store?.channelSecret) {
+    console.warn('[store-line-webhook] unknown destination, no match in 店家基本資料 E 欄:', destinationId);
     sendJson(res, 200, { status: 'error', message: `unknown destination ${destinationId}` });
     return;
+  }
+  const eventCount = Array.isArray(payload?.events) ? payload.events.length : 0;
+  if (eventCount > 0) {
+    console.log('[store-line-webhook] destination=%s store=%s events=%d', destinationId.slice(0, 12), store.storeName, eventCount);
   }
 
   const signature = String(req.headers['x-line-signature'] || '');
@@ -281,7 +290,13 @@ export async function handleStoreLineWebhook(req, res, { authClient, rawBody }) 
       extractedPhone,
       replyToken,
     ];
-    await appendSheet(authClient, INTEGRATED_SHEET_SS_ID, '訊息一覽', row);
+    try {
+      await appendSheet(authClient, INTEGRATED_SHEET_SS_ID, '訊息一覽', row);
+    } catch (err) {
+      const errMsg = err?.message || String(err);
+      console.error('[store-line-webhook] append 訊息一覽 failed:', errMsg, 'store=', store.storeName, 'userId=', userId?.slice(0, 8));
+      await appendWebhookError(authClient, 'store-line-webhook', errMsg, `store=${store?.storeName || '-'} userId=${userId?.slice(0, 12) || '-'} append 訊息一覽`);
+    }
   }
 
   sendJson(res, 200, { status: 'ok' });

@@ -5,6 +5,8 @@ import { getDirectStoreReplyStatusText } from '../lib/store-reply-status.js';
 import { sendJson } from './http-utils.js';
 
 const PAOPAO_STORE_SS_ID = (process.env.PAOPAO_STORE_SS_ID || '').trim();
+/** 店家回覆狀態報表用（各店訊息一覽表，含店家名、狀態欄）；與員工打卡同一份 */
+const LINE_STORE_SS_ID = (process.env.LINE_STORE_SS_ID || '').trim();
 const PAOPAO_CHANNEL_SECRET = (process.env.LINE_CHANNEL_SECRET_PAOPAO || '').trim();
 const PAOPAO_TOKEN = (process.env.LINE_TOKEN_PAOPAO || '').trim();
 
@@ -72,8 +74,12 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     if (event?.type === 'message' && event?.message?.type === 'text') {
       const text = String(event.message.text || '').trim();
       if (text.includes('店家回覆狀態')) {
-        const result = await getDirectStoreReplyStatusText(authClient, PAOPAO_STORE_SS_ID);
-        await replyText(event.replyToken, result.ok ? result.text : (result.message || '無法取得店家回覆狀態，請稍後再試。'));
+        if (!LINE_STORE_SS_ID) {
+          await replyText(event.replyToken, '店家回覆狀態需設定 LINE_STORE_SS_ID（各店訊息一覽表），請聯繫管理員。');
+        } else {
+          const result = await getDirectStoreReplyStatusText(authClient, LINE_STORE_SS_ID);
+          await replyText(event.replyToken, result.ok ? result.text : (result.message || '無法取得店家回覆狀態，請稍後再試。'));
+        }
       }
     }
   }

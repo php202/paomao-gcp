@@ -173,6 +173,17 @@ node index.js serve
    - **未搬遷指令**：若 `FORWARD_UNKNOWN_TO_GAS=1` 且有 `GAS_WEBHOOK_URL`，會轉發到 GAS 主 webhook
 4. 建議先以 `FORWARD_UNKNOWN_TO_GAS=0` 測 GCP 本地處理，確認後再視需要開啟轉發。
 
+### 本機 LINE Webhook 測試（除錯用）
+
+不用一直部署，讓 LINE 直接打本機即可除錯：
+
+1. **終端機 1**：`cd gcp && node index.js serve`（或 `./run-serve.sh`），需有 `.env` 或 `set-env.sh` 的變數。
+2. **終端機 2**：用隧道把本機 port 曝露成 HTTPS，例如 `ngrok http 8080` 或 `./run-tunnel.sh`。
+3. 到 **LINE Developers** → **Messaging API** → **Webhook URL** 暫時改成隧道網址 + `/line-webhook`（例：`https://xxx.ngrok-free.app/line-webhook`）。
+4. 對 bot 發訊息，請求會進本機，可看 log、設中斷點。測完記得把 Webhook URL 改回正式環境。
+
+詳見 **[docs/本機LINE_Webhook測試.md](docs/本機LINE_Webhook測試.md)**。
+
 ### 測試「urlfetch 滿了」情境
 
 - **打卡頁**：前端使用 `postCheckin(body)` 先打 GAS、失敗再打 GCP，即可在 GAS 掛掉或額度滿時仍能打卡。
