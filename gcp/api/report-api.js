@@ -2,6 +2,7 @@
  * 神美日報對外 API（報告頁面用）：無需 key，依 token/session 驗證。
  * - consumeReportToken: 若 token 在 GCP 快取則寫入「神美日報_開啟紀錄」後轉 GAS 取資料
  * - getReportByDate / submitReportShare: 轉 GAS
+ * - 允許官網 (paopaomao.tw) 跨域呼叫，回應帶 CORS 標頭
  */
 
 import { getAuth } from '../lib/auth.js';
@@ -11,6 +12,17 @@ import { sendJson } from './http-utils.js';
 
 const LEGACY_GAS_CORE_API_URL = (process.env.LEGACY_GAS_CORE_API_URL || process.env.PAO_CAT_CORE_API_URL || '').trim();
 const CORE_KEY = (process.env.PAO_CAT_SECRET_KEY || '').trim();
+
+/** CORS：官網嵌入報告頁時瀏覽器會跨域請求，需回傳此標頭 */
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Max-Age': '86400',
+};
+
+function sendJsonCors(res, statusCode, obj) {
+  sendJson(res, statusCode, obj, CORS_HEADERS);
+}
 
 /**
  * 處理 GET /report-api?action=...&token=... 等
@@ -28,13 +40,13 @@ export async function handleReportApi(req, res, opts) {
   const text = (url.searchParams.get('text') || '').trim();
 
   if (!action) {
-    sendJson(res, 200, { status: 'error', message: '缺少 action' });
+    sendJsonCors(res, 200, { status: 'error', message: '缺少 action' });
     return;
   }
 
   if (action === 'consumeReportToken') {
     if (!token) {
-      sendJson(res, 200, { status: 'error', message: '缺少 token' });
+      sendJsonCors(res, 200, { status: 'error', message: '缺少 token' });
       return;
     }
     const payload = consumeReportToken(token);
@@ -56,7 +68,7 @@ export async function handleReportApi(req, res, opts) {
         console.warn('[report-api] writeDailyReportAccessLog error:', e?.message);
       }
       if (!LEGACY_GAS_CORE_API_URL || !CORE_KEY) {
-        sendJson(res, 200, { status: 'error', message: '日報後端未設定，請聯絡管理員。' });
+        sendJsonCors(res, 200, { status: 'error', message: '日報後端未設定，請聯絡管理員。' });
         return;
       }
       const createRes = await callLegacyCore('createReportToken', {
@@ -67,38 +79,38 @@ export async function handleReportApi(req, res, opts) {
       });
       const t2 = createRes?.token;
       if (!t2) {
-        sendJson(res, 200, { status: 'error', message: createRes?.message || '取得報表失敗' });
+        sendJsonCors(res, 200, { status: 'error', message: createRes?.message || '取得報表失敗' });
         return;
       }
       const out = await callLegacyCore('consumeReportToken', { token: t2 }, { method: 'get' });
-      sendJson(res, 200, out);
+      sendJsonCors(res, 200, out);
       return;
     }
     const out = await callLegacyCore('consumeReportToken', { token }, { method: 'get' });
-    sendJson(res, 200, out);
+    sendJsonCors(res, 200, out);
     return;
   }
 
   if (action === 'getReportByDate') {
     if (!sessionId || !date) {
-      sendJson(res, 200, { status: 'error', message: '缺少 sessionId 或 date' });
+      sendJsonCors(res, 200, { status: 'error', message: '缺少 sessionId 或 date' });
       return;
     }
     const out = await callLegacyCore('getReportByDate', { sessionId, date }, { method: 'get' });
-    sendJson(res, 200, out);
+    sendJsonCors(res, 200, out);
     return;
   }
 
   if (action === 'submitReportShare') {
     const textToUse = content || text;
     if (!sessionId || !textToUse) {
-      sendJson(res, 200, { status: 'error', message: '缺少 sessionId 或 content' });
+      sendJsonCors(res, 200, { status: 'error', message: '缺少 sessionId 或 content' });
       return;
     }
     const out = await callLegacyCore('submitReportShare', { sessionId, content: textToUse }, { method: 'get' });
-    sendJson(res, 200, out);
+    sendJsonCors(res, 200, out);
     return;
   }
 
-  sendJson(res, 200, { status: 'error', message: `未知 action: ${action}` });
+  sendJsonCors(res, 200, { status: 'error', message: `未知 action: ${action}` });
 }

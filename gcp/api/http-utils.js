@@ -8,11 +8,12 @@ export function getUrl(req, base = 'http://localhost') {
   return new URL(req.url || '/', base);
 }
 
-export function sendJson(res, statusCode, obj) {
+export function sendJson(res, statusCode, obj, extraHeaders = {}) {
   const body = JSON.stringify(obj);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
+    ...extraHeaders,
   });
   res.end(body);
 }

@@ -339,9 +339,20 @@ export function startServer() {
       return;
     }
 
-    if (method === 'GET' && url === '/report-api') {
-      await handleReportApi(req, res, { url: fullUrl });
-      return;
+    if (url === '/report-api') {
+      if (method === 'OPTIONS') {
+        res.writeHead(204, {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Max-Age': '86400',
+        });
+        res.end();
+        return;
+      }
+      if (method === 'GET') {
+        await handleReportApi(req, res, { url: fullUrl });
+        return;
+      }
     }
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
