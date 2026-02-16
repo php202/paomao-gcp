@@ -512,7 +512,7 @@ async function handleAttendanceCommand({
       };
       console.error(
         '[handleAttendanceCommand] createAttendanceSpreadsheetAndShare failed',
-        JSON.stringify(logPayload, null, 2),
+        JSON.stringify(logPayload),
       );
       await replyText(
         `產出試算表時發生錯誤，請稍後再試或聯繫管理員。\n（錯誤代碼：${errorId}，提供此代碼可加速排查）`,

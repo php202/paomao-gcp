@@ -88,6 +88,24 @@ export async function createAttendanceSpreadsheetAndShare(auth, title, perStoreD
   if (!perStoreData || perStoreData.length === 0) {
     throw new Error('perStoreData 為空');
   }
+  // 記錄實際呼叫者，方便 403 時排查（ADC 時 getCredentials 常無 client_email，改從 metadata 取）
+  let caller = '(unknown)';
+  try {
+    const creds = await auth.getCredentials?.();
+    caller = creds?.client_email ?? null;
+    if (!caller && typeof fetch === 'function') {
+      const meta =
+        await fetch('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email', {
+          headers: { 'Metadata-Flavor': 'Google' },
+        }).then((r) => (r.ok ? r.text() : null)).catch(() => null);
+      if (meta) caller = meta;
+    }
+    if (!caller) caller = '(ADC, enable Drive API in project)';
+  } catch (e) {
+    caller = `(error: ${e?.message})`;
+  }
+  console.warn('[attendance-sheet] createSpreadsheet caller:', caller);
+
   const sheets = google.sheets({ version: 'v4', auth });
   const drive = google.drive({ version: 'v3', auth });
 

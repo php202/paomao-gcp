@@ -74,11 +74,17 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     if (event?.type === 'message' && event?.message?.type === 'text') {
       const text = String(event.message.text || '').trim();
       if (text.includes('店家回覆狀態')) {
-        if (!LINE_STORE_SS_ID) {
-          await replyText(event.replyToken, '店家回覆狀態需設定 LINE_STORE_SS_ID（各店訊息一覽表），請聯繫管理員。');
-        } else {
-          const result = await getDirectStoreReplyStatusText(authClient, LINE_STORE_SS_ID);
-          await replyText(event.replyToken, result.ok ? result.text : (result.message || '無法取得店家回覆狀態，請稍後再試。'));
+        try {
+          if (!LINE_STORE_SS_ID) {
+            await replyText(event.replyToken, '店家回覆狀態需設定 LINE_STORE_SS_ID（各店訊息一覽表），請聯繫管理員。');
+          } else {
+            const result = await getDirectStoreReplyStatusText(authClient, LINE_STORE_SS_ID);
+            const replyMsg = result.ok ? result.text : (result.message || '無法取得店家回覆狀態，請稍後再試。');
+            await replyText(event.replyToken, replyMsg);
+          }
+        } catch (err) {
+          const fallback = '查詢店家回覆狀態時發生錯誤，請稍後再試或聯繫管理員。';
+          await replyText(event.replyToken, fallback).catch(() => {});
         }
       }
     }
