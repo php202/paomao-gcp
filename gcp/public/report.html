@@ -73,9 +73,12 @@
 <script>
   (function () {
     var GAS_BASE_URL = "__REPORT_API_BASE__";
+    // 嵌入（如 Odoo）時若無法由伺服器替換，可從網址參數讀取：?api_base=https://您的服務.run.app/report-api
+    var params = new URLSearchParams(window.location.search);
+    var apiBaseParam = params.get("api_base");
+    if (apiBaseParam) GAS_BASE_URL = apiBaseParam;
 
     function getToken() {
-      var params = new URLSearchParams(window.location.search);
       return params.get("token") || "";
     }
 
@@ -277,8 +280,8 @@
       showError("請確認網址含有 token 參數 (例如: ?token=...)");
       return;
     }
-    if (!GAS_BASE_URL || GAS_BASE_URL.indexOf("/report-api") === -1) {
-      showError("設定錯誤：請使用正確的報告頁面網址。");
+    if (GAS_BASE_URL.indexOf("__REPORT_API_BASE__") !== -1) {
+      showError("設定錯誤：請使用正確的報告頁面網址；若為嵌入頁面，請於網址加上 api_base 參數（例如 ?api_base=https://您的服務.run.app/report-api）。");
       return;
     }
 

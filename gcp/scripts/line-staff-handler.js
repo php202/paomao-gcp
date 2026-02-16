@@ -482,7 +482,12 @@ async function handleAttendanceCommand({
       await saveAttendanceRequestCache(authClient, LINE_STAFF_SS_ID, userId, yyyyMM, url);
       await replyText(`📂 你的打卡紀錄 Excel 檔案已準備好！\n🔗 下載連結：${url}`);
     } catch (e) {
-      console.error('[handleAttendanceCommand] createAttendanceSpreadsheetAndShare:', e.message);
+      console.error(
+        '[handleAttendanceCommand] createAttendanceSpreadsheetAndShare:',
+        e?.message,
+        e?.stack,
+        e?.response ? JSON.stringify(e.response?.data || e.response) : '',
+      );
       await replyText('產出試算表時發生錯誤，請稍後再試或聯繫管理員。');
     }
     return true;

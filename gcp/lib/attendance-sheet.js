@@ -16,9 +16,17 @@ import {
 
 const REQUEST_LOG_SHEET = '請求表單紀錄';
 
-/** 試算表名稱中的單引號要雙寫 */
+/** 試算表名稱中的單引號要雙寫（用於 A1 範圍） */
 function escapeSheetTitle(title) {
   return String(title || '').replace(/'/g, "''");
+}
+
+/** 工作表名稱淨化：Google Sheets 不可含 : \\ / ? * [ ]，長度上限約 100 */
+function sanitizeSheetTitle(title, fallback = 'Sheet') {
+  let s = String(title || '').trim();
+  s = s.replace(/[:\\/?*[\]]/g, '_').replace(/_+/g, '_').trim();
+  if (s.length > 100) s = s.slice(0, 100);
+  return s || fallback;
 }
 
 /** 1-based 欄位索引轉 A1 表示法：1=A, 26=Z, 27=AA */
@@ -83,8 +91,9 @@ export async function createAttendanceSpreadsheetAndShare(auth, title, perStoreD
   const sheets = google.sheets({ version: 'v4', auth });
   const drive = google.drive({ version: 'v3', auth });
 
-  const sheetProps = perStoreData.map((s) => ({
-    properties: { title: s.sheetTitle },
+  // 與 GAS SendExcel 一致：工作表名稱須淨化（不可含 : \ / ? * [ ]），避免 create 失敗
+  const sheetProps = perStoreData.map((s, i) => ({
+    properties: { title: sanitizeSheetTitle(s.sheetTitle, `店${i + 1}`) },
   }));
 
   const createRes = await sheets.spreadsheets.create({
@@ -98,20 +107,31 @@ export async function createAttendanceSpreadsheetAndShare(auth, title, perStoreD
 
   for (let i = 0; i < perStoreData.length; i++) {
     const store = perStoreData[i];
-    const sheetTitle = store.sheetTitle;
+    const sheetTitle = sanitizeSheetTitle(store.sheetTitle, `店${i + 1}`);
     const values = [store.headerRow1, store.headerRow2, ...(store.dataRows || [])];
     if (values.length === 0) continue;
     const rows = values.length;
     const cols = Math.max(...values.map((r) => (r || []).length), 1);
+    // 每列補齊到 cols 寬，避免 API 寫入維度錯誤
+    const padded = values.map((row) => {
+      const r = Array.isArray(row) ? [...row] : [row];
+      while (r.length < cols) r.push('');
+      return r.slice(0, cols);
+    });
     const colLetter = colIndexToLetter(cols);
     const range = `'${escapeSheetTitle(sheetTitle)}'!A1:${colLetter}${rows}`;
-    await writeSheet(auth, spreadsheetId, range, values);
+    await writeSheet(auth, spreadsheetId, range, padded);
   }
 
-  await drive.permissions.create({
-    fileId: spreadsheetId,
-    requestBody: { type: 'anyone', role: 'reader' },
-  });
+  try {
+    await drive.permissions.create({
+      fileId: spreadsheetId,
+      requestBody: { type: 'anyone', role: 'reader' },
+    });
+  } catch (e) {
+    console.warn('[attendance-sheet] set anyone reader failed:', e?.message, 'spreadsheetId=', spreadsheetId);
+    // 仍回傳連結，擁有者或同網域可能可開
+  }
 
   return { url, spreadsheetId };
 }
