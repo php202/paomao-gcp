@@ -6,10 +6,15 @@
 
 import http from 'http';
 import fetch from 'node-fetch';
-import { verifyLineSignature } from './lib/line-webhook.js';
+import { verifyLineSignature, isDuplicateLineEvent } from './lib/line-webhook.js';
 import { getAuth } from './lib/auth.js';
-import { handleCheckInRequest } from './scripts/line-checkin-handler.js';
+import { handleCheckInRequest, handleRegisterRequest } from './scripts/line-checkin-handler.js';
 import { handleStaffCommand } from './scripts/line-staff-handler.js';
+import { handleCore } from './api/core-api.js';
+import { handleStores } from './api/stores-api.js';
+import { handleStoreLineWebhook } from './api/store-line-webhook.js';
+import { handlePaopaoWebhook } from './api/paopao-webhook.js';
+import { handleAdmin } from './api/admin-api.js';
 
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const LINE_TOKEN_PAOSTAFF = process.env.LINE_TOKEN_PAOSTAFF;
@@ -90,6 +95,13 @@ async function handleLineWebhook(req, rawBody, res) {
   }
 
   for (const event of events) {
+    const eventId = event.webhookEventId;
+    if (eventId && isDuplicateLineEvent(eventId)) {
+      if (WEBHOOK_LOG_VERBOSE) {
+        console.log(`[line-webhook][${requestId}] ♻️ 重複請求已攔截 eventId=${eventId}`);
+      }
+      continue;
+    }
     const replyToken = event.replyToken;
     const meta = eventMeta(event);
     try {
@@ -102,6 +114,11 @@ async function handleLineWebhook(req, rawBody, res) {
         if (text === '我要打卡') {
           console.log(`[line-webhook][${requestId}] local-handle:checkin user=${userId || '-'} `);
           await handleCheckInRequest(auth, replyToken, userId);
+          localHandledCount += 1;
+          continue;
+        }
+        if (text.includes('我要註冊')) {
+          await handleRegisterRequest(auth, replyToken, userId, text);
           localHandledCount += 1;
           continue;
         }
@@ -204,6 +221,7 @@ export function startServer() {
   const server = http.createServer(async (req, res) => {
     const method = req.method;
     const url = req.url?.split('?')[0] || '/';
+    const fullUrl = new URL(req.url || '/', 'http://localhost');
 
     if (method === 'GET' && (url === '/' || url === '/health')) {
       send(res, 200, { status: 'ok', server: 'gcp-backup' });
@@ -218,6 +236,78 @@ export function startServer() {
     if (method === 'POST' && url === '/line-webhook') {
       const rawBody = await parseBody(req);
       await handleLineWebhook(req, rawBody, res);
+      return;
+    }
+
+    if (method === 'GET' && url === '/store-line-webhook') {
+      send(res, 200, { status: 'ok', message: 'Store LINE Webhook endpoint exists. Use POST.' });
+      return;
+    }
+    if (method === 'POST' && url === '/store-line-webhook') {
+      const authClient = await getAuth();
+      const rawBody = await parseBody(req);
+      await handleStoreLineWebhook(req, res, { authClient, rawBody });
+      return;
+    }
+
+    if (method === 'GET' && url === '/paopao-line-webhook') {
+      send(res, 200, { status: 'ok', message: 'PAOPAO LINE Webhook endpoint exists. Use POST.' });
+      return;
+    }
+    if (method === 'POST' && url === '/paopao-line-webhook') {
+      const authClient = await getAuth();
+      const rawBody = await parseBody(req);
+      await handlePaopaoWebhook(req, res, { authClient, rawBody });
+      return;
+    }
+
+    if ((method === 'GET' || method === 'POST') && url === '/core') {
+      const authClient = await getAuth();
+      let bodyJson = null;
+      if (method === 'POST') {
+        const rawBody = await parseBody(req);
+        bodyJson = (() => {
+          try {
+            return JSON.parse(rawBody.toString('utf8'));
+          } catch {
+            return null;
+          }
+        })();
+      }
+      await handleCore(req, res, { authClient, url: fullUrl, bodyJson });
+      return;
+    }
+
+    if ((method === 'GET' || method === 'POST') && url === '/stores') {
+      const authClient = await getAuth();
+      let bodyJson = null;
+      if (method === 'POST') {
+        const rawBody = await parseBody(req);
+        bodyJson = (() => {
+          try {
+            return JSON.parse(rawBody.toString('utf8'));
+          } catch {
+            return null;
+          }
+        })();
+      }
+      await handleStores(req, res, { authClient, url: fullUrl, bodyJson });
+      return;
+    }
+
+    if ((method === 'GET' || method === 'POST') && url === '/admin') {
+      let bodyJson = null;
+      if (method === 'POST') {
+        const rawBody = await parseBody(req);
+        bodyJson = (() => {
+          try {
+            return JSON.parse(rawBody.toString('utf8'));
+          } catch {
+            return null;
+          }
+        })();
+      }
+      await handleAdmin(req, res, { url: fullUrl, bodyJson });
       return;
     }
 

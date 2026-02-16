@@ -1,16 +1,28 @@
 #!/bin/bash
 # 複製為 set-env.sh 並填入實際值：cp set-env.sh.example set-env.sh
-# 執行：source set-env.sh
-# 試算表 ID 請與 gas/PaoMao_Core/Config.js 一致；勿提交 set-env.sh
+# 部署前執行：source set-env.sh && ./deploy-line-webhook.sh
+# 勿提交 set-env.sh（內含密鑰，已在 .gitignore）
+
+# ----- 必填（部署時會檢查）-----
 export PROJECT_ID=your-gcp-project-id
 export REGION=asia-east1
+export LINE_STAFF_SS_ID=   # 員工清單／打卡紀錄／管理者清單 所在試算表 ID
+export LINE_CHANNEL_SECRET=   # LINE 頻道 → Basic settings → Channel secret
+export LINE_TOKEN_PAOSTAFF=  # LINE 頻道 → Messaging API → Channel access token
+
+# ----- 選填（試算表／日報等）-----
 export TOKEN_SHEET_SS_ID=
-export LINE_STAFF_SS_ID=
 export LINE_STORE_SS_ID=
 export OUTPUT_SS_ID=
 export FETCH_BATCH_SIZE=10
+export DAILY_REPORT_CRON="10 0 * * *"
+
+# ----- Core API（神美日報、上月小費、我要了解客人）- 必填才會正常 -----
+# PAO_CAT_CORE_API_URL = PaoMao_Core 在 GAS 的「網路應用程式」部署網址，結尾 /exec
+#   取得：GAS → PaoMao_Core 專案 → 部署 → 管理部署 → 複製「網路應用程式」那筆網址
+# PAO_CAT_SECRET_KEY = 與 PaoMao_Core 專案「指令碼屬性」裡設的 PAO_CAT_SECRET_KEY 相同
 export PAO_CAT_CORE_API_URL=
 export PAO_CAT_SECRET_KEY=
-export DAILY_REPORT_CRON="10 0 * * *"
+
 echo "Set PROJECT_ID=$PROJECT_ID REGION=$REGION"
-echo "請在 set-env.sh 填入試算表 ID 與 Core API 參數（勿提交 set-env.sh）"
+echo "請在 set-env.sh 填入上述必填與選填值（勿提交 set-env.sh）"

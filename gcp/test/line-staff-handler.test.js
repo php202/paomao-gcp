@@ -49,3 +49,60 @@ test('handleStaffCommand returns false for unknown command', async () => {
   });
   assert.equal(handled, false);
 });
+
+test('formatTomorrowListPayload matches image format: 共 X店、Y人, 明天預約人數 : N, 姓名 (HH:mm) - 電話', () => {
+  const { formatTomorrowListPayload } = __testables__;
+  const data = {
+    dateStr: '2026-02-16',
+    byStore: [
+      {
+        storeId: '1001',
+        storeName: '竹北光明',
+        availableSlotsText: '1.5hr 還有 1 個空位',
+        items: [
+          { name: '休息', phone: '0000000000', rsvtim: '2026-02-16T11:00:00' },
+          { name: '陳俊良', phone: '0912232815', rsvtim: '2026-02-16T11:30:00' },
+        ],
+      },
+      {
+        storeId: '0001',
+        storeName: '總公司',
+        availableSlotsText: '—',
+        items: [],
+      },
+      {
+        storeId: '1002',
+        storeName: '內湖東湖',
+        availableSlotsText: '—',
+        items: [{ name: '林小明', phone: '0911111111', rsvtim: '2026-02-16T15:00:00' }],
+      },
+    ],
+  };
+  const { lines, phonesForQuickReply } = formatTomorrowListPayload(data);
+  const text = lines.join('\n');
+  assert.ok(text.startsWith('明日預約 2026-02-16 共 2店、3人'), 'header: 共 X店、Y人 (no space before 店)');
+  assert.ok(text.includes('【竹北光明】'), 'store name in brackets');
+  assert.ok(text.includes('明日可預約空位 : 1.5hr 還有 1 個空位'), 'slots line with space before colon');
+  assert.ok(text.includes('明天預約人數 : 2'), 'count with space before colon');
+  assert.ok(text.includes('休息 (11:00) - 0000000000'), 'list format: 姓名 (HH:mm) - 電話');
+  assert.ok(text.includes('陳俊良 (11:30) - 0912232815'), 'second guest format');
+  assert.ok(text.includes('【總公司】'));
+  assert.ok(text.includes('明天預約人數 : 0'));
+  assert.ok(text.includes('（無預約）'));
+  assert.ok(text.includes('【內湖東湖】'));
+  assert.ok(text.includes('林小明 (15:00) - 0911111111'));
+  assert.equal(phonesForQuickReply.length, 3);
+});
+
+test('buildAttendanceMessage formats per-user attendance with 上班/下班 times', () => {
+  const { buildAttendanceMessage } = __testables__;
+  const records = [
+    { userId: 'U1', time: new Date('2026-02-16T09:00:00+08:00'), type: '上班打卡' },
+    { userId: 'U1', time: new Date('2026-02-16T18:00:00+08:00'), type: '下班打卡' },
+  ];
+  const employeeMap = new Map([['U1', { name: '王小明', store: '內湖東湖' }]]);
+  const msg = buildAttendanceMessage(records, employeeMap);
+  assert.ok(msg.includes('王小明'));
+  assert.ok(msg.includes('上班'));
+  assert.ok(msg.includes('下班'));
+});

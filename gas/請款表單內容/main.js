@@ -4,12 +4,65 @@
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('🛠 帳務工具')
-      .addItem('🚀 產出銀行傳輸 TXT 檔', 'main')
-      .addItem('🚀 開發票', 'issueInvoice')
-      .addItem('🚀 產出勞報單', 'createLaborReceipts')
+      .addItem('🚀 產出銀行傳輸 TXT 檔（改由 GCP 執行）', 'gcp_main')
+      .addItem('🚀 開發票（改由 GCP 執行）', 'gcp_issueInvoice')
+      .addItem('🚀 產出勞報單（改由 GCP 執行）', 'gcp_createLaborReceipts')
       .addSeparator()
-      .addItem('🗑️ 刪除暫存工作表', 'cleanupTempSheets')
+      .addItem('🗑️ 刪除暫存工作表（改由 GCP 執行）', 'gcp_cleanupTempSheets')
       .addToUi();
+}
+
+function getGcpAdminParams_() {
+  const p = PropertiesService.getScriptProperties();
+  const url = (p.getProperty('GCP_ADMIN_URL') || '').trim();
+  const key = (p.getProperty('GCP_ADMIN_KEY') || p.getProperty('PAO_CAT_SECRET_KEY') || '').trim();
+  return { url, key, useAdmin: url.length > 0 && key.length > 0 };
+}
+
+function callGcpAdmin_(action, extraParams) {
+  const { url, key, useAdmin } = getGcpAdminParams_();
+  if (!useAdmin) return null;
+  const payload = Object.assign({ key: key, action: action }, extraParams || {});
+  const res = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+    followRedirects: true,
+  });
+  try {
+    return JSON.parse(res.getContentText() || '{}');
+  } catch (e) {
+    return { status: 'error', message: res.getContentText() };
+  }
+}
+
+function gcp_main() {
+  const ui = SpreadsheetApp.getUi();
+  const res = callGcpAdmin_('billing_bankTxt', {});
+  if (!res) return ui.alert('尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY，或 GCP 尚未提供此 action。');
+  ui.alert(res.status === 'ok' ? '已送出 GCP 工作（請至 Cloud Run Logs/Jobs 查看進度）' : ('GCP 執行失敗：' + (res.message || 'unknown')));
+}
+
+function gcp_issueInvoice() {
+  const ui = SpreadsheetApp.getUi();
+  const res = callGcpAdmin_('billing_issueInvoice', {});
+  if (!res) return ui.alert('尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY，或 GCP 尚未提供此 action。');
+  ui.alert(res.status === 'ok' ? '已送出 GCP 工作（請至 Cloud Run Logs/Jobs 查看進度）' : ('GCP 執行失敗：' + (res.message || 'unknown')));
+}
+
+function gcp_createLaborReceipts() {
+  const ui = SpreadsheetApp.getUi();
+  const res = callGcpAdmin_('billing_createLaborReceipts', {});
+  if (!res) return ui.alert('尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY，或 GCP 尚未提供此 action。');
+  ui.alert(res.status === 'ok' ? '已送出 GCP 工作（請至 Cloud Run Logs/Jobs 查看進度）' : ('GCP 執行失敗：' + (res.message || 'unknown')));
+}
+
+function gcp_cleanupTempSheets() {
+  const ui = SpreadsheetApp.getUi();
+  const res = callGcpAdmin_('billing_cleanupTempSheets', {});
+  if (!res) return ui.alert('尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY，或 GCP 尚未提供此 action。');
+  ui.alert(res.status === 'ok' ? '已送出 GCP 工作（請至 Cloud Run Logs/Jobs 查看進度）' : ('GCP 執行失敗：' + (res.message || 'unknown')));
 }
 
 /** 費用種類	說明

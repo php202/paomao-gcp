@@ -1,10 +1,65 @@
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('🛠 帳務工具')
-      .addItem('🚀 預約表單（每天早上都有跑）', 'runReservationReport')
-      .addItem('🚀 儲值金', 'storeData')
-      .addItem('🚀 通知未繳錢的', 'dailyCheckAndPush')
+      .addItem('🚀 預約表單（改由 GCP 執行）', 'gcp_runReservationReport')
+      .addItem('🚀 儲值金（改由 GCP 執行）', 'gcp_storeData')
+      .addItem('🚀 通知未繳錢的（改由 GCP 執行）', 'gcp_dailyCheckAndPush')
       .addToUi();
+}
+
+function getGcpAdminParams_() {
+  const p = PropertiesService.getScriptProperties();
+  const url = (p.getProperty('GCP_ADMIN_URL') || '').trim();
+  const key = (p.getProperty('GCP_ADMIN_KEY') || p.getProperty('PAO_CAT_SECRET_KEY') || '').trim();
+  return { url, key, useAdmin: url.length > 0 && key.length > 0 };
+}
+
+function callGcpAdmin_(action, extraParams) {
+  const { url, key, useAdmin } = getGcpAdminParams_();
+  if (!useAdmin) return null;
+  const payload = Object.assign({ key: key, action: action }, extraParams || {});
+  const res = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+    followRedirects: true,
+  });
+  try {
+    return JSON.parse(res.getContentText() || '{}');
+  } catch (e) {
+    return { status: 'error', message: res.getContentText() };
+  }
+}
+
+function gcp_runReservationReport() {
+  const ui = SpreadsheetApp.getUi();
+  const res = callGcpAdmin_('paopao_runReservationReport', {});
+  if (!res) {
+    ui.alert('尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY，或 GCP 尚未提供 PAOPAO 報表 action。');
+    return;
+  }
+  ui.alert(res.status === 'ok' ? '已送出 GCP 工作（請至 Cloud Run Logs/Jobs 查看進度）' : ('GCP 執行失敗：' + (res.message || 'unknown')));
+}
+
+function gcp_storeData() {
+  const ui = SpreadsheetApp.getUi();
+  const res = callGcpAdmin_('paopao_storeData', {});
+  if (!res) {
+    ui.alert('尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY，或 GCP 尚未提供儲值金 action。');
+    return;
+  }
+  ui.alert(res.status === 'ok' ? '已送出 GCP 工作（請至 Cloud Run Logs/Jobs 查看進度）' : ('GCP 執行失敗：' + (res.message || 'unknown')));
+}
+
+function gcp_dailyCheckAndPush() {
+  const ui = SpreadsheetApp.getUi();
+  const res = callGcpAdmin_('paopao_dailyCheckAndPush', {});
+  if (!res) {
+    ui.alert('尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY，或 GCP 尚未提供推播 action。');
+    return;
+  }
+  ui.alert(res.status === 'ok' ? '已送出 GCP 工作（請至 Cloud Run Logs/Jobs 查看進度）' : ('GCP 執行失敗：' + (res.message || 'unknown')));
 }
 // ==========================================
 // [Client] Main.gs - 主要入口

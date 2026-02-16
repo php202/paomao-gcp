@@ -18,6 +18,13 @@ cd "$(dirname "$0")"
 : "${LINE_STORE_SS_ID:=}"
 : "${PAO_CAT_CORE_API_URL:=}"
 : "${PAO_CAT_SECRET_KEY:=}"
+: "${LEGACY_GAS_CORE_API_URL:=}"
+: "${LEGACY_GAS_STORES_API_URL:=}"
+: "${INTEGRATED_SHEET_SS_ID:=}"
+: "${ADMIN_KEY:=}"
+: "${PAOPAO_STORE_SS_ID:=}"
+: "${LINE_CHANNEL_SECRET_PAOPAO:=}"
+: "${LINE_TOKEN_PAOPAO:=}"
 : "${REPORT_PAGE_URL:=https://www.paopaomao.tw/report}"
 : "${TOMORROW_BRIEFING_WEB_APP_URL:=}"
 : "${GAS_WEBHOOK_URL:=}"
@@ -31,6 +38,50 @@ echo "=== 1. 建映像（含 server.js /line-webhook）==="
 gcloud builds submit --tag "$IMAGE"
 
 echo "=== 2. 部署 Cloud Run Service（node index.js serve）==="
+if [ -n "${PAO_CAT_CORE_API_URL:-}" ] && [ -n "${PAO_CAT_SECRET_KEY:-}" ]; then
+  echo "Core API 已設定（PAO_CAT_CORE_API_URL 有值），神美日報/上月小費/我要了解客人 將可用"
+else
+  echo "提醒：PAO_CAT_CORE_API_URL 或 PAO_CAT_SECRET_KEY 未設，神美日報等會回「Core API 未設定」"
+fi
+
+# Only override env vars when non-empty, to avoid wiping
+# existing Cloud Run config with empty values.
+append_env() {
+  local k="$1"
+  local v="$2"
+  if [ -n "${v:-}" ]; then
+    if [ -z "${ENV_VARS:-}" ]; then
+      ENV_VARS="${k}=${v}"
+    else
+      ENV_VARS="${ENV_VARS},${k}=${v}"
+    fi
+  fi
+}
+
+# required
+ENV_VARS=""
+append_env "LINE_STAFF_SS_ID" "$LINE_STAFF_SS_ID"
+append_env "LINE_CHANNEL_SECRET" "$LINE_CHANNEL_SECRET"
+append_env "LINE_TOKEN_PAOSTAFF" "$LINE_TOKEN_PAOSTAFF"
+
+# optional (only when provided)
+append_env "LINE_HQ_SS_ID" "$LINE_HQ_SS_ID"
+append_env "LINE_STORE_SS_ID" "$LINE_STORE_SS_ID"
+append_env "INTEGRATED_SHEET_SS_ID" "$INTEGRATED_SHEET_SS_ID"
+append_env "PAO_CAT_CORE_API_URL" "$PAO_CAT_CORE_API_URL"
+append_env "PAO_CAT_SECRET_KEY" "$PAO_CAT_SECRET_KEY"
+append_env "LEGACY_GAS_CORE_API_URL" "$LEGACY_GAS_CORE_API_URL"
+append_env "LEGACY_GAS_STORES_API_URL" "$LEGACY_GAS_STORES_API_URL"
+append_env "ADMIN_KEY" "$ADMIN_KEY"
+append_env "PAOPAO_STORE_SS_ID" "$PAOPAO_STORE_SS_ID"
+append_env "LINE_CHANNEL_SECRET_PAOPAO" "$LINE_CHANNEL_SECRET_PAOPAO"
+append_env "LINE_TOKEN_PAOPAO" "$LINE_TOKEN_PAOPAO"
+append_env "REPORT_PAGE_URL" "$REPORT_PAGE_URL"
+append_env "TOMORROW_BRIEFING_WEB_APP_URL" "$TOMORROW_BRIEFING_WEB_APP_URL"
+append_env "GAS_WEBHOOK_URL" "$GAS_WEBHOOK_URL"
+append_env "FORWARD_UNKNOWN_TO_GAS" "$FORWARD_UNKNOWN_TO_GAS"
+append_env "WEBHOOK_LOG_VERBOSE" "$WEBHOOK_LOG_VERBOSE"
+
 gcloud run deploy "$SERVICE_NAME" \
   --image "$IMAGE" \
   --region "$REGION" \
@@ -38,7 +89,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --allow-unauthenticated \
   --command "node" \
   --args "index.js,serve" \
-  --set-env-vars "LINE_STAFF_SS_ID=$LINE_STAFF_SS_ID,LINE_CHANNEL_SECRET=$LINE_CHANNEL_SECRET,LINE_TOKEN_PAOSTAFF=$LINE_TOKEN_PAOSTAFF,LINE_HQ_SS_ID=$LINE_HQ_SS_ID,LINE_STORE_SS_ID=$LINE_STORE_SS_ID,PAO_CAT_CORE_API_URL=$PAO_CAT_CORE_API_URL,PAO_CAT_SECRET_KEY=$PAO_CAT_SECRET_KEY,REPORT_PAGE_URL=$REPORT_PAGE_URL,TOMORROW_BRIEFING_WEB_APP_URL=$TOMORROW_BRIEFING_WEB_APP_URL,GAS_WEBHOOK_URL=$GAS_WEBHOOK_URL,FORWARD_UNKNOWN_TO_GAS=$FORWARD_UNKNOWN_TO_GAS,WEBHOOK_LOG_VERBOSE=$WEBHOOK_LOG_VERBOSE" \
+  --set-env-vars "$ENV_VARS" \
   --min-instances 0 \
   --max-instances 10
 

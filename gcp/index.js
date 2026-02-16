@@ -35,6 +35,24 @@ async function main() {
     return;
   }
 
+  if (cmd === 'check-timeout-pending') {
+    const { run } = await import('./scripts/check-timeout-pending.js');
+    await run();
+    return;
+  }
+
+  if (cmd === 'cleanup-retention-list') {
+    const { run } = await import('./scripts/cleanup-retention-list.js');
+    await run();
+    return;
+  }
+
+  if (cmd === 'waitlist-auto-push') {
+    const { run } = await import('./scripts/waitlist-auto-push.js');
+    await run();
+    return;
+  }
+
   // employee-monthly-report 或舊用法：node index.js [startYm] [endYm]
   const reportArgs = cmd === 'employee-monthly-report' ? rest : [cmd, rest[0]].filter(Boolean);
   const { run } = await import('./scripts/employee-monthly-report.js');

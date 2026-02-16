@@ -1,6 +1,9 @@
 import fetch from 'node-fetch';
-import { readSheet } from '../lib/sheets.js';
+import { nowTaipeiStr } from '../lib/date-tz.js';
+import { readSheet, appendSheet } from '../lib/sheets.js';
 import { isUserAuthorized } from './line-checkin-handler.js';
+import { getTomorrowReservationList } from '../api/stores-api.js';
+import { findAvailableSlotsAction } from '../api/core-api.js';
 
 const REPORT_PAGE_URL = process.env.REPORT_PAGE_URL || 'https://www.paopaomao.tw/report';
 const TOMORROW_BRIEFING_WEB_APP_URL = process.env.TOMORROW_BRIEFING_WEB_APP_URL || '';
@@ -8,7 +11,8 @@ const PAO_CAT_CORE_API_URL = process.env.PAO_CAT_CORE_API_URL || '';
 const PAO_CAT_SECRET_KEY = process.env.PAO_CAT_SECRET_KEY || '';
 const LINE_STAFF_SS_ID = process.env.LINE_STAFF_SS_ID || '';
 const LINE_HQ_SS_ID = process.env.LINE_HQ_SS_ID || '';
-const LINE_STORE_SS_ID = process.env.LINE_STORE_SS_ID || '';
+const STORE_INFO_SS_ID = process.env.LINE_STORE_SS_ID || process.env.INTEGRATED_SHEET_SS_ID || '';
+const WORKFLOW_SHEET_SS_ID = (process.env.WORKFLOW_SHEET_SS_ID || '').trim();
 
 const ATT_KEYWORDS = new Set([
   '店家今天出勤',
@@ -34,7 +38,15 @@ function splitStoreIds(list) {
 
 function normalizeDate(value) {
   if (!value) return null;
-  const d = value instanceof Date ? value : new Date(value);
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const s = String(value).trim();
+  // 試算表常存「YYYY-MM-DD HH:mm:ss」為台北時間，補 +08:00 再解析
+  if (/^\d{4}-\d{2}-\d{2}[\sT]\d{1,2}:\d{2}/.test(s)) {
+    const withTz = s.includes('T') ? s + (s.includes('+') || s.includes('Z') ? '' : '+08:00') : s.replace(/\s+/, 'T') + '+08:00';
+    const d = new Date(withTz);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
@@ -51,6 +63,15 @@ function fmtDateTime(d) {
   }).format(d);
 }
 
+function fmtDate(d) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+
 function extractPhoneFromCustomerKeyword(text) {
   if (!text || typeof text !== 'string') return null;
   const s = text.replace(/我要了解客人\s*/i, '').trim();
@@ -58,10 +79,12 @@ function extractPhoneFromCustomerKeyword(text) {
   if (digits.length === 9 && digits[0] === '9') return `0${digits}`;
   if (digits.length >= 10 && digits[0] === '0') return digits.slice(0, 10);
   if (digits.length >= 9 && digits[0] === '9') return `0${digits.slice(0, 9)}`;
-  const m = text.match(/09[\d\s-]{8,}/);
+  const m = text.match(/09[\d\s-]{7,}/);
   if (!m) return null;
   const d = m[0].replace(/\D/g, '');
-  return d.length >= 10 ? d.slice(0, 10) : null;
+  if (d.length >= 10) return d.slice(0, 10);
+  if (d.length === 9 && d.startsWith('09')) return d; // 9 碼 09 開頭也嘗試查詢
+  return null;
 }
 
 function formatDirectStoreCompletionRate(val) {
@@ -103,6 +126,44 @@ async function callCoreApiPost(action, payload = {}, fetcher = fetch) {
   }
 }
 
+function storeIdCandidates(storeId) {
+  const s = String(storeId || '').trim();
+  if (!s) return [];
+  const out = [s];
+  if (/^\d+$/.test(s)) {
+    const noLeading = s.replace(/^0+(?=\d)/, '');
+    if (noLeading && noLeading !== s) out.push(noLeading);
+    const n = Number(s);
+    if (!Number.isNaN(n)) {
+      const ns = String(n);
+      if (ns && ns !== s && !out.includes(ns)) out.push(ns);
+    }
+  }
+  return out;
+}
+
+async function readStoreNameMap(auth, sheetReader) {
+  const map = new Map();
+  if (!STORE_INFO_SS_ID) return map;
+  const rows = await sheetReader(auth, STORE_INFO_SS_ID, "'店家基本資料'!A:I");
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const name = String(row[1] || '').trim();
+    const saydouId = String(row[5] || '').trim();
+    if (!saydouId || !name) continue;
+    for (const key of storeIdCandidates(saydouId)) map.set(key, name);
+  }
+  return map;
+}
+
+function resolveStoreName(storeNameMap, storeId) {
+  for (const key of storeIdCandidates(storeId)) {
+    const name = storeNameMap.get(key);
+    if (name) return name;
+  }
+  return '';
+}
+
 function buildAttendanceMessage(records, employeeMap) {
   if (!records.length) return '⚠️ 查無打卡紀錄';
   const byUser = new Map();
@@ -118,7 +179,8 @@ function buildAttendanceMessage(records, employeeMap) {
     lines.push(`👤 員工: ${emp.name} (${emp.store || '未設定門市'})`);
     const byDate = new Map();
     for (const it of items) {
-      const key = it.time.toISOString().slice(0, 10);
+      // Group by Asia/Taipei date to match how humans read attendance.
+      const key = fmtDate(it.time);
       const a = byDate.get(key) || [];
       a.push(it);
       byDate.set(key, a);
@@ -155,8 +217,23 @@ async function readEmployeeMaps(auth, sheetReader) {
       list.push(data);
       byStore.set(saydouId, list);
     }
+    // 管理者清單 C 欄多為店碼（員工清單 B 欄），也要能查到該店成員
+    if (store) {
+      if (store === saydouId) {
+        byStore.set(store, byStore.get(saydouId));
+      } else {
+        const list = byStore.get(store) || [];
+        list.push(data);
+        byStore.set(store, list);
+      }
+    }
   }
   return { byLineId, byStore };
+}
+
+function safeUserSuffix(userId) {
+  const s = String(userId || '');
+  return s ? s.slice(-6) : '';
 }
 
 async function readAttendance(auth, userIds, startDate, endDate, sheetReader) {
@@ -219,18 +296,99 @@ async function handleAttendanceCommand({
   if (!ATT_KEYWORDS.has(text)) return false;
 
   const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
+  // 出勤「今天」以 Asia/Taipei 為準，避免 Cloud Run (UTC) 與台灣時區差一天
+  const taipeiTodayStr = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+  const [taipeiY, taipeiM, taipeiD] = taipeiTodayStr.split('-').map(Number);
+  const y = taipeiY;
+  const m = taipeiM - 1;
   const maps = await readEmployeeMaps(authClient, sheetReader);
+  const storeNameMap = await readStoreNameMap(authClient, sheetReader);
+
+  // #region agent log
+  try {
+    const sampleIds = splitStoreIds(authResult.identity.includes('manager') ? authResult.managedStores : authResult.workStores).slice(0, 5);
+    const sampleResolved = sampleIds.map((id) => ({ id, name: resolveStoreName(storeNameMap, id) || null }));
+    console.log(
+      JSON.stringify({
+        hypothesisId: 'H4',
+        location: 'line-staff-handler.js:handleAttendanceCommand:storeNameMap',
+        message: 'store name map size and sample lookups',
+        data: {
+          userSuffix: safeUserSuffix(userId),
+          storeInfoSsIdSet: !!STORE_INFO_SS_ID,
+          storeInfoSsIdPrefix: STORE_INFO_SS_ID ? String(STORE_INFO_SS_ID).slice(0, 8) : '',
+          mapSize: storeNameMap.size,
+          sampleResolved,
+        },
+        timestamp: Date.now(),
+      }),
+    );
+  } catch {}
+  // #endregion
+
+  // #region agent log
+  try {
+    console.log(
+      JSON.stringify({
+        hypothesisId: 'H1',
+        location: 'line-staff-handler.js:handleAttendanceCommand:stores',
+        message: 'manager store ids (raw)',
+        data: {
+          cmd: text,
+          userSuffix: safeUserSuffix(userId),
+          managedStoresRaw: (authResult.managedStores || []).slice(0, 10),
+          workStoresRaw: (authResult.workStores || []).slice(0, 10),
+        },
+        timestamp: Date.now(),
+      }),
+    );
+  } catch {}
+  // #endregion
 
   if (text === '本月出勤' || text === '上月出勤') {
     if (!authResult.identity.includes('employee') && !authResult.identity.includes('manager')) {
       await replyText('您尚無本行動權限');
       return true;
     }
-    const start = text === '本月出勤' ? new Date(y, m, 1) : new Date(y, m - 1, 1);
-    const end = text === '本月出勤' ? new Date(y, m + 1, 0, 23, 59, 59, 999) : new Date(y, m, 0, 23, 59, 59, 999);
-    const records = await readAttendance(authClient, [userId], start, end, sheetReader);
+    // 以台北時區的「本月／上月」為區間，與店家本月/上月出勤一致，避免 Cloud Run (UTC) 差一天
+    const taipeiTodayStr = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+    const [yStr, mStr] = taipeiTodayStr.split('-');
+    let ym = parseInt(mStr, 10);
+    let yy = parseInt(yStr, 10);
+    if (text === '上月出勤') {
+      ym -= 1;
+      if (ym === 0) {
+        ym = 12;
+        yy -= 1;
+      }
+    }
+    const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
+    const lastDay = new Date(yy, ym, 0).getDate();
+    const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
+    const records = await readAttendance(authClient, [userId], monthStart, monthEnd, sheetReader);
+
+    // #region agent log
+    try {
+      const sample = records[0];
+      console.log(
+        JSON.stringify({
+          hypothesisId: 'H2',
+          location: 'line-staff-handler.js:handleAttendanceCommand:tzSample',
+          message: 'attendance date grouping sample (UTC vs Asia/Taipei)',
+          data: sample
+            ? {
+                userSuffix: safeUserSuffix(userId),
+                timeIso: sample.time.toISOString(),
+                utcDateKey: sample.time.toISOString().slice(0, 10),
+                twDateKey: fmtDate(sample.time),
+              }
+            : { userSuffix: safeUserSuffix(userId), sample: null },
+          timestamp: Date.now(),
+        }),
+      );
+    } catch {}
+    // #endregion
+
     await replyText(buildAttendanceMessage(records, maps.byLineId));
     return true;
   }
@@ -241,17 +399,140 @@ async function handleAttendanceCommand({
     return true;
   }
 
+  if (text === '店家本月出勤' || text === '店家上月出勤') {
+    const isThisMonth = text === '店家本月出勤';
+    const taipeiTodayStr = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+    const [yStr, mStr] = taipeiTodayStr.split('-');
+    let ym = parseInt(mStr, 10);
+    let yy = parseInt(yStr, 10);
+    if (!isThisMonth) {
+      ym -= 1;
+      if (ym === 0) {
+        ym = 12;
+        yy -= 1;
+      }
+    }
+    const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
+    const lastDay = new Date(yy, ym, 0).getDate();
+    const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
+    const lines = [`📅 ${isThisMonth ? '本月' : '上月'}出勤（${yy}年${ym}月）`, ''];
+    for (const storeId of managedStores) {
+      const members = maps.byStore.get(storeId) || [];
+      if (!members.length) continue;
+      const records = await readAttendance(
+        authClient,
+        members.map((i) => i.lineId).filter(Boolean),
+        monthStart,
+        monthEnd,
+        sheetReader,
+      );
+      const byUser = new Map();
+      for (const r of records) {
+        const arr = byUser.get(r.userId) || [];
+        arr.push(r);
+        byUser.set(r.userId, arr);
+      }
+      const attended = [];
+      const absent = [];
+      const unregistered = [];
+      for (const mbr of members) {
+        if (!mbr.lineId || mbr.lineId === '#N/A') {
+          unregistered.push(mbr.name);
+          continue;
+        }
+        const rs = byUser.get(mbr.lineId) || [];
+        const hasClockIn = rs.some((r) => String(r.type).includes('上班'));
+        if (hasClockIn) {
+          const detail = rs
+            .sort((a, b) => a.time - b.time)
+            .map((r) => `${fmtDate(r.time)} ${fmtDateTime(r.time).slice(11, 16)}`)
+            .join('、');
+          attended.push(`${mbr.name}: ${detail}`);
+        } else {
+          absent.push(mbr.name);
+        }
+      }
+      const storeName = resolveStoreName(storeNameMap, storeId);
+      lines.push(`【${storeName || storeId}】`);
+      lines.push(`✅ 有上班：\n${attended.join('\n') || '無'}`);
+      lines.push(`❌ 沒上班：${absent.join('、') || '無'}`);
+      lines.push(`⚠️ 尚未註冊：${unregistered.join('、') || '無'}`);
+      lines.push('');
+    }
+    const body = lines.join('\n').trim();
+    if (!body || body === lines[0]) {
+      await replyText(
+        (body || '查無負責店家的出勤資料。') +
+          '\n\n若您有管理店家，請確認「管理者清單」C 欄與「員工清單」B 欄的店家代碼一致。',
+      );
+    } else {
+      await replyText(body);
+    }
+    return true;
+  }
+
   if (text === '店家可預約時間') {
     const startDate = now.toISOString().slice(0, 10);
     const endDate = new Date(now.getTime() + 7 * 86400000).toISOString().slice(0, 10);
     const lines = [];
     for (const storeId of managedStores) {
-      const r = await callCoreApiGet('findAvailableSlots', { sayId: storeId, startDate, endDate }, fetch);
-      lines.push(`【${storeId}】`);
-      if (!r || r.status !== 'ok' || !Array.isArray(r.data) || r.data.length === 0) {
+      // 0001 通常是總公司代碼，不提供可預約時段；避免整段都看起來壞掉
+      if (String(storeId) === '0001') {
+        const storeName = resolveStoreName(storeNameMap, storeId);
+        lines.push(`【${storeName || storeId}】`);
+        lines.push('(此代碼不提供可預約時段)');
+        lines.push('');
+        continue;
+      }
+      // #region agent log
+      try {
+        console.log(
+          JSON.stringify({
+            hypothesisId: 'H3',
+            location: 'line-staff-handler.js:handleAttendanceCommand:findAvailableSlots',
+            message: 'calling core findAvailableSlots (raw storeId)',
+            data: { storeId: String(storeId), userSuffix: safeUserSuffix(userId), startDate, endDate },
+            timestamp: Date.now(),
+          }),
+        );
+      } catch {}
+      // #endregion
+
+      // Preferred: call internal GCP implementation directly (no PAO_CAT_CORE_API_URL needed).
+      let result = null;
+      try {
+        result = await findAvailableSlotsAction(authClient, {
+          sayId: storeId,
+          startDate,
+          endDate,
+          needPeople: 1,
+          durationMin: 90,
+          weekDays: [0, 1, 2, 3, 4, 5, 6],
+          timeStart: '11:00',
+          timeEnd: '21:00',
+        });
+      } catch {
+        result = null;
+      }
+
+      // Fallback: legacy Core API (if configured)
+      if (!result) {
+        const r = await callCoreApiGet('findAvailableSlots', { sayId: storeId, startDate, endDate }, fetch);
+        result = Array.isArray(r?.data)
+          ? { status: true, data: r.data }
+          : Array.isArray(r?.result?.data)
+            ? { status: true, data: r.result.data }
+            : null;
+      }
+
+      const storeName = resolveStoreName(storeNameMap, storeId);
+      lines.push(`【${storeName || storeId}】`);
+
+      const slotDays = Array.isArray(result?.data) ? result.data : [];
+      if (!result || result.status !== true || slotDays.length === 0) {
         lines.push('(無可預約時段)');
       } else {
-        for (const day of r.data.slice(0, 7)) {
+        for (const day of slotDays.slice(0, 7)) {
           lines.push(`${String(day.date || '').slice(5)} (${day.week || '-'})：${(day.times || []).join('、')}`);
         }
       }
@@ -261,9 +542,9 @@ async function handleAttendanceCommand({
     return true;
   }
 
-  const dayStart = new Date(y, m, now.getDate(), 0, 0, 0, 0);
-  const dayEnd = new Date(y, m, now.getDate(), 23, 59, 59, 999);
-  const lines = [`📅 日期：${m + 1} 月 ${now.getDate()} 日 的出勤紀錄`, ''];
+  const dayStart = new Date(`${taipeiTodayStr}T00:00:00+08:00`);
+  const dayEnd = new Date(`${taipeiTodayStr}T23:59:59.999+08:00`);
+  const lines = [];
   for (const storeId of managedStores) {
     const members = maps.byStore.get(storeId) || [];
     if (!members.length) continue;
@@ -300,7 +581,8 @@ async function handleAttendanceCommand({
         absent.push(mbr.name);
       }
     }
-    lines.push(`【${storeId}】`);
+    const storeName = resolveStoreName(storeNameMap, storeId);
+    lines.push(`【${storeName || storeId}】`);
     lines.push(`✅ 有上班：\n${attended.join('\n') || '無'}`);
     lines.push(`❌ 沒上班：${absent.join('、') || '無'}`);
     lines.push(`⚠️ 尚未註冊：${unregistered.join('、') || '無'}`);
@@ -346,6 +628,24 @@ async function handleLineQuestion(replyText, authClient, sheetReader) {
   }
   await replyText(lines.join('\n'));
   return true;
+}
+
+/** 依關鍵字從「公司流程」試算表取得連結（與 GAS Core.getWorkflowLink 一致）；無設定或無匹配回 null */
+async function getWorkflowLink(authClient, keyword, sheetReader) {
+  if (!WORKFLOW_SHEET_SS_ID || !keyword || typeof sheetReader !== 'function') return null;
+  const k = String(keyword).trim();
+  if (!k) return null;
+  try {
+    const rows = await sheetReader(authClient, WORKFLOW_SHEET_SS_ID, "'公司流程'!A:B");
+    for (let i = 0; i < rows.length; i++) {
+      const key = String(rows[i][0] || '').trim();
+      const link = rows[i][1];
+      if (key && key === k) return link ? String(link).trim() : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 async function handleStoreReplyStatus(replyText, authClient, sheetReader) {
@@ -400,28 +700,158 @@ async function handleStoreReplyStatus(replyText, authClient, sheetReader) {
   return true;
 }
 
-async function handleTomorrowList(text, authResult, replyText, fetcher) {
-  if (!(text === '明天預約清單' || text === '明日預約清單')) return false;
-  if (!TOMORROW_BRIEFING_WEB_APP_URL) {
-    await replyText('未設定明日預約 API（TOMORROW_BRIEFING_WEB_APP_URL）。');
+/** 補打卡：與 GAS makeUpTime 對齊，只回範本或解析後寫入員工打卡紀錄 */
+async function handleMakeUpTime(authClient, authResult, userId, text, replyText, sheetReader) {
+  if (!authResult.isAuthorized) {
+    await replyText('您尚未註冊或無權限，無法使用補打卡功能。');
     return true;
   }
+  const timeRegex = /補登時間[:：]\s*([0-9\/\-\s:]+)/;
+  const typeRegex = /輸入上\/下班[:：]\s*(.+)/;
+  if (!text.includes('補登時間') && !text.includes('輸入上/下班')) {
+    const defaultStore = (authResult.workStores && authResult.workStores[0]) ? authResult.workStores[0] : '請輸入店家';
+    const nowStr = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replace(/\//g, '/');
+    const template =
+      '請「複製」以下內容，修改後傳送給機器人：\n\n' +
+      '補打卡申請\n' +
+      `店家：${defaultStore}\n` +
+      `補登時間：${nowStr}\n` +
+      '輸入上/下班：上班打卡';
+    await replyText(template);
+    return true;
+  }
+  const timeMatch = text.match(timeRegex);
+  const typeMatch = text.match(typeRegex);
+  if (!timeMatch || !typeMatch) {
+    await replyText('❌ 格式錯誤！無法讀取時間或類型。\n請確保您保留了「補登時間：」與「輸入上/下班：」的標題。');
+    return true;
+  }
+  let inputType = String(typeMatch[1]).trim();
+  if (inputType.includes('上')) inputType = '上班打卡';
+  else if (inputType.includes('下')) inputType = '下班打卡';
+  else {
+    await replyText('❌ 類型錯誤：請填寫「上班」或「下班」。');
+    return true;
+  }
+  let timeStr = String(timeMatch[1]).trim().replace(/\//g, '-');
+  if (/^\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}/.test(timeStr) && !timeStr.includes('+') && !timeStr.includes('Z')) {
+    timeStr = timeStr + '+08:00';
+  }
+  const makeUpDate = new Date(timeStr);
+  if (Number.isNaN(makeUpDate.getTime())) {
+    await replyText('❌ 時間格式錯誤！\n範例：2025/02/01 09:00');
+    return true;
+  }
+  let storeName = (authResult.workStores && authResult.workStores[0]) || '未知店家';
+  const storeMatch = text.match(/店家[:：]\s*(.+)/);
+  if (storeMatch && String(storeMatch[1]).trim() !== '') storeName = String(storeMatch[1]).trim();
+  const makeUpDateStr = makeUpDate.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 19);
+  try {
+    await appendSheet(authClient, LINE_STAFF_SS_ID, '員工打卡紀錄', [
+      userId,
+      makeUpDateStr,
+      inputType,
+      storeName,
+      '',
+      '',
+      '📝補打卡',
+    ]);
+  } catch (e) {
+    await replyText('系統錯誤：找不到打卡紀錄表，請聯繫管理員。');
+    return true;
+  }
+  const displayTime = makeUpDate.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  await replyText(`✅ 補打卡成功！\n\n已為您補登：\n📅 ${displayTime}\n📍 ${inputType}\n(系統已標記為補打卡)`);
+  return true;
+}
+
+/**
+ * 將明日預約 API 資料轉成與圖示一致的文案（共 X店、Y人、明天預約人數 : N、姓名 (HH:mm) - 電話）。
+ * @param {Object} data - { dateStr, byStore: [ { storeId, storeName, items, availableSlotsText } ] }
+ * @param {Map<string, string>} [storeNameMap] - 店碼→店名（店家基本資料），有則顯示店名
+ * @returns {{ lines: string[], phonesForQuickReply: Array<{ phone: string, label: string }> }}
+ */
+function formatTomorrowListPayload(data, storeNameMap = new Map()) {
+  const stores = Array.isArray(data?.byStore) ? data.byStore : [];
+  let totalStores = 0;
+  let totalGuests = 0;
+  for (const s of stores) {
+    const n = (Array.isArray(s.items) ? s.items : []).length;
+    if (n > 0) {
+      totalStores += 1;
+      totalGuests += n;
+    }
+  }
+  const lines = [`明日預約 ${data?.dateStr || ''} 共 ${totalStores}店、${totalGuests}人`];
+  const phonesForQuickReply = [];
+  for (const s of stores.slice(0, 8)) {
+    const items = Array.isArray(s.items) ? s.items : [];
+    const slotsText = String(s.availableSlotsText || '').trim();
+    const hasValidSlots = slotsText && slotsText !== '—' && slotsText !== '0 個空位' && slotsText.indexOf('還有') >= 0;
+    const displayName = resolveStoreName(storeNameMap, s.storeId) || s.storeName || s.storeId || '-';
+    lines.push(`\n【${displayName}】`);
+    if (hasValidSlots) lines.push(`明日可預約空位 : ${slotsText}`);
+    lines.push(`明天預約人數 : ${items.length}`);
+    if (!items.length) {
+      lines.push('（無預約）');
+      continue;
+    }
+    for (const it of items.slice(0, 8)) {
+      const phone = String(it.phone || '').trim();
+      const name = String(it.name || '').trim();
+      let timeStr = String(it.rsvtim || '').trim();
+      if (timeStr.includes('T') || timeStr.includes(' ')) timeStr = (timeStr.split(/[T\s]/)[1] || '').slice(0, 5);
+      if (!timeStr || timeStr.length < 4) timeStr = '--:--';
+      lines.push(`- ${name || '-'} (${timeStr}) - ${phone || '（無電話）'}`.trim());
+      if (phone && phonesForQuickReply.length < 13) {
+        phonesForQuickReply.push({
+          phone,
+          label: name ? `了解 ${phone} ${name}` : `了解 ${phone}`,
+        });
+        if (phonesForQuickReply.length >= 13) break;
+      }
+    }
+    if (phonesForQuickReply.length >= 13) break;
+  }
+  return { lines, phonesForQuickReply };
+}
+
+async function handleTomorrowList(text, authClient, authResult, replyText, replyMessages, fetcher, sheetReader) {
+  if (!(text === '明天預約清單' || text === '明日預約清單')) return false;
   const ids = splitStoreIds(authResult.identity.includes('manager') ? authResult.managedStores : authResult.workStores);
   if (!ids.length) {
     await replyText('無法判斷您所屬的門市，請管理者補上店家代碼。');
     return true;
   }
-  const url = new URL(TOMORROW_BRIEFING_WEB_APP_URL);
-  url.searchParams.set('action', 'getTomorrowReservationList');
-  url.searchParams.set('storeIds', ids.join(','));
-  const res = await fetcher(url.toString(), { method: 'get' });
-  if (!res.ok) {
-    await replyText('取得明日預約清單失敗，請稍後再試。');
-    return true;
+
+  // 店碼→店名（顯示用）：讀取店家基本資料，有則顯示店名（例：總公司、竹北光明）
+  let storeNameMap = new Map();
+  if (sheetReader && STORE_INFO_SS_ID) {
+    try {
+      storeNameMap = await readStoreNameMap(authClient, sheetReader);
+    } catch (_) {}
   }
-  const data = await res.json().catch(() => null);
+
+  // Preferred: run fully on GCP (no legacy GAS URL needed).
+  // Fallback to TOMORROW_BRIEFING_WEB_APP_URL only if explicitly configured.
+  let data = null;
+  if (TOMORROW_BRIEFING_WEB_APP_URL) {
+    const url = new URL(TOMORROW_BRIEFING_WEB_APP_URL);
+    url.searchParams.set('action', 'getTomorrowReservationList');
+    url.searchParams.set('storeIds', ids.join(','));
+    const res = await fetcher(url.toString(), { method: 'get' });
+    if (res.ok) data = await res.json().catch(() => null);
+  }
   if (!data) {
-    await replyText('明日預約清單回傳格式異常，請稍後再試。');
+    try {
+      data = await getTomorrowReservationList(authClient, ids);
+    } catch {
+      // If we don't have a usable authClient in this call site, fallback to the old error.
+      data = null;
+    }
+  }
+  if (!data) {
+    await replyText('取得明日預約清單失敗（GCP 尚未取得必要權限/設定），請稍後再試。');
     return true;
   }
   if (data.closed === true) {
@@ -433,19 +863,27 @@ async function handleTomorrowList(text, authResult, replyText, fetcher) {
     await replyText(`📅 明日（${data.dateStr || ''}）您負責的店家目前無預約。`);
     return true;
   }
-  const lines = [`📅 明日預約清單 ${data.dateStr || ''}`];
-  for (const s of stores.slice(0, 8)) {
-    lines.push(`\n【${s.storeName || s.storeId || '-'}】`);
-    const items = Array.isArray(s.items) ? s.items : [];
-    if (!items.length) {
-      lines.push('（無預約）');
-      continue;
-    }
-    for (const it of items.slice(0, 8)) {
-      lines.push(`- ${it.rsvtim || '--:--'} ${it.name || ''} ${it.phone || ''}`.trim());
-    }
+  const { lines, phonesForQuickReply } = formatTomorrowListPayload(data, storeNameMap);
+  const textPayload = lines.join('\n').slice(0, 4500);
+  if (phonesForQuickReply.length > 0) {
+    const quickReplyItems = phonesForQuickReply.map(({ phone, label }) => ({
+      type: 'action',
+      action: {
+        type: 'message',
+        label: label.slice(0, 20),
+        text: `我要了解客人 ${phone}`,
+      },
+    }));
+    await replyMessages([
+      {
+        type: 'text',
+        text: textPayload,
+        quickReply: { items: quickReplyItems },
+      },
+    ]);
+  } else {
+    await replyText(textPayload);
   }
-  await replyText(lines.join('\n').slice(0, 4500));
   return true;
 }
 
@@ -488,6 +926,13 @@ export async function handleStaffCommand({
     ]);
     return true;
   }
+  if (text.trim() === '明日預約') {
+    await replyText('此功能暫時關閉，敬請見諒。');
+    return true;
+  }
+  if (text.includes('補打卡')) {
+    return handleMakeUpTime(authClient, authResult, userId, text, replyText, sheetReader);
+  }
   if (text.includes('Line問題集')) {
     return handleLineQuestion(replyText, authClient, sheetReader);
   }
@@ -501,7 +946,7 @@ export async function handleStaffCommand({
   if (await handleAttendanceCommand({ authClient, authResult, text, userId, replyText, replyMessages, sheetReader })) {
     return true;
   }
-  if (await handleTomorrowList(text, authResult, replyText, fetcher)) {
+  if (await handleTomorrowList(text, authClient, authResult, replyText, replyMessages, fetcher, sheetReader)) {
     return true;
   }
   if (text.includes('我要了解客人')) {
@@ -512,7 +957,10 @@ export async function handleStaffCommand({
     }
     const r = await callCoreApiPost('getCustomerAIResult', { phone }, fetcher);
     if (!r || r.status !== 'ok') {
-      await replyText((r && r.message) || '查詢時發生錯誤，請稍後再試。');
+      const msg = !r && (!PAO_CAT_CORE_API_URL || !PAO_CAT_SECRET_KEY)
+        ? 'Core API 未設定，請聯繫管理員。'
+        : (r && r.message) || '查詢時發生錯誤，請稍後再試。' + (phone.length === 9 ? ' 若為 10 碼手機請補齊再試。' : '');
+      await replyText(msg);
       return true;
     }
     await replyText(`【客人 ${phone} AI分析結果】\n\n${String(r.content || '該客人尚無 AI 分析結果。')}`);
@@ -525,7 +973,10 @@ export async function handleStaffCommand({
     if (!managedStoreIds.length && authResult.employeeCode) params.employeeCode = authResult.employeeCode;
     const r = await callCoreApiGet('lastMonthTipsReport', params, fetcher);
     if (!r || !r.ok || !r.url) {
-      await replyText(`上月小費報告失敗：${(r && r.message) || '未知錯誤'}`);
+      const msg = !r && (!PAO_CAT_CORE_API_URL || !PAO_CAT_SECRET_KEY)
+        ? 'Core API 未設定，請聯繫管理員。'
+        : `上月小費報告失敗：${(r && r.message) || '未知錯誤'}`;
+      await replyText(msg);
       return true;
     }
     await replyText(`✅ 上月小費\n\n開啟報表：\n${r.url}`);
@@ -549,7 +1000,10 @@ export async function handleStaffCommand({
       fetcher,
     );
     if (!r || r.status !== 'ok' || !r.token) {
-      await replyText('神美日報產出失敗，請稍後再試。');
+      const msg = !r && (!PAO_CAT_CORE_API_URL || !PAO_CAT_SECRET_KEY)
+        ? 'Core API 未設定，請聯繫管理員。'
+        : (r && r.message) || '神美日報產出失敗，請稍後再試。';
+      await replyText(msg);
       return true;
     }
     const uri = `${REPORT_PAGE_URL}${REPORT_PAGE_URL.includes('?') ? '&' : '?'}token=${encodeURIComponent(r.token)}`;
@@ -567,6 +1021,12 @@ export async function handleStaffCommand({
     return true;
   }
 
+  const workflowLink = await getWorkflowLink(authClient, text, sheetReader);
+  if (workflowLink) {
+    await replyText(`請點擊:\n${workflowLink}`);
+    return true;
+  }
+
   return false;
 }
 
@@ -575,4 +1035,5 @@ export const __testables__ = {
   formatDirectStoreCompletionRate,
   splitStoreIds,
   buildAttendanceMessage,
+  formatTomorrowListPayload,
 };

@@ -77,12 +77,57 @@ gcloud run jobs create pao-daily-report \
 gcloud run jobs update pao-daily-report --region "$REGION" \
   --command "node" --args "index.js,daily-report"
 
+# Job 4：各店訊息一覽表 - Pending 巡航（每 1 分鐘）
+gcloud run jobs create pao-stores-check-timeout-pending \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --task-timeout 5m \
+  --set-env-vars "INTEGRATED_SHEET_SS_ID=$LINE_STORE_SS_ID,PENDING_TIMEOUT_MINUTES=${PENDING_TIMEOUT_MINUTES:-3}" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
+  2>/dev/null || gcloud run jobs update pao-stores-check-timeout-pending --image "$IMAGE" --region "$REGION" \
+  --set-env-vars "INTEGRATED_SHEET_SS_ID=$LINE_STORE_SS_ID,PENDING_TIMEOUT_MINUTES=${PENDING_TIMEOUT_MINUTES:-3}" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
+gcloud run jobs update pao-stores-check-timeout-pending --region "$REGION" \
+  --command "node" --args "index.js,check-timeout-pending"
+
+# Job 5：各店訊息一覽表 - 準客挽留清單清理（每日 03:00）
+gcloud run jobs create pao-stores-cleanup-retention \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --task-timeout 10m \
+  --set-env-vars "INTEGRATED_SHEET_SS_ID=$LINE_STORE_SS_ID,PENDING_STALE_DAYS=${PENDING_STALE_DAYS:-7}" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
+  2>/dev/null || gcloud run jobs update pao-stores-cleanup-retention --image "$IMAGE" --region "$REGION" \
+  --set-env-vars "INTEGRATED_SHEET_SS_ID=$LINE_STORE_SS_ID,PENDING_STALE_DAYS=${PENDING_STALE_DAYS:-7}" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
+gcloud run jobs update pao-stores-cleanup-retention --region "$REGION" \
+  --command "node" --args "index.js,cleanup-retention-list"
+
+# Job 6：各店訊息一覽表 - 候補清單自動 Push（每日 22:00）
+gcloud run jobs create pao-stores-waitlist-auto-push \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --task-timeout 10m \
+  --set-env-vars "INTEGRATED_SHEET_SS_ID=$LINE_STORE_SS_ID" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
+  2>/dev/null || gcloud run jobs update pao-stores-waitlist-auto-push --image "$IMAGE" --region "$REGION" \
+  --set-env-vars "INTEGRATED_SHEET_SS_ID=$LINE_STORE_SS_ID" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
+gcloud run jobs update pao-stores-waitlist-auto-push --region "$REGION" \
+  --command "node" --args "index.js,waitlist-auto-push"
+
 echo "=== 5. 給 Scheduler 觸發 Job 的權限 ==="
 gcloud run jobs add-iam-policy-binding pao-check-token --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
 gcloud run jobs add-iam-policy-binding pao-employee-report --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
 gcloud run jobs add-iam-policy-binding pao-daily-report --region="$REGION" \
+  --member="serviceAccount:${SA}" --role="roles/run.invoker"
+gcloud run jobs add-iam-policy-binding pao-stores-check-timeout-pending --region="$REGION" \
+  --member="serviceAccount:${SA}" --role="roles/run.invoker"
+gcloud run jobs add-iam-policy-binding pao-stores-cleanup-retention --region="$REGION" \
+  --member="serviceAccount:${SA}" --role="roles/run.invoker"
+gcloud run jobs add-iam-policy-binding pao-stores-waitlist-auto-push --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
 
 echo "=== 6. 建立 Cloud Scheduler 排程 ==="
@@ -119,6 +164,35 @@ gcloud scheduler jobs create http pao-daily-report-midnight \
   --uri "https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/pao-daily-report:run" \
   --http-method POST \
   --oauth-service-account-email "${SA}"
+
+# 每 1 分鐘：Pending 巡航
+gcloud scheduler jobs create http pao-stores-check-timeout-pending-1m \
+  --location "$REGION" \
+  --schedule "* * * * *" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/pao-stores-check-timeout-pending:run" \
+  --http-method POST \
+  --oauth-service-account-email "${SA}" \
+  2>/dev/null || echo "（pao-stores-check-timeout-pending-1m 可能已存在，可略過或到 Console 編輯）"
+
+# 每日 03:00（台灣）：準客挽留清單清理
+gcloud scheduler jobs create http pao-stores-cleanup-retention-daily \
+  --location "$REGION" \
+  --schedule "0 3 * * *" \
+  --time-zone "Asia/Taipei" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/pao-stores-cleanup-retention:run" \
+  --http-method POST \
+  --oauth-service-account-email "${SA}" \
+  2>/dev/null || echo "（pao-stores-cleanup-retention-daily 可能已存在，可略過或到 Console 編輯）"
+
+# 每日 22:00（台灣）：候補清單自動 Push
+gcloud scheduler jobs create http pao-stores-waitlist-auto-push-daily \
+  --location "$REGION" \
+  --schedule "0 22 * * *" \
+  --time-zone "Asia/Taipei" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/pao-stores-waitlist-auto-push:run" \
+  --http-method POST \
+  --oauth-service-account-email "${SA}" \
+  2>/dev/null || echo "（pao-stores-waitlist-auto-push-daily 可能已存在，可略過或到 Console 編輯）"
 
 echo "完成。請到 Console 手動執行一次 Job 測試："
 echo "  https://console.cloud.google.com/run?project=$PROJECT_ID"

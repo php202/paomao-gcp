@@ -14,6 +14,37 @@ function getCoreApiParams() {
   return { url, key, useApi: url.length > 0 && key.length > 0 };
 }
 
+// -----------------------------------------------------------------------------
+// GCP UI shim: prefer calling Cloud Run /admin for heavy jobs.
+// Script properties:
+// - GCP_ADMIN_URL: e.g. https://<cloud-run-service>/admin
+// - GCP_ADMIN_KEY: same as ADMIN_KEY / PAO_CAT_SECRET_KEY
+// -----------------------------------------------------------------------------
+function getGcpAdminParams_() {
+  const p = PropertiesService.getScriptProperties();
+  const url = (p.getProperty('GCP_ADMIN_URL') || '').trim();
+  const key = (p.getProperty('GCP_ADMIN_KEY') || p.getProperty('PAO_CAT_SECRET_KEY') || '').trim();
+  return { url, key, useAdmin: url.length > 0 && key.length > 0 };
+}
+
+function callGcpAdmin_(action, extraParams) {
+  const { url, key, useAdmin } = getGcpAdminParams_();
+  if (!useAdmin) return null;
+  const payload = Object.assign({ key: key, action: action }, extraParams || {});
+  const res = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+    followRedirects: true,
+  });
+  try {
+    return JSON.parse(res.getContentText() || '{}');
+  } catch (e) {
+    return { status: 'error', message: res.getContentText() };
+  }
+}
+
 /**
  * 呼叫 Core API（GET）。回傳 { status, data } 或 null（連線/解析失敗）。
  */
@@ -153,6 +184,16 @@ function parseYmdOrNull_(value) {
 
 function runAccNeed(options) {
   options = options || {};
+  // Preferred: run on GCP (Cloud Run Job) to avoid UrlFetch quotas.
+  const adminRes = callGcpAdmin_('runDailyReport', options);
+  if (adminRes && adminRes.status) {
+    SpreadsheetApp.getUi().alert(
+      adminRes.status === 'ok'
+        ? '已送出 GCP 日報工作（請至 Cloud Run Logs/Jobs 查看進度）'
+        : 'GCP 執行失敗：' + (adminRes.message || 'unknown'),
+    );
+    return;
+  }
   const { url: coreApiUrl, key: coreApiKey, useApi } = getCoreApiParams();
   if (!useApi) {
     throw new Error('請在指令碼屬性設定 PAO_CAT_CORE_API_URL 與 PAO_CAT_SECRET_KEY，本專案改由 Core API 取得資料（不再使用 Core 程式庫）。');
@@ -416,6 +457,15 @@ var STORE_DAILY_REPORT_CONFIG = [
  * 若逾時當機，下次執行會從各 sheet 最後一天續跑。
  */
 function runYangmeiJinshanDailyReport() {
+  const adminRes = callGcpAdmin_('runDailyReport', { storeHint: 'yangmei-jinshan' });
+  if (adminRes && adminRes.status) {
+    SpreadsheetApp.getUi().alert(
+      adminRes.status === 'ok'
+        ? '已送出 GCP 單店日帳工作（請至 Cloud Run Logs/Jobs 查看進度）'
+        : 'GCP 執行失敗：' + (adminRes.message || 'unknown'),
+    );
+    return;
+  }
   const START_DATE_STR = '2025-03-01';
 
   const { url: coreApiUrl, key: coreApiKey, useApi } = getCoreApiParams();
@@ -781,6 +831,15 @@ function writeEmployeeMonthlyReportRowsToSheet(rows, replaceMonths) {
  * 輸出至 Logger（檢視 → 執行紀錄）
  */
 function runEmployeeMonthlyReportFull() {
+  const adminRes = callGcpAdmin_('runEmployeeMonthlyReport', { startYm: '2025-01' });
+  if (adminRes && adminRes.status) {
+    SpreadsheetApp.getUi().alert(
+      adminRes.status === 'ok'
+        ? '已送出 GCP 員工業績月報（Full）工作（請至 Cloud Run Logs/Jobs 查看進度）'
+        : 'GCP 執行失敗：' + (adminRes.message || 'unknown'),
+    );
+    return;
+  }
   const ts = function () { return Utilities.formatDate(new Date(), 'Asia/Taipei', 'HH:mm:ss'); };
   Logger.log('[員工業績月報] ' + ts() + ' 開始產出 2025～現在');
   const ssId = getEmployeeMonthlyReportSsId();
@@ -875,6 +934,15 @@ function runEmployeeMonthlyReportFull() {
  * 流程：呼叫 Core API 取得上月資料 → 日報表本地寫入試算表
  */
 function runEmployeeMonthlyReportLastMonth() {
+  const adminRes = callGcpAdmin_('runEmployeeMonthlyReport', {});
+  if (adminRes && adminRes.status) {
+    SpreadsheetApp.getUi().alert(
+      adminRes.status === 'ok'
+        ? '已送出 GCP 員工業績月報（上月）工作（請至 Cloud Run Logs/Jobs 查看進度）'
+        : 'GCP 執行失敗：' + (adminRes.message || 'unknown'),
+    );
+    return;
+  }
   Logger.log('[員工業績月報] 開始產出上月');
   const now = new Date();
   const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -892,6 +960,12 @@ function runEmployeeMonthlyReportLastMonth() {
  * 【除錯用】測試員工業績月報 API，輸出至 Logger（檢視 → 執行紀錄）
  */
 function debugEmployeeMonthlyReportApi() {
+  const ui = SpreadsheetApp.getUi();
+  const { useAdmin } = getGcpAdminParams_();
+  if (useAdmin) {
+    ui.alert('GCP 已接管排程與執行，請改到 Cloud Run Jobs/Logs 進行除錯。');
+    return;
+  }
   const now = new Date();
   const ym = Utilities.formatDate(new Date(now.getFullYear(), now.getMonth() - 1, 1), 'Asia/Taipei', 'yyyy-MM');
   const res = callEmployeeMonthlyReportFetchData(ym, ym);
@@ -904,6 +978,12 @@ function debugEmployeeMonthlyReportApi() {
  * 執行一次即可，之後每月 1 日會自動產出上月業績
  */
 function setupEmployeeMonthlyReportTrigger() {
+  const ui = SpreadsheetApp.getUi();
+  const { useAdmin } = getGcpAdminParams_();
+  if (useAdmin) {
+    ui.alert('GCP 已改用 Cloud Scheduler + Cloud Run Jobs，不再需要在 GAS 建觸發。');
+    return;
+  }
   const triggers = ScriptApp.getProjectTriggers();
   const existing = triggers.find(function (t) {
     return t.getHandlerFunction() === 'runEmployeeMonthlyReportLastMonth';
