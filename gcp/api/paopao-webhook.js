@@ -84,7 +84,10 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     }
   }
 
-  // Log text messages into PAOPAO sheet: '訊息一覽'
+  // Log text messages into PAOPAO 試算表（PAOPAO_STORE_SS_ID）的工作表「訊息一覽」
+  // 試算表範例：https://docs.google.com/spreadsheets/d/1-t4KPVK-uzJ2xUoy_NR3d4XcUohLHVETEFXTlvj4baE/edit
+  // 該試算表內必須有名為「訊息一覽」的工作表，且 Cloud Run 的 Service Account 需有編輯權限
+  const PAOPAO_MESSAGE_SHEET_NAME = '訊息一覽';
   const logRows = [];
   for (const event of events) {
     if (event?.type !== 'message' || event?.message?.type !== 'text') continue;
@@ -97,7 +100,7 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     logRows.push([new Date().toISOString(), replyToken, sourceName, userName, msg, event?.source?.groupId || '', event?.source?.roomId || '']);
   }
   for (const row of logRows) {
-    await appendSheet(authClient, PAOPAO_STORE_SS_ID, '訊息一覽', row);
+    await appendSheet(authClient, PAOPAO_STORE_SS_ID, PAOPAO_MESSAGE_SHEET_NAME, row);
   }
 
   sendJson(res, 200, { status: 'ok' });

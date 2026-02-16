@@ -96,31 +96,48 @@ export async function createAttendanceSpreadsheetAndShare(auth, title, perStoreD
     properties: { title: sanitizeSheetTitle(s.sheetTitle, `店${i + 1}`) },
   }));
 
-  const createRes = await sheets.spreadsheets.create({
-    requestBody: {
-      properties: { title },
-      sheets: sheetProps,
-    },
-  });
+  let createRes;
+  try {
+    createRes = await sheets.spreadsheets.create({
+      requestBody: {
+        properties: { title },
+        sheets: sheetProps,
+      },
+    });
+  } catch (e) {
+    const msg = e?.response?.data?.error?.message || e?.message;
+    console.error('[attendance-sheet] spreadsheets.create failed:', msg, e?.response?.data);
+    throw new Error(`建立試算表失敗: ${msg}`);
+  }
+
   const spreadsheetId = createRes.data.spreadsheetId;
   const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
 
   for (let i = 0; i < perStoreData.length; i++) {
     const store = perStoreData[i];
     const sheetTitle = sanitizeSheetTitle(store.sheetTitle, `店${i + 1}`);
-    const values = [store.headerRow1, store.headerRow2, ...(store.dataRows || [])];
-    if (values.length === 0) continue;
-    const rows = values.length;
-    const cols = Math.max(...values.map((r) => (r || []).length), 1);
-    // 每列補齊到 cols 寬，避免 API 寫入維度錯誤
-    const padded = values.map((row) => {
-      const r = Array.isArray(row) ? [...row] : [row];
+    const rawRows = [
+      Array.isArray(store.headerRow1) ? store.headerRow1 : [store.headerRow1],
+      Array.isArray(store.headerRow2) ? store.headerRow2 : [store.headerRow2],
+      ...(store.dataRows || []).map((r) => (Array.isArray(r) ? r : [r])),
+    ];
+    if (rawRows.length === 0) continue;
+    const rows = rawRows.length;
+    const cols = Math.max(...rawRows.map((r) => (r || []).length), 1);
+    const padded = rawRows.map((row) => {
+      const r = [...(Array.isArray(row) ? row : [row])];
       while (r.length < cols) r.push('');
-      return r.slice(0, cols);
+      return r.slice(0, cols).map((c) => (c == null ? '' : c));
     });
     const colLetter = colIndexToLetter(cols);
     const range = `'${escapeSheetTitle(sheetTitle)}'!A1:${colLetter}${rows}`;
-    await writeSheet(auth, spreadsheetId, range, padded);
+    try {
+      await writeSheet(auth, spreadsheetId, range, padded);
+    } catch (e) {
+      const msg = e?.response?.data?.error?.message || e?.message;
+      console.error('[attendance-sheet] writeSheet failed sheetIndex=', i, 'sheetTitle=', sheetTitle, msg, e?.response?.data);
+      throw new Error(`寫入工作表「${sheetTitle}」失敗: ${msg}`);
+    }
   }
 
   try {
@@ -130,7 +147,6 @@ export async function createAttendanceSpreadsheetAndShare(auth, title, perStoreD
     });
   } catch (e) {
     console.warn('[attendance-sheet] set anyone reader failed:', e?.message, 'spreadsheetId=', spreadsheetId);
-    // 仍回傳連結，擁有者或同網域可能可開
   }
 
   return { url, spreadsheetId };

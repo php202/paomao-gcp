@@ -24,5 +24,10 @@ export DAILY_REPORT_CRON="10 0 * * *"
 export PAO_CAT_CORE_API_URL=
 export PAO_CAT_SECRET_KEY=
 
+# ----- 門市預約表單 PAOPAO（/paopao-line-webhook）- 必填才會收訊與回覆 -----
+export PAOPAO_STORE_SS_ID=   # 門市預約表單試算表 ID（與 GAS Config.js 同）
+export LINE_CHANNEL_SECRET_PAOPAO=   # 門市預約表單「此」頻道 → Basic settings → Channel secret（與員工打卡不同）
+export LINE_TOKEN_PAOPAO=   # 門市預約表單 頻道 → Messaging API → Channel access token
+
 echo "Set PROJECT_ID=$PROJECT_ID REGION=$REGION"
 echo "請在 set-env.sh 填入上述必填與選填值（勿提交 set-env.sh）"

@@ -73,10 +73,14 @@
 <script>
   (function () {
     var GAS_BASE_URL = "__REPORT_API_BASE__";
-    // 嵌入（如 Odoo）時若無法由伺服器替換，可從網址參數讀取：?api_base=https://您的服務.run.app/report-api
     var params = new URLSearchParams(window.location.search);
     var apiBaseParam = params.get("api_base");
-    if (apiBaseParam) GAS_BASE_URL = apiBaseParam;
+    if (apiBaseParam) {
+      GAS_BASE_URL = apiBaseParam;
+    } else if (GAS_BASE_URL.indexOf("__REPORT_API_BASE__") !== -1 && typeof window !== "undefined" && window.location && window.location.origin) {
+      // 若伺服器未替換（或嵌入於 Odoo 等），改為使用目前頁面 origin + /report-api（從 Cloud Run 開啟時可正常運作）
+      GAS_BASE_URL = window.location.origin + "/report-api";
+    }
 
     function getToken() {
       return params.get("token") || "";

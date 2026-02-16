@@ -6,14 +6,20 @@ export async function readSheet(auth, spreadsheetId, range) {
   return res.data.values || [];
 }
 
-/** 寫入指定範圍（單一列或多列） */
+/** 寫入指定範圍（單一列或多列）；values 為二維陣列，undefined/null 會轉成空字串 */
 export async function writeSheet(auth, spreadsheetId, range, values) {
   const sheets = google.sheets({ version: 'v4', auth });
+  const rows = Array.isArray(values[0]) ? values : [values];
+  const sanitized = rows.map((row) =>
+    (Array.isArray(row) ? row : [row]).map((c) =>
+      c == null || c === undefined ? '' : c
+    )
+  );
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: Array.isArray(values[0]) ? values : [values] },
+    requestBody: { values: sanitized },
   });
 }
 

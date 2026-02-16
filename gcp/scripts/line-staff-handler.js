@@ -420,7 +420,7 @@ async function handleAttendanceCommand({
         (m) => m.lineId && String(m.lineId) !== '#N/A',
       );
       if (!members.length) continue;
-      const storeName = getStoreDisplayName(storeNameMap, storeId);
+      const storeName = String(getStoreDisplayName(storeNameMap, storeId) ?? storeId ?? '');
       const records = await readAttendance(
         authClient,
         members.map((m) => m.lineId),
@@ -443,13 +443,13 @@ async function handleAttendanceCommand({
           cell.checkOut = cell.checkOut === '-' ? t : cell.checkOut + '\n' + t;
         }
       }
-      const headerRow1 = [storeName, ...members.flatMap((m) => [m.name, ''])];
+      const headerRow1 = [storeName, ...members.flatMap((m) => [String(m.name ?? ''), ''])];
       const headerRow2 = ['日期', ...members.flatMap(() => ['上班', '下班'])];
       const dataRows = sortedDates.map((dateStr) => [
         dateStr,
         ...members.flatMap((m) => {
           const c = byDateUser[dateStr]?.[m.lineId] || { checkIn: '-', checkOut: '-' };
-          return [c.checkIn, c.checkOut];
+          return [String(c.checkIn ?? '-'), String(c.checkOut ?? '-')];
         }),
       ]);
       perStoreData.push({ sheetTitle: storeName, headerRow1, headerRow2, dataRows });
@@ -479,14 +479,22 @@ async function handleAttendanceCommand({
         title,
         perStoreData,
       );
-      await saveAttendanceRequestCache(authClient, LINE_STAFF_SS_ID, userId, yyyyMM, url);
+      try {
+        await saveAttendanceRequestCache(authClient, LINE_STAFF_SS_ID, userId, yyyyMM, url);
+      } catch (cacheErr) {
+        console.warn(
+          '[handleAttendanceCommand] saveAttendanceRequestCache failed (url still sent):',
+          cacheErr?.message,
+          cacheErr?.response?.data,
+        );
+      }
       await replyText(`📂 你的打卡紀錄 Excel 檔案已準備好！\n🔗 下載連結：${url}`);
     } catch (e) {
       console.error(
         '[handleAttendanceCommand] createAttendanceSpreadsheetAndShare:',
         e?.message,
         e?.stack,
-        e?.response ? JSON.stringify(e.response?.data || e.response) : '',
+        e?.response?.data ? JSON.stringify(e.response.data) : '',
       );
       await replyText('產出試算表時發生錯誤，請稍後再試或聯繫管理員。');
     }
