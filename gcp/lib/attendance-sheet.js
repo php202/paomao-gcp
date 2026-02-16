@@ -56,9 +56,10 @@ export async function getCachedAttendanceSheetUrl(auth, sheetReader, staffSsId, 
       const rowStart = row[2];
       const rowUrl = String(row[3] || '').trim();
       if (rowUserId !== userId || !rowUrl) continue;
+      // 與 GAS 一致：C 欄可能是 Date（GAS 寫入）或字串；Date 須用台北時區取 yyyy-MM，避免 UTC 造成月份錯誤
       const rowYyyyMM =
         rowStart instanceof Date
-          ? rowStart.toISOString().slice(0, 7)
+          ? rowStart.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }).slice(0, 7)
           : String(rowStart || '').trim().slice(0, 7);
       if (rowYyyyMM === yyyyMM) return rowUrl;
     }

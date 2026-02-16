@@ -43,6 +43,18 @@
 
 ---
 
+## 二之一、關鍵字與處理順序（Staff）
+
+| 項目 | GAS 順序（main.js） | GCP 現狀 | 狀態 |
+|------|---------------------|----------|------|
+| **處理順序** | 我要了解客人 → switch（查詢打卡記錄、最新活動、我要開店、特約商店）→ att 六關鍵字 → 補打卡、Line問題集 → 神美日報 → 明日預約 → 明天/明日預約清單 → 上月小費 → 店家回覆狀態 → 報告關鍵字 → 公司流程 | 同順序；對照表見 [staff-keyword-routes.js](../scripts/staff-keyword-routes.js) | ✅ |
+| **完全匹配** | 我要打卡、查詢打卡記錄、最新活動、我要開店、特約商店、att 六個、神美日報、明日預約、明天/明日預約清單、上月小費（或包含） | 同左 | ✅ |
+| **包含匹配** | 我要了解客人、補打卡、Line問題集、店家回覆狀態 | 同左 | ✅ |
+| **sendAtt 對齊** | 本月出勤 manager→今日各店；上月出勤 manager→「請改用店家上月出勤」；店家* 僅 manager，非 manager→「您尚無本行動權限」 | 同左；訊息常數來自 staff-keyword-routes.js | ✅ |
+| **報告關鍵字** | Core.getReportHandlerFromKeyword + getReportTextForKeyword（僅管理者） | 未實作；標為選用 | ⚠️ 選用 |
+
+---
+
 ## 三、PaoMao_Core API 對應
 
 | GAS Core action | GCP 實作 | 備註 |

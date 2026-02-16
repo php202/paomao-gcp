@@ -5,6 +5,9 @@
  */
 
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import { verifyLineSignature, isDuplicateLineEvent } from './lib/line-webhook.js';
 import { getAuth } from './lib/auth.js';
@@ -15,7 +18,10 @@ import { handleStores } from './api/stores-api.js';
 import { handleStoreLineWebhook } from './api/store-line-webhook.js';
 import { handlePaopaoWebhook } from './api/paopao-webhook.js';
 import { handleAdmin } from './api/admin-api.js';
+import { handleReportApi } from './api/report-api.js';
 import { appendWebhookError } from './lib/webhook-error-log.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const LINE_TOKEN_PAOSTAFF = process.env.LINE_TOKEN_PAOSTAFF;
@@ -314,6 +320,27 @@ export function startServer() {
         })();
       }
       await handleAdmin(req, res, { url: fullUrl, bodyJson });
+      return;
+    }
+
+    if (method === 'GET' && url === '/report') {
+      const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+      const host = req.headers['x-forwarded-host'] || req.headers['host'] || '';
+      const reportApiBase = `${proto}://${host}/report-api`;
+      const reportPath = path.join(__dirname, 'public', 'report.html');
+      try {
+        let html = fs.readFileSync(reportPath, 'utf8');
+        html = html.replace(/__REPORT_API_BASE__/g, reportApiBase);
+        send(res, 200, html, 'text/html; charset=utf-8');
+      } catch (e) {
+        console.error('[report] read report.html:', e?.message);
+        send(res, 500, '<!DOCTYPE html><html><body>報告頁面暫時無法載入。</body></html>', 'text/html; charset=utf-8');
+      }
+      return;
+    }
+
+    if (method === 'GET' && url === '/report-api') {
+      await handleReportApi(req, res, { url: fullUrl });
       return;
     }
 

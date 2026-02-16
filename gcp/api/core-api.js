@@ -718,4 +718,5 @@ export async function handleCore(req, res, { authClient, url, bodyJson }) {
 }
 
 export const __testables__ = { normalizePhone9, md5Upper };
+export { consumeReportToken, callLegacyCore };
 
