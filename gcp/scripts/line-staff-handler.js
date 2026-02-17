@@ -87,6 +87,27 @@ function fmtDateTime(d) {
   }).format(d);
 }
 
+/** 僅輸出 HH:mm（台北），避免 slice 受 locale 影響導致店家今天出勤時間錯 */
+function fmtTimeHHmm(d) {
+  return new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(d);
+}
+
+/** 輸出 HH:mm:ss（台北），用於出勤明細 */
+function fmtTimeHHmmss(d) {
+  return new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(d);
+}
+
 function fmtDate(d) {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Taipei',
@@ -240,8 +261,8 @@ function buildAttendanceMessage(records, employeeMap, storeNameMap = new Map()) 
     const sortedDates = [...byDate.keys()].sort();
     for (const date of sortedDates) {
       const dayItems = byDate.get(date);
-      const on = dayItems.filter((x) => String(x.type).includes('上班')).map((x) => fmtDateTime(x.time).slice(11, 19));
-      const off = dayItems.filter((x) => String(x.type).includes('下班')).map((x) => fmtDateTime(x.time).slice(11, 19));
+      const on = dayItems.filter((x) => String(x.type).includes('上班')).map((x) => fmtTimeHHmmss(x.time));
+      const off = dayItems.filter((x) => String(x.type).includes('下班')).map((x) => fmtTimeHHmmss(x.time));
       lines.push(`🔹 ${date} 出勤紀錄`);
       lines.push(`✅ 上班: ${on.join(' 、') || ''}`);
       lines.push(`✅ 下班: ${off.join(' 、') || ''}`);
@@ -299,13 +320,17 @@ function safeUserSuffix(userId) {
 
 /**
  * 取得人員打卡記錄，與 GAS getUserAttendance 邏輯對齊
- * - 跨月查詢：startDate < 本月1日 才讀打卡紀錄封存；endDate >= 本月1日 才讀員工打卡紀錄
- * - 過濾：userId、時間範圍、C 欄須含上班/下班
- * - 補打卡：G 欄含「補打卡」則 type 加 (補)
+ * 資料來源：試算表 1GH2XbihFIY0AX8SMF9Tk6igrVKPpA_vMJVlkDkJjpe4
+ * - 員工打卡紀錄 (gid=1879223058)：本月資料。今日出勤、本月出勤、店家本月出勤 一定要拉此表，否則會空值。
+ * - 打卡紀錄封存 (gid=930376461)：上月及更早，結構相同。
+ * - 規則：startDate < 本月1日 才讀打卡紀錄封存；endDate >= 本月1日 才讀員工打卡紀錄
+ * - 過濾：userId、時間範圍、C 欄須含上班/下班；補打卡：G 欄含「補打卡」則 type 加 (補)
  */
 async function readAttendance(auth, userIds, startDate, endDate, sheetReader) {
   const now = new Date();
-  const cutoffDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  const taipeiYMD = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+  const [ty, tm] = taipeiYMD.split('-').map(Number);
+  const cutoffDate = new Date(`${ty}-${String(tm).padStart(2, '0')}-01T00:00:00+08:00`);
 
   const sheetsToRead = [];
   if (startDate < cutoffDate) sheetsToRead.push("'打卡紀錄封存'!A:G");
@@ -435,6 +460,7 @@ async function handleAttendanceCommand({
       }
     }
     const yyyyMM = `${yy}-${String(ym).padStart(2, '0')}`;
+    const preparedLabel = isThisMonth ? `已經幫您準備好本月 ${yyyyMM} 出勤紀錄` : `已經幫您準備好上月 ${yyyyMM} 出勤紀錄`;
     const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
     const lastDay = new Date(yy, ym, 0).getDate();
     const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
@@ -463,10 +489,10 @@ async function handleAttendanceCommand({
             await replyMessages([
               {
                 type: 'template',
-                altText: '打卡紀錄 Excel 已準備好，請點擊按鈕下載',
+                altText: `${preparedLabel}，請點擊按鈕下載`,
                 template: {
                   type: 'buttons',
-                  text: '📂 你的打卡紀錄 Excel 檔案已準備好！\n請點擊下方按鈕下載',
+                  text: `${preparedLabel}\n請點擊下方按鈕下載`,
                   actions: [{ type: 'uri', label: '📥 下載 Excel', uri: url }],
                 },
               },
@@ -478,10 +504,10 @@ async function handleAttendanceCommand({
         await replyMessages([
           {
             type: 'template',
-            altText: '打卡紀錄 Excel 已準備好，請點擊按鈕下載',
+            altText: `${preparedLabel}，請點擊按鈕下載`,
             template: {
               type: 'buttons',
-              text: '📂 你的打卡紀錄 Excel 檔案已準備好！\n請點擊下方按鈕下載',
+              text: `${preparedLabel}\n請點擊下方按鈕下載`,
               actions: [{ type: 'uri', label: '📥 下載 Excel', uri: cachedValue }],
             },
           },
@@ -521,7 +547,7 @@ async function handleAttendanceCommand({
         if (!byDateUser[dateStr][r.userId])
           byDateUser[dateStr][r.userId] = { checkIn: '-', checkOut: '-' };
         const cell = byDateUser[dateStr][r.userId];
-        const t = fmtDateTime(r.time).slice(11, 16);
+        const t = fmtTimeHHmm(r.time);
         if (String(r.type).includes('上班')) {
           cell.checkIn = cell.checkIn === '-' ? t : cell.checkIn + '\n' + t;
         }
@@ -603,10 +629,10 @@ async function handleAttendanceCommand({
       await replyMessages([
         {
           type: 'template',
-          altText: '打卡紀錄 Excel 已準備好，請點擊按鈕下載',
+          altText: `${preparedLabel}，請點擊按鈕下載`,
           template: {
             type: 'buttons',
-            text: '📂 你的打卡紀錄 Excel 檔案已準備好！\n請點擊下方按鈕下載',
+            text: `${preparedLabel}\n請點擊下方按鈕下載`,
             actions: [{ type: 'uri', label: '📥 下載 Excel', uri: url }],
           },
         },
@@ -641,10 +667,21 @@ async function handleAttendanceCommand({
     return true;
   }
 
-  // 本月出勤：employee → 本人本月 formatAtt；manager → 等同店家今天出勤（GAS sendAtt）
+  // 本月出勤：與 GAS 一致，employee 優先 → 本人本月 formatAtt；僅 manager（非 employee）→ 等同店家今天出勤
   if (textNorm === '本月出勤') {
     if (!authResult.identity.includes('employee') && !authResult.identity.includes('manager')) {
       await replyText(MSG_NO_ACTION_PERMISSION);
+      return true;
+    }
+    if (authResult.identity.includes('employee')) {
+      const [yStr, mStr] = taipeiTodayStr.split('-');
+      const ym = parseInt(mStr, 10);
+      const yy = parseInt(yStr, 10);
+      const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
+      const lastDay = new Date(yy, ym, 0).getDate();
+      const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
+      const records = await readAttendance(authClient, [userId], monthStart, monthEnd, sheetReader);
+      await replyText(buildAttendanceMessage(records, maps.byLineId, storeNameMap));
       return true;
     }
     if (authResult.identity.includes('manager')) {
@@ -685,7 +722,7 @@ async function handleAttendanceCommand({
           if (hasClockIn) {
             const detail = rs
               .sort((a, b) => a.time - b.time)
-              .map((r) => `${r.type} ${fmtDateTime(r.time).slice(11, 16)}`)
+              .map((r) => `${r.type} ${fmtTimeHHmm(r.time)}`)
               .join('、');
             attended.push(`${mbr.name}: ${detail}`);
           } else {
@@ -701,14 +738,6 @@ async function handleAttendanceCommand({
       await replyText(lines.join('\n').trim() || '查詢出勤失敗，請聯絡管理員');
       return true;
     }
-    const [yStr, mStr] = taipeiTodayStr.split('-');
-    const ym = parseInt(mStr, 10);
-    const yy = parseInt(yStr, 10);
-    const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
-    const lastDay = new Date(yy, ym, 0).getDate();
-    const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
-    const records = await readAttendance(authClient, [userId], monthStart, monthEnd, sheetReader);
-    await replyText(buildAttendanceMessage(records, maps.byLineId, storeNameMap));
     return true;
   }
 
@@ -745,7 +774,7 @@ async function handleAttendanceCommand({
           const dateStr = fmtDate(r.time);
           if (!byDateUser[dateStr]) byDateUser[dateStr] = { checkIn: '-', checkOut: '-' };
           const cell = byDateUser[dateStr];
-          const t = fmtDateTime(r.time).slice(11, 16);
+          const t = fmtTimeHHmm(r.time);
           if (String(r.type).includes('上班')) cell.checkIn = cell.checkIn === '-' ? t : cell.checkIn + '\n' + t;
           if (String(r.type).includes('下班')) cell.checkOut = cell.checkOut === '-' ? t : cell.checkOut + '\n' + t;
         }
@@ -785,10 +814,10 @@ async function handleAttendanceCommand({
           await replyMessages([
             {
               type: 'template',
-              altText: '打卡紀錄 Excel 已準備好，請點擊按鈕下載',
+              altText: `已經幫您準備好上月 ${yyyyMM} 出勤紀錄，請點擊按鈕下載`,
               template: {
                 type: 'buttons',
-                text: '📂 你的打卡紀錄 Excel 檔案已準備好！\n請點擊下方按鈕下載',
+                text: `已經幫您準備好上月 ${yyyyMM} 出勤紀錄\n請點擊下方按鈕下載`,
                 actions: [{ type: 'uri', label: '📥 下載 Excel', uri: excelUrl }],
               },
             },
@@ -841,7 +870,7 @@ async function handleAttendanceCommand({
         if (hasClockIn) {
           const detail = rs
             .sort((a, b) => a.time - b.time)
-            .map((r) => `${r.type} ${fmtDateTime(r.time).slice(11, 16)}`)
+            .map((r) => `${r.type} ${fmtTimeHHmm(r.time)}`)
             .join('、');
           attended.push(`${mbr.name}: ${detail}`);
         } else {
@@ -964,7 +993,7 @@ async function handleAttendanceCommand({
       if (hasClockIn) {
         const detail = rs
           .sort((a, b) => a.time - b.time)
-          .map((r) => `${r.type} ${fmtDateTime(r.time).slice(11, 16)}`)
+          .map((r) => `${r.type} ${fmtTimeHHmm(r.time)}`)
           .join('、');
         attended.push(`${mbr.name}: ${detail}`);
       } else {

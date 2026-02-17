@@ -164,13 +164,21 @@ node index.js serve
 | `WEBHOOK_LOG_VERBOSE` | 可選，`1` 詳細事件 log；`0` 精簡 log |
 | `GCS_BUCKET_ATTENDANCE` | 可選。若設定，店家／員工本月・上月出勤改產 Excel 上傳此 bucket，回傳下載按鈕（避免 Drive 配額不足） |
 
+### 錯誤 log 在哪裡？
+
+- **Cloud Logging（建議）**：Cloud Run Service / Job 的 `console.log`、`console.error` 都會進 **Logs Explorer**（或 Cloud Run → Logs）。
+- **統一錯誤表（方便人工監控）**：`/line-webhook`、`/store-line-webhook` 以及未捕捉的 crash 會 best-effort 追加到「泡泡貓｜line@訊息回覆一覽表」的工作表 `錯誤紀錄`（欄位：時間、來源、錯誤訊息、上下文）。
+  - 需把該試算表共用給 Cloud Run 執行身分（或金鑰的 Service Account）為**編輯者**，並啟用 **Google Sheets API**。
+  - 目標試算表可用環境變數固定：`WEBHOOK_ERROR_LOG_SS_ID` / `UNIFIED_ERROR_LOG_SS_ID`（工作表名可用 `WEBHOOK_ERROR_LOG_SHEET_NAME`）。
+
 ### 出勤 Excel 資料保留與清理
 
-- **GCS（`attendance/`）**：不會自動刪除。若要定期清掉舊檔、避免資料過多，可在 bucket 設定 **生命週期**：
+- **GCS（`attendance/`）**：不會自動刪除。若要定期清掉舊檔，可一鍵設定 **90 天生命週期**：
   ```bash
-  # 例：刪除 attendance/ 底下超過 90 天的物件
-  echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":90,"matchesPrefix":["attendance/"]}}]}' > /tmp/lifecycle.json
-  gsutil lifecycle set /tmp/lifecycle.json gs://你的bucket名稱
+  cd gcp/scripts
+  source ../set-env.sh   # 會讀取 GCS_BUCKET_ATTENDANCE
+  ./set-gcs-attendance-lifecycle.sh
+  # 或指定 bucket：./set-gcs-attendance-lifecycle.sh pao-attendance-excel
   ```
 - **試算表「請求表單紀錄」**：僅記錄 uuid、userId、月份、連結、時間，**不會自動清空**。若需控管筆數，可手動刪除舊列，或另建排程於試算表刪除過久紀錄。
 

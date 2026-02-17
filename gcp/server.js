@@ -229,6 +229,32 @@ async function handleLineWebhook(req, rawBody, res) {
 }
 
 export function startServer() {
+  // Catch truly unexpected crashes and still record them to the unified error log sheet.
+  // This helps monitoring when Cloud Run restarts the container.
+  let authPromise = null;
+  const getAuthCached = async () => {
+    if (!authPromise) authPromise = getAuth();
+    return await authPromise;
+  };
+  const logFatal = async (source, err, context) => {
+    try {
+      const auth = await getAuthCached();
+      const msg = err?.stack ? String(err.stack) : String(err?.message || err);
+      await appendWebhookError(auth, source, msg, context);
+    } catch (_) {
+      // Ignore logging failures.
+    }
+  };
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('[GCP] unhandledRejection:', reason?.message || reason);
+    logFatal('gcp-unhandledRejection', reason, 'server');
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[GCP] uncaughtException:', err?.message || err);
+    logFatal('gcp-uncaughtException', err, 'server').finally(() => process.exit(1));
+  });
+
   const server = http.createServer(async (req, res) => {
     const method = req.method;
     const url = req.url?.split('?')[0] || '/';

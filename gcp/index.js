@@ -59,7 +59,17 @@ async function main() {
   await run(reportArgs);
 }
 
-main().catch((e) => {
-  console.error('[GCP] 錯誤:', e.message);
+main().catch(async (e) => {
+  console.error('[GCP] 錯誤:', e?.message || e);
+  // Best-effort: also write to the unified error log sheet for monitoring.
+  try {
+    const { getAuth } = await import('./lib/auth.js');
+    const { appendWebhookError } = await import('./lib/webhook-error-log.js');
+    const auth = await getAuth();
+    const msg = e?.stack ? String(e.stack) : String(e?.message || e);
+    await appendWebhookError(auth, 'gcp-cli', msg, `cmd=${cmd || 'employee-monthly-report'} args=${rest.join(' ')}`);
+  } catch (_) {
+    // Ignore logging failures; still exit non-zero.
+  }
   process.exit(1);
 });
