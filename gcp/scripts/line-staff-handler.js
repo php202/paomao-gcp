@@ -66,13 +66,13 @@ function normalizeDate(value) {
   // 試算表 zh-TW 常出現「2026/2/1 上午 9:41:36」「2026/2/1 下午 10:30:00」— 先正規化
   const matchTw = s.match(/^\s*(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\s*(上午|下午)?\s*(\d{1,2})?:?(\d{2})?:?(\d{2})?\s*$/i);
   if (matchTw) {
-    const [, y, m, d, ampm, h = '0', min = '0', sec = '0'] = matchTw;
+    const [, y, m, day, ampm, h = '0', min = '0', sec = '0'] = matchTw;
     let hour = parseInt(h, 10) || 0;
     if (String(ampm || '').includes('下午') && hour < 12) hour += 12;
     if (String(ampm || '').includes('上午') && hour === 12) hour = 0;
-    const iso = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}+08:00`;
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? null : d;
+    const iso = `${y}-${m.padStart(2, '0')}-${day.padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}+08:00`;
+    const dateObj = new Date(iso);
+    return Number.isNaN(dateObj.getTime()) ? null : dateObj;
   }
 
   // 其餘：YYYY-MM-DD、YYYY/MM/DD、YYYY-MM-DD HH:mm 等
