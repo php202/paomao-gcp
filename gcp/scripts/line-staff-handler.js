@@ -1126,13 +1126,63 @@ async function handleStoreReplyStatus(replyText, authClient, sheetReader) {
   return true;
 }
 
-/** 補打卡：與 GAS makeUpTime 對齊，只回範本或解析後寫入員工打卡紀錄 */
+/**
+ * 解析補打卡「補登時間」字串，一律以台北時間、今年度為準。
+ * - 若未含四位數年份，自動帶入今年（台北）。
+ * - 支援「下午/上午」：從整段補登時間文字取出時間部分並換算 24 小時。
+ * @returns {Date|null} 台北時間的 Date，解析失敗回 null
+ */
+function parseMakeUpTimeTaipei(inputTimeStr) {
+  const now = new Date();
+  const taipeiYear = parseInt(now.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }).split('-')[0], 10);
+  let s = String(inputTimeStr || '').trim();
+  // 支援「下午」「上午」：先抽出數字與分隔符，再處理 12 小時制
+  const hasPM = /下午|pm|PM/.test(s);
+  const hasAM = /上午|am|AM/.test(s);
+  s = s.replace(/\s*上午\s*/gi, ' ').replace(/\s*下午\s*/gi, ' ');
+  s = s.replace(/\//g, '-');
+  // 若開頭不是四位數年份，補今年
+  if (!/^\d{4}-\d/.test(s) && !/^\d{4}\s/.test(s)) {
+    const m = s.match(/^(\d{1,2})-(\d{1,2})(\s|$)/);
+    if (m) s = `${taipeiYear}-${m[1]}-${m[2]}${s.slice(m[0].length)}`;
+    else s = `${taipeiYear}-${s}`;
+  }
+  // 時間部分：HH:mm 或 H:mm，下午則 +12
+  const timePart = s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/);
+  if (timePart && (hasPM || hasAM)) {
+    let hour = parseInt(timePart[1], 10);
+    if (hasPM && hour < 12) hour += 12;
+    if (hasAM && hour === 12) hour = 0;
+    const min = timePart[2];
+    const sec = timePart[3] || '00';
+    const datePart = s.replace(/\s*\d{1,2}:\d{2}(?::\d{2})?\s*$/, '').trim();
+    s = `${datePart} ${String(hour).padStart(2, '0')}:${min}:${sec}`;
+  }
+  if (!/^\d{4}-\d{1,2}-\d{1,2}(\s+\d|$)/.test(s)) {
+    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) s = s + ' 00:00:00';
+    else if (!s.match(/\d{1,2}:\d{2}/)) s = s.trim() + ' 00:00:00';
+  }
+  // 組成 ISO 台北時間：YYYY-MM-DDTHH:mm:ss+08:00
+  if (!s.includes('+') && !s.includes('Z')) {
+    const spaceTime = s.match(/^(\d{4}-\d{1,2}-\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (spaceTime) {
+      const [, datePart, h, m, sec = '00'] = spaceTime;
+      s = `${datePart}T${h.padStart(2, '0')}:${m}:${sec.padStart(2, '0')}+08:00`;
+    } else if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) {
+      s = s + 'T00:00:00+08:00';
+    }
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** 補打卡：與 GAS makeUpTime 對齊，只回範本或解析後寫入員工打卡紀錄；補登時間僅接受今年度（台北）。 */
 async function handleMakeUpTime(authClient, authResult, userId, text, replyText, sheetReader) {
   if (!authResult.isAuthorized) {
     await replyText('您尚未註冊或無權限，無法使用補打卡功能。');
     return true;
   }
-  const timeRegex = /補登時間[:：]\s*([0-9\/\-\s:]+)/;
+  const timeRegex = /補登時間[:：]\s*([\d\/\-\s:上午下午]+)/;
   const typeRegex = /輸入上\/下班[:：]\s*(.+)/;
   if (!text.includes('補登時間') && !text.includes('輸入上/下班')) {
     const defaultStore = (authResult.workStores && authResult.workStores[0]) ? authResult.workStores[0] : '請輸入店家';
@@ -1159,13 +1209,15 @@ async function handleMakeUpTime(authClient, authResult, userId, text, replyText,
     await replyText('❌ 類型錯誤：請填寫「上班」或「下班」。');
     return true;
   }
-  let timeStr = String(timeMatch[1]).trim().replace(/\//g, '-');
-  if (/^\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}/.test(timeStr) && !timeStr.includes('+') && !timeStr.includes('Z')) {
-    timeStr = timeStr + '+08:00';
+  const makeUpDate = parseMakeUpTimeTaipei(String(timeMatch[1]).trim());
+  if (!makeUpDate) {
+    await replyText('❌ 時間格式錯誤！\n範例：2025/02/01 09:00 或 2/15 下午 9:00（僅限今年度）');
+    return true;
   }
-  const makeUpDate = new Date(timeStr);
-  if (Number.isNaN(makeUpDate.getTime())) {
-    await replyText('❌ 時間格式錯誤！\n範例：2025/02/01 09:00');
+  const taipeiYearNow = parseInt(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }).split('-')[0], 10);
+  const makeUpYear = parseInt(makeUpDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }).split('-')[0], 10);
+  if (makeUpYear !== taipeiYearNow) {
+    await replyText(`❌ 補打卡僅限今年度（西元 ${taipeiYearNow} 年），請修改補登時間。`);
     return true;
   }
   let storeName = (authResult.workStores && authResult.workStores[0]) || '未知店家';
