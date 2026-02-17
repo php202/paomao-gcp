@@ -59,8 +59,24 @@ async function main() {
   await run(reportArgs);
 }
 
+function formatGoogleApisError(e) {
+  const err = e?.response?.data?.error;
+  if (!err) return null;
+  return {
+    code: err.code,
+    status: err.status,
+    message: err.message,
+    errors: err.errors,
+  };
+}
+
 main().catch(async (e) => {
+  // Keep console logs actionable (but avoid printing request headers like Authorization).
   console.error('[GCP] 錯誤:', e?.message || e);
+  if (e?.stack) console.error(e.stack);
+  const apiErr = formatGoogleApisError(e);
+  if (apiErr) console.error('[GCP] Google API error:', JSON.stringify(apiErr));
+
   // Best-effort: also write to the unified error log sheet for monitoring.
   try {
     const { getAuth } = await import('./lib/auth.js');

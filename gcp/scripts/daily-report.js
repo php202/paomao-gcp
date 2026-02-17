@@ -21,6 +21,27 @@ const HEADER = ['日期', '店家', '現金總額', '消費紀錄(現金)', '儲
 const FETCH_BATCH_SIZE = Number.parseInt(process.env.FETCH_BATCH_SIZE || '10', 10);
 const BATCH_DELAY_MS = Number.parseInt(process.env.DAILY_REPORT_BATCH_DELAY_MS || '1500', 10);
 
+function getGoogleApiErrorMessage(e) {
+  return e?.response?.data?.error?.message || e?.message || String(e);
+}
+
+function isPermissionDeniedError(e) {
+  const status = e?.response?.status ?? e?.code;
+  if (status === 403) return true;
+  const msg = String(getGoogleApiErrorMessage(e) || '').toLowerCase();
+  return msg.includes('permission') || msg.includes('permission_denied') || msg.includes('not have permission');
+}
+
+function permissionHint(spreadsheetId, callerEmail, purpose) {
+  const url = spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : '(unknown spreadsheetId)';
+  const who = callerEmail || '(unknown caller)';
+  return [
+    `[daily-report] Sheets 權限不足（${purpose}）`,
+    `請確認已將試算表共用給 ${who}（至少「編輯者」；Token 只需可檢視）`,
+    `試算表：${url}`,
+  ].join('\n');
+}
+
 function parseYmd(value) {
   if (!value) return null;
   const s = String(value).trim();
@@ -250,7 +271,20 @@ async function runOneDate(sheets, spreadsheetId, bearerToken, stores, dateStr, r
 export async function run(args = []) {
   const { start, end } = getDateRange(args);
   const auth = await getAuth();
-  const bearerToken = await getBearerToken(auth);
+  const creds = await auth.getCredentials?.().catch(() => null);
+  const callerEmail = creds?.client_email ?? '(no client_email)';
+  console.log('[GCP][daily-report] caller:', callerEmail);
+
+  let bearerToken = '';
+  try {
+    bearerToken = await getBearerToken(auth);
+  } catch (e) {
+    if (isPermissionDeniedError(e)) {
+      const tokenSheetId = (process.env.TOKEN_SHEET_SS_ID || '').trim();
+      throw new Error(`${permissionHint(tokenSheetId, callerEmail, '讀取 Token 試算表')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
+    }
+    throw e;
+  }
   if (!bearerToken) throw new Error('無 Bearer Token，請設 SAYDOU_BEARER_TOKEN 或 TOKEN_SHEET_SS_ID');
 
   const coreUrl = (process.env.PAO_CAT_CORE_API_URL || '').trim();
@@ -266,10 +300,19 @@ export async function run(args = []) {
   if (!stores.length) throw new Error('店家清單為空（getLineSayDouInfoMap）');
 
   const sheets = google.sheets({ version: 'v4', auth });
-  await ensureHeader(sheets, spreadsheetId, SHEET_ALL);
-  await ensureHeader(sheets, spreadsheetId, SHEET_DIRECT);
-  const rowMapAll = await buildDateStoreRowMap(sheets, spreadsheetId, SHEET_ALL);
-  const rowMapDirect = await buildDateStoreRowMap(sheets, spreadsheetId, SHEET_DIRECT);
+  let rowMapAll;
+  let rowMapDirect;
+  try {
+    await ensureHeader(sheets, spreadsheetId, SHEET_ALL);
+    await ensureHeader(sheets, spreadsheetId, SHEET_DIRECT);
+    rowMapAll = await buildDateStoreRowMap(sheets, spreadsheetId, SHEET_ALL);
+    rowMapDirect = await buildDateStoreRowMap(sheets, spreadsheetId, SHEET_DIRECT);
+  } catch (e) {
+    if (isPermissionDeniedError(e)) {
+      throw new Error(`${permissionHint(spreadsheetId, callerEmail, '讀寫日報試算表')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
+    }
+    throw e;
+  }
 
   const dates = [];
   const cursor = new Date(start);
@@ -280,7 +323,14 @@ export async function run(args = []) {
 
   console.log(`[GCP][daily-report] 開始 ${formatYmd(start)} ~ ${formatYmd(end)}，共 ${dates.length} 天`);
   for (const dateStr of dates) {
-    await runOneDate(sheets, spreadsheetId, bearerToken, stores, dateStr, rowMapAll, rowMapDirect);
+    try {
+      await runOneDate(sheets, spreadsheetId, bearerToken, stores, dateStr, rowMapAll, rowMapDirect);
+    } catch (e) {
+      if (isPermissionDeniedError(e)) {
+        throw new Error(`${permissionHint(spreadsheetId, callerEmail, '寫入日報資料')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
+      }
+      throw e;
+    }
   }
   console.log('[GCP][daily-report] 全部完成');
 }

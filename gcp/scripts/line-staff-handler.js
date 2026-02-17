@@ -783,7 +783,7 @@ async function handleAttendanceCommand({
     return true;
   }
 
-  // 上月出勤：與本月出勤一致，employee 優先 → 個人上月（打卡紀錄封存 gid=930376461）+ 產出格式同本月出勤；僅 manager → 引導改用店家上月出勤
+  // 上月出勤：與本月出勤一致，employee 優先 → 個人上月（打卡紀錄封存）+ 產出格式同本月出勤（文字列表）；僅 manager → 引導改用店家上月出勤
   if (textNorm === '上月出勤') {
     if (!authResult.identity.includes('employee') && !authResult.identity.includes('manager')) {
       await replyText(MSG_NO_ACTION_PERMISSION);
@@ -798,76 +798,10 @@ async function handleAttendanceCommand({
         ym = 12;
         yy -= 1;
       }
-      const yyyyMM = `${yy}-${String(ym).padStart(2, '0')}`;
       const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
       const lastDay = new Date(yy, ym, 0).getDate();
       const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
-      // 上月區間會讀「打卡紀錄封存」(gid=930376461)，與試算表一致
       const records = await readAttendance(authClient, [userId], monthStart, monthEnd, sheetReader);
-
-      if (GCS_BUCKET_ATTENDANCE) {
-      const emp = maps.byLineId.get(userId);
-      if (emp) {
-        const storeLabel = getStoreDisplayName(storeNameMap, emp.store, null) || emp.store || '未設定門市';
-        const byDateUser = {};
-        for (const r of records) {
-          const dateStr = fmtDate(r.time);
-          if (!byDateUser[dateStr]) byDateUser[dateStr] = { checkIn: '-', checkOut: '-' };
-          const cell = byDateUser[dateStr];
-          const t = fmtTimeHHmm(r.time);
-          if (String(r.type).includes('上班')) cell.checkIn = cell.checkIn === '-' ? t : cell.checkIn + '\n' + t;
-          if (String(r.type).includes('下班')) cell.checkOut = cell.checkOut === '-' ? t : cell.checkOut + '\n' + t;
-        }
-        const sortedDates = [];
-        for (let d = new Date(monthStart.getTime()); d <= monthEnd; d.setDate(d.getDate() + 1)) {
-          sortedDates.push(fmtDate(d));
-        }
-        const headerRow1 = [storeLabel, emp.name, ''];
-        const headerRow2 = ['日期', '上班', '下班'];
-        const dataRows = sortedDates.map((dateStr) => {
-          const c = byDateUser[dateStr] || { checkIn: '-', checkOut: '-' };
-          return [dateStr, c.checkIn, c.checkOut];
-        });
-        const perStoreData = [{ sheetTitle: `${emp.name} (${storeLabel})`, headerRow1, headerRow2, dataRows }];
-        const title =
-          `泡泡貓_出勤記錄_` +
-          new Date()
-            .toLocaleString('sv-SE', {
-              timeZone: 'Asia/Taipei',
-              year: 'numeric',
-              month: '2-digit',
-              day: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-              hour12: false,
-            })
-            .replace(/-/g, '')
-            .replace(/:/g, '')
-            .replace(' ', '_');
-        try {
-          const { url: excelUrl } = await createAttendanceExcelAndUpload(
-            title,
-            perStoreData,
-            userId,
-            yyyyMM,
-          );
-          await replyMessages([
-            {
-              type: 'template',
-              altText: `已經幫您準備好上月 ${yyyyMM} 出勤紀錄，請點擊按鈕下載`,
-              template: {
-                type: 'buttons',
-                text: `已經幫您準備好上月 ${yyyyMM} 出勤紀錄\n請點擊下方按鈕下載`,
-                actions: [{ type: 'uri', label: '📥 下載 Excel', uri: excelUrl }],
-              },
-            },
-          ]);
-          return true;
-        } catch (e) {
-          console.warn('[handleAttendanceCommand] 上月出勤 Excel 產出失敗，改回文字:', e?.message);
-        }
-      }
-      }
       await replyText(buildAttendanceMessage(records, maps.byLineId, storeNameMap));
       return true;
     }
