@@ -15,6 +15,86 @@ import {
 } from './sheets.js';
 
 const REQUEST_LOG_SHEET = '請求表單紀錄';
+/** 配額不足時每輪最多刪除的試算表數（服務帳號約 15GB，多輪清理直到可建立或無可刪） */
+const QUOTA_CLEANUP_PAGE_SIZE = 100;
+const QUOTA_CLEANUP_MAX_ROUNDS = 5;
+
+/**
+ * 查詢目前 Drive 儲存用量（about.get）
+ * @param {object} drive - google.drive('v3') 實例
+ * @returns {Promise<{ limit?: string, usage?: string, usageInDrive?: string }|null>}
+ */
+async function getDriveStorageQuota(drive) {
+  try {
+    const about = await drive.about.get({ fields: 'storageQuota' });
+    const q = about?.data?.storageQuota || {};
+    return {
+      limit: q.limit,
+      usage: q.usage,
+      usageInDrive: q.usageInDrive,
+      usageInDriveTrash: q.usageInDriveTrash,
+    };
+  } catch (e) {
+    console.warn('[attendance-sheet] about.get failed:', e?.message);
+    return null;
+  }
+}
+
+/**
+ * 配額不足時刪除可刪的舊檔案以釋出空間
+ * 順序：1) 自己擁有的試算表 2) 自己擁有的所有檔案 3) 若 folderId 有設，該資料夾內的試算表
+ * @param {object} drive - google.drive('v3') 實例
+ * @param {string} [folderId] - FOLDER_ID_FOR_ATTENDANCE_SHEETS，若檔案在共用資料夾內
+ * @returns {Promise<number>} 刪除的檔案數
+ */
+async function deleteOldAttendanceSpreadsheets(drive, folderId = '') {
+  let deleted = 0;
+  try {
+    const quota = await getDriveStorageQuota(drive);
+    if (quota) {
+      const limitGb = quota.limit ? (Number(quota.limit) / 1e9).toFixed(2) : '?';
+      const usageGb = quota.usage ? (Number(quota.usage) / 1e9).toFixed(2) : '?';
+      console.warn('[attendance-sheet] Drive storage: usage=', usageGb, 'GB, limit=', limitGb, 'GB');
+    }
+    let files = [];
+    const listOpts = {
+      fields: 'files(id, name, createdTime, mimeType)',
+      orderBy: 'createdTime asc',
+      pageSize: QUOTA_CLEANUP_PAGE_SIZE,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    };
+    const queries = [
+      "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false and 'me' in owners",
+      "trashed = false and 'me' in owners",
+    ];
+    if (folderId) {
+      queries.push(`mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false and '${folderId}' in parents`);
+    }
+    for (const q of queries) {
+      console.warn('[attendance-sheet] quota exceeded, listing for cleanup, q=', q.slice(0, 80), '...');
+      const res = await drive.files.list({ ...listOpts, q });
+      files = res.data.files || [];
+      if (files.length > 0) break;
+    }
+    console.warn('[attendance-sheet] quota cleanup: found', files.length, 'files, deleting oldest');
+    for (const f of files) {
+      try {
+        await drive.files.delete({ fileId: f.id, supportsAllDrives: true });
+        deleted++;
+        console.warn('[attendance-sheet] deleted for quota:', f.id, f.name);
+      } catch (e) {
+        const msg = e?.response?.data?.error?.message || e?.message;
+        const code = e?.response?.data?.error?.code || e?.code;
+        console.warn('[attendance-sheet] delete failed:', f.id, 'code=', code, 'message=', msg);
+      }
+    }
+    console.warn('[attendance-sheet] quota cleanup: deleted', deleted, 'files');
+  } catch (e) {
+    console.warn('[attendance-sheet] deleteOldAttendanceSpreadsheets error:', e?.message);
+  }
+  return deleted;
+}
 
 /** 試算表名稱中的單引號要雙寫（用於 A1 範圍） */
 function escapeSheetTitle(title) {
@@ -114,7 +194,8 @@ export async function createAttendanceSpreadsheetAndShare(auth, title, perStoreD
     properties: { title: sanitizeSheetTitle(s.sheetTitle, `店${i + 1}`) },
   }));
 
-  let createRes;
+  let spreadsheetId;
+  let createRes = null;
   try {
     createRes = await sheets.spreadsheets.create({
       requestBody: {
@@ -122,14 +203,92 @@ export async function createAttendanceSpreadsheetAndShare(auth, title, perStoreD
         sheets: sheetProps,
       },
     });
+    spreadsheetId = createRes.data.spreadsheetId;
   } catch (e) {
-    const msg = e?.response?.data?.error?.message || e?.message;
-    console.error('[attendance-sheet] spreadsheets.create failed:', msg, e?.response?.data);
-    throw new Error(`建立試算表失敗: ${msg}`);
+    const err = e?.response?.data?.error;
+    const is403 = (err?.code === 403 || err?.status === 'PERMISSION_DENIED');
+    const msg = err?.message || e?.message;
+    console.error(
+      '[attendance-sheet] spreadsheets.create failed:',
+      msg,
+      'code=',
+      err?.code,
+      'status=',
+      err?.status,
+      err?.errors ? 'details=' + JSON.stringify(err.errors) : '',
+    );
+    if (is403) {
+      const folderId = (process.env.FOLDER_ID_FOR_ATTENDANCE_SHEETS || '').trim();
+      const driveBody = {
+        name: title,
+        mimeType: 'application/vnd.google-apps.spreadsheet',
+        ...(folderId ? { parents: [folderId] } : {}),
+      };
+      if (folderId) {
+        console.warn('[attendance-sheet] creating spreadsheet in folder (FOLDER_ID_FOR_ATTENDANCE_SHEETS):', folderId);
+      }
+      try {
+        let driveRes = null;
+        for (let round = 0; round < QUOTA_CLEANUP_MAX_ROUNDS && !driveRes; round++) {
+          try {
+            driveRes = await drive.files.create({ requestBody: driveBody });
+          } catch (driveErr) {
+            const dm = driveErr?.response?.data?.error?.message || driveErr?.message;
+            const isQuotaExceeded = /quota|storage.*exceeded/i.test(dm || '');
+            // 服務帳號建立檔案時，無論是否有 parents，檔案擁有者都是服務帳號，配額計入 SA 的 15GB
+            // 故有 folderId 時也要清服務帳號 Drive 的舊試算表，再重試
+            if (isQuotaExceeded) {
+              const cleaned = await deleteOldAttendanceSpreadsheets(drive, folderId);
+              if (cleaned > 0) {
+                console.warn('[attendance-sheet] quota cleanup round', round + 1, ', deleted', cleaned, ', retrying create');
+                continue;
+              }
+              if (cleaned === 0 && round === 0) {
+                console.warn('[attendance-sheet] quota exceeded but no owned spreadsheets to delete (or delete failed)');
+              }
+            }
+            throw driveErr;
+          }
+        }
+        if (driveRes) {
+          spreadsheetId = driveRes.data.id;
+          console.warn('[attendance-sheet] spreadsheets.create 403, used drive.files.create fallback, id=', spreadsheetId, folderId ? 'folder=' + folderId : '');
+          createRes = { data: { spreadsheetId } };
+        }
+      } catch (driveErr) {
+        const dm = driveErr?.response?.data?.error?.message || driveErr?.message;
+        const driveCode = driveErr?.response?.data?.error?.code ?? driveErr?.code;
+        const rawData = driveErr?.response?.data ? JSON.stringify(driveErr.response.data) : '';
+        console.error('[attendance-sheet] drive.files.create fallback failed:', 'code=', driveCode, 'message=', dm, 'raw=', rawData);
+        throw new Error(`建立試算表失敗（Drive）: ${dm || msg}`);
+      }
+    } else {
+      throw new Error(`建立試算表失敗: ${msg}`);
+    }
   }
 
-  const spreadsheetId = createRes.data.spreadsheetId;
+  if (!spreadsheetId) spreadsheetId = createRes?.data?.spreadsheetId;
   const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+
+  // 若用 Drive API 建立，試算表只有預設 Sheet1，需用 Sheets API 新增各店工作表
+  const usedDriveFallback = !createRes?.data?.sheets?.length && spreadsheetId;
+  if (usedDriveFallback && perStoreData.length > 0) {
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: perStoreData.map((store, i) => ({
+            addSheet: {
+              properties: { title: sanitizeSheetTitle(store.sheetTitle, `店${i + 1}`) },
+            },
+          })),
+        },
+      });
+    } catch (e) {
+      console.error('[attendance-sheet] batchUpdate addSheet failed:', e?.response?.data?.error?.message || e?.message);
+      throw new Error(`建立試算表失敗: 無法新增工作表（${e?.response?.data?.error?.message || e?.message}）`);
+    }
+  }
 
   for (let i = 0; i < perStoreData.length; i++) {
     const store = perStoreData[i];

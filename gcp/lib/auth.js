@@ -6,7 +6,14 @@ import { google } from 'googleapis';
 export async function getAuth() {
   const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   const resolvedPath = keyPath ? path.resolve(process.cwd(), keyPath) : null;
-  const useKeyFile = resolvedPath && fs.existsSync(resolvedPath);
+  const exists = resolvedPath ? fs.existsSync(resolvedPath) : false;
+  const useKeyFile = !!resolvedPath && exists;
+
+  if (keyPath && !exists) {
+    console.warn('[auth] GOOGLE_APPLICATION_CREDENTIALS set but file not found:', resolvedPath);
+  } else if (useKeyFile) {
+    console.warn('[auth] using keyFile:', resolvedPath);
+  }
 
   const auth = new google.auth.GoogleAuth({
     ...(useKeyFile ? { keyFile: resolvedPath } : {}),

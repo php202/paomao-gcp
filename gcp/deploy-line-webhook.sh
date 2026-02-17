@@ -27,10 +27,14 @@ cd "$(dirname "$0")"
 : "${LINE_TOKEN_PAOPAO:=}"
 : "${REPORT_PAGE_URL:=https://www.paopaomao.tw/report}"
 : "${REPORT_API_BASE:=}"
+: "${FOLDER_ID_FOR_ATTENDANCE_SHEETS:=}"
+: "${GCS_BUCKET_ATTENDANCE:=}"
 : "${TOMORROW_BRIEFING_WEB_APP_URL:=}"
 : "${GAS_WEBHOOK_URL:=}"
 : "${FORWARD_UNKNOWN_TO_GAS:=0}"
 : "${WEBHOOK_LOG_VERBOSE:=1}"
+# 店家本月出勤 403 時可設：Secret Manager 密碼名稱（金鑰會掛到 /secrets/sa-key.json，並設 GOOGLE_APPLICATION_CREDENTIALS）
+: "${SA_KEY_SECRET_NAME:=}"
 
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/gcp-scripts/pao-run:latest"
 SERVICE_NAME="pao-checkin-api"
@@ -79,21 +83,42 @@ append_env "LINE_CHANNEL_SECRET_PAOPAO" "$LINE_CHANNEL_SECRET_PAOPAO"
 append_env "LINE_TOKEN_PAOPAO" "$LINE_TOKEN_PAOPAO"
 append_env "REPORT_PAGE_URL" "$REPORT_PAGE_URL"
 append_env "REPORT_API_BASE" "$REPORT_API_BASE"
+append_env "FOLDER_ID_FOR_ATTENDANCE_SHEETS" "$FOLDER_ID_FOR_ATTENDANCE_SHEETS"
+append_env "GCS_BUCKET_ATTENDANCE" "$GCS_BUCKET_ATTENDANCE"
 append_env "TOMORROW_BRIEFING_WEB_APP_URL" "$TOMORROW_BRIEFING_WEB_APP_URL"
 append_env "GAS_WEBHOOK_URL" "$GAS_WEBHOOK_URL"
 append_env "FORWARD_UNKNOWN_TO_GAS" "$FORWARD_UNKNOWN_TO_GAS"
 append_env "WEBHOOK_LOG_VERBOSE" "$WEBHOOK_LOG_VERBOSE"
 
-gcloud run deploy "$SERVICE_NAME" \
-  --image "$IMAGE" \
-  --region "$REGION" \
-  --platform managed \
-  --allow-unauthenticated \
-  --command "node" \
-  --args "index.js,serve" \
-  --set-env-vars "$ENV_VARS" \
-  --min-instances 0 \
-  --max-instances 10
+if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
+  append_env "GOOGLE_APPLICATION_CREDENTIALS" "/secrets/sa-key.json"
+  echo "將掛載 Secret: ${SA_KEY_SECRET_NAME} -> /secrets/sa-key.json（店家本月出勤用）"
+fi
+
+if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
+  gcloud run deploy "$SERVICE_NAME" \
+    --image "$IMAGE" \
+    --region "$REGION" \
+    --platform managed \
+    --allow-unauthenticated \
+    --command "node" \
+    --args "index.js,serve" \
+    --set-env-vars "$ENV_VARS" \
+    --set-secrets "/secrets/sa-key.json=${SA_KEY_SECRET_NAME}:latest" \
+    --min-instances 0 \
+    --max-instances 10
+else
+  gcloud run deploy "$SERVICE_NAME" \
+    --image "$IMAGE" \
+    --region "$REGION" \
+    --platform managed \
+    --allow-unauthenticated \
+    --command "node" \
+    --args "index.js,serve" \
+    --set-env-vars "$ENV_VARS" \
+    --min-instances 0 \
+    --max-instances 10
+fi
 
 URL=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" --format='value(status.url)')
 echo ""

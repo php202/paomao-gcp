@@ -157,7 +157,6 @@ async function handleLineWebhook(req, rawBody, res) {
         }
         forwardEvents.push(event);
       } else {
-        await replyFallback(replyToken, '⚠️ 目前此指令尚未完成 GCP 搬遷，請稍後再試。');
         localHandledCount += 1;
       }
     } catch (err) {

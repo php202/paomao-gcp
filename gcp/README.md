@@ -162,6 +162,17 @@ node index.js serve
 | `GAS_WEBHOOK_URL` | 建議設定。非「我要打卡」事件會轉發到此 GAS Webhook URL（例：`https://script.google.com/macros/s/xxxx/exec`） |
 | `FORWARD_UNKNOWN_TO_GAS` | 可選，`1`=未搬遷指令轉發 GAS；`0`=僅走 GCP（預設） |
 | `WEBHOOK_LOG_VERBOSE` | 可選，`1` 詳細事件 log；`0` 精簡 log |
+| `GCS_BUCKET_ATTENDANCE` | 可選。若設定，店家／員工本月・上月出勤改產 Excel 上傳此 bucket，回傳下載按鈕（避免 Drive 配額不足） |
+
+### 出勤 Excel 資料保留與清理
+
+- **GCS（`attendance/`）**：不會自動刪除。若要定期清掉舊檔、避免資料過多，可在 bucket 設定 **生命週期**：
+  ```bash
+  # 例：刪除 attendance/ 底下超過 90 天的物件
+  echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":90,"matchesPrefix":["attendance/"]}}]}' > /tmp/lifecycle.json
+  gsutil lifecycle set /tmp/lifecycle.json gs://你的bucket名稱
+  ```
+- **試算表「請求表單紀錄」**：僅記錄 uuid、userId、月份、連結、時間，**不會自動清空**。若需控管筆數，可手動刪除舊列，或另建排程於試算表刪除過久紀錄。
 
 ### 啟用備援（urlfetch 滿了時）
 

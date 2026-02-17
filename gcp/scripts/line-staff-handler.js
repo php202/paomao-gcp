@@ -6,6 +6,10 @@ import {
   createAttendanceSpreadsheetAndShare,
   saveAttendanceRequestCache,
 } from '../lib/attendance-sheet.js';
+import {
+  createAttendanceExcelAndUpload,
+  getSignedUrlFromGcsPath,
+} from '../lib/attendance-excel.js';
 import { isUserAuthorized } from './line-checkin-handler.js';
 import { getTomorrowReservationList } from '../api/stores-api.js';
 import { findAvailableSlotsAction } from '../api/core-api.js';
@@ -26,6 +30,7 @@ const LINE_STAFF_SS_ID = process.env.LINE_STAFF_SS_ID || '';
 const LINE_HQ_SS_ID = process.env.LINE_HQ_SS_ID || '';
 const STORE_INFO_SS_ID = process.env.LINE_STORE_SS_ID || process.env.INTEGRATED_SHEET_SS_ID || '';
 const WORKFLOW_SHEET_SS_ID = (process.env.WORKFLOW_SHEET_SS_ID || '').trim();
+const GCS_BUCKET_ATTENDANCE = (process.env.GCS_BUCKET_ATTENDANCE || '').trim();
 
 // 店別顯示規則：所有【店別】區塊一律使用 getStoreDisplayName(storeNameMap, storeId, apiStoreName)，
 // 不得直接使用 storeId 或 resolveStoreName(...) || storeId，避免出現【0001】等代碼。
@@ -44,12 +49,24 @@ function splitStoreIds(list) {
 }
 
 function normalizeDate(value) {
-  if (!value) return null;
+  if (value == null || value === '') return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'number') {
+    // Excel 序列日期（1900-01-01 起算的天數）
+    if (value > 100000) return null; // 可能是 Unix ms
+    const d = new Date((value - 25569) * 86400 * 1000);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
   const s = String(value).trim();
-  // 試算表常存「YYYY-MM-DD HH:mm:ss」為台北時間，補 +08:00 再解析
-  if (/^\d{4}-\d{2}-\d{2}[\sT]\d{1,2}:\d{2}/.test(s)) {
-    const withTz = s.includes('T') ? s + (s.includes('+') || s.includes('Z') ? '' : '+08:00') : s.replace(/\s+/, 'T') + '+08:00';
+  if (!s) return null;
+  // 試算表常存「YYYY-MM-DD」「YYYY/MM/DD」「YYYY-MM-DD HH:mm:ss」為台北時間
+  const iso = s.replace(/^\s*(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/, (_, y, m, d) =>
+    `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`,
+  );
+  if (/^\d{4}-\d{2}-\d{2}([\sT]\d{1,2}:\d{2}|$)/.test(iso)) {
+    let withTz = iso;
+    if (iso.length <= 10) withTz = iso + 'T00:00:00+08:00';
+    else if (!/[\+\-Z]/.test(iso)) withTz = iso.replace(/\s+/, 'T') + '+08:00';
     const d = new Date(withTz);
     return Number.isNaN(d.getTime()) ? null : d;
   }
@@ -234,10 +251,12 @@ function buildAttendanceMessage(records, employeeMap, storeNameMap = new Map()) 
   return lines.join('\n').trim() || '⚠️ 查無打卡紀錄';
 }
 
+/** 與 GAS formatManagedStores 對齊：byStore 以 saydouId/店碼為 key；byStoreName 以店名(B欄)為 key，供 fallback */
 async function readEmployeeMaps(auth, sheetReader) {
   const rows = await sheetReader(auth, LINE_STAFF_SS_ID, "'員工清單'!A:L");
   const byLineId = new Map();
   const byStore = new Map();
+  const byStoreName = new Map();
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     const code = String(row[0] || '').trim();
@@ -254,7 +273,6 @@ async function readEmployeeMaps(auth, sheetReader) {
       list.push(data);
       byStore.set(saydouId, list);
     }
-    // 管理者清單 C 欄多為店碼（員工清單 B 欄），也要能查到該店成員
     if (store) {
       if (store === saydouId) {
         byStore.set(store, byStore.get(saydouId));
@@ -263,9 +281,15 @@ async function readEmployeeMaps(auth, sheetReader) {
         list.push(data);
         byStore.set(store, list);
       }
+      const nameKey = store.trim();
+      if (nameKey) {
+        const nList = byStoreName.get(nameKey) || [];
+        nList.push(data);
+        byStoreName.set(nameKey, nList);
+      }
     }
   }
-  return { byLineId, byStore };
+  return { byLineId, byStore, byStoreName };
 }
 
 function safeUserSuffix(userId) {
@@ -273,18 +297,32 @@ function safeUserSuffix(userId) {
   return s ? s.slice(-6) : '';
 }
 
+/**
+ * 取得人員打卡記錄，與 GAS getUserAttendance 邏輯對齊
+ * - 跨月查詢：startDate < 本月1日 才讀打卡紀錄封存；endDate >= 本月1日 才讀員工打卡紀錄
+ * - 過濾：userId、時間範圍、C 欄須含上班/下班
+ * - 補打卡：G 欄含「補打卡」則 type 加 (補)
+ */
 async function readAttendance(auth, userIds, startDate, endDate, sheetReader) {
-  const sources = ["'員工打卡紀錄'!A:G", "'打卡紀錄封存'!A:G"];
+  const now = new Date();
+  const cutoffDate = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const sheetsToRead = [];
+  if (startDate < cutoffDate) sheetsToRead.push("'打卡紀錄封存'!A:G");
+  if (endDate >= cutoffDate) sheetsToRead.push("'員工打卡紀錄'!A:G");
+  if (sheetsToRead.length === 0) sheetsToRead.push("'員工打卡紀錄'!A:G");
+
   const rows = [];
-  for (const src of sources) {
+  for (const src of sheetsToRead) {
     try {
       const data = await sheetReader(auth, LINE_STAFF_SS_ID, src);
-      rows.push(...data.slice(1));
+      rows.push(...(data || []).slice(1));
     } catch {
       // ignore missing sheet
     }
   }
-  const userSet = new Set(userIds);
+
+  const userSet = new Set((userIds || []).map(String));
   return rows
     .map((row) => {
       const userId = String(row[0] || '').trim();
@@ -294,7 +332,8 @@ async function readAttendance(auth, userIds, startDate, endDate, sheetReader) {
       const tagType = note.includes('補打卡') && type ? `${type}(補)` : type;
       return { userId, time, type: tagType };
     })
-    .filter((x) => x.userId && userSet.has(x.userId) && x.time && x.time >= startDate && x.time <= endDate)
+    .filter((x) => x.userId && userSet.has(x.userId) && x.time)
+    .filter((x) => x.time >= startDate && x.time <= endDate)
     .filter((x) => x.type.includes('上班') || x.type.includes('下班'))
     .sort((a, b) => a.time - b.time);
 }
@@ -400,16 +439,55 @@ async function handleAttendanceCommand({
     const lastDay = new Date(yy, ym, 0).getDate();
     const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
 
-    const cachedUrl = await getCachedAttendanceSheetUrl(
+    const cachedValue = await getCachedAttendanceSheetUrl(
       authClient,
       sheetReader,
       LINE_STAFF_SS_ID,
       userId,
       yyyyMM,
     );
-    if (cachedUrl) {
-      await replyText(`📂 你的打卡紀錄 Excel 檔案已準備好！\n🔗 下載連結：${cachedUrl}`);
-      return true;
+    if (cachedValue) {
+      const gcsPathRaw = cachedValue.startsWith('gcs:') ? cachedValue.slice(4) : cachedValue;
+      if (GCS_BUCKET_ATTENDANCE && (cachedValue.startsWith('attendance/') || cachedValue.startsWith('gcs:'))) {
+        if (!gcsPathRaw.includes(`/${yyyyMM}/`) && !gcsPathRaw.includes(`/${yyyyMM}.`)) {
+          // 快取路徑月份與請求不符（例如 C 欄 2026-02 但 D 欄為 2026-01 的舊檔），不採用快取，重新產檔
+          console.log(`[handleAttendanceCommand] cache path month mismatch, requested ${yyyyMM}, path=${gcsPathRaw.slice(0, 50)}`);
+        } else {
+          let url = cachedValue;
+          try {
+            url = await getSignedUrlFromGcsPath(gcsPathRaw);
+          } catch (e) {
+            console.warn('[handleAttendanceCommand] getSignedUrlFromGcsPath failed:', e?.message);
+          }
+          if (url.startsWith('http')) {
+            await replyMessages([
+              {
+                type: 'template',
+                altText: '打卡紀錄 Excel 已準備好，請點擊按鈕下載',
+                template: {
+                  type: 'buttons',
+                  text: '📂 你的打卡紀錄 Excel 檔案已準備好！\n請點擊下方按鈕下載',
+                  actions: [{ type: 'uri', label: '📥 下載 Excel', uri: url }],
+                },
+              },
+            ]);
+            return true;
+          }
+        }
+      } else {
+        await replyMessages([
+          {
+            type: 'template',
+            altText: '打卡紀錄 Excel 已準備好，請點擊按鈕下載',
+            template: {
+              type: 'buttons',
+              text: '📂 你的打卡紀錄 Excel 檔案已準備好！\n請點擊下方按鈕下載',
+              actions: [{ type: 'uri', label: '📥 下載 Excel', uri: cachedValue }],
+            },
+          },
+        ]);
+        return true;
+      }
     }
 
     const perStoreData = [];
@@ -418,9 +496,15 @@ async function handleAttendanceCommand({
       sortedDates.push(fmtDate(d));
     }
     for (const storeId of managedStores) {
-      const members = (maps.byStore.get(storeId) || []).filter(
+      let members = (maps.byStore.get(storeId) || []).filter(
         (m) => m.lineId && String(m.lineId) !== '#N/A',
       );
+      if (!members.length && maps.byStoreName) {
+        const storeName = getStoreDisplayName(storeNameMap, storeId);
+        members = (maps.byStoreName.get(String(storeName || '').trim()) || maps.byStoreName.get(String(storeId || '').trim()) || []).filter(
+          (m) => m.lineId && String(m.lineId) !== '#N/A',
+        );
+      }
       if (!members.length) continue;
       const storeName = String(getStoreDisplayName(storeNameMap, storeId) ?? storeId ?? '');
       const records = await readAttendance(
@@ -469,37 +553,64 @@ async function handleAttendanceCommand({
         .slice(0, 15) +
       '_' +
       String(Math.random()).slice(2, 6);
+    const title =
+      `泡泡貓_出勤記錄_` +
+      new Date()
+        .toLocaleString('sv-SE', {
+          timeZone: 'Asia/Taipei',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        })
+        .replace(/-/g, '')
+        .replace(/:/g, '')
+        .replace(' ', '_');
     try {
-      const title =
-        `泡泡貓_出勤記錄_` +
-        new Date()
-          .toLocaleString('sv-SE', {
-            timeZone: 'Asia/Taipei',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false,
-          })
-          .replace(/-/g, '')
-          .replace(/:/g, '')
-          .replace(' ', '_');
-      const { url } = await createAttendanceSpreadsheetAndShare(
-        authClient,
-        title,
-        perStoreData,
-      );
-      try {
-        await saveAttendanceRequestCache(authClient, LINE_STAFF_SS_ID, userId, yyyyMM, url);
-      } catch (cacheErr) {
-        console.warn(
-          '[handleAttendanceCommand] saveAttendanceRequestCache failed (url still sent):',
-          cacheErr?.message,
-          cacheErr?.response?.data,
+      let url;
+      if (GCS_BUCKET_ATTENDANCE) {
+        const { url: excelUrl, gcsPath } = await createAttendanceExcelAndUpload(
+          title,
+          perStoreData,
+          userId,
+          yyyyMM,
         );
+        url = excelUrl;
+        try {
+          await saveAttendanceRequestCache(authClient, LINE_STAFF_SS_ID, userId, yyyyMM, gcsPath);
+        } catch (cacheErr) {
+          console.warn(
+            '[handleAttendanceCommand] saveAttendanceRequestCache failed (url still sent):',
+            cacheErr?.message,
+            cacheErr?.response?.data,
+          );
+        }
+      } else {
+        const res = await createAttendanceSpreadsheetAndShare(authClient, title, perStoreData);
+        url = res.url;
+        try {
+          await saveAttendanceRequestCache(authClient, LINE_STAFF_SS_ID, userId, yyyyMM, url);
+        } catch (cacheErr) {
+          console.warn(
+            '[handleAttendanceCommand] saveAttendanceRequestCache failed (url still sent):',
+            cacheErr?.message,
+            cacheErr?.response?.data,
+          );
+        }
       }
-      await replyText(`📂 你的打卡紀錄 Excel 檔案已準備好！\n🔗 下載連結：${url}`);
+      await replyMessages([
+        {
+          type: 'template',
+          altText: '打卡紀錄 Excel 已準備好，請點擊按鈕下載',
+          template: {
+            type: 'buttons',
+            text: '📂 你的打卡紀錄 Excel 檔案已準備好！\n請點擊下方按鈕下載',
+            actions: [{ type: 'uri', label: '📥 下載 Excel', uri: url }],
+          },
+        },
+      ]);
     } catch (e) {
       const logPayload = {
         errorId,
@@ -514,9 +625,18 @@ async function handleAttendanceCommand({
         '[handleAttendanceCommand] createAttendanceSpreadsheetAndShare failed',
         JSON.stringify(logPayload),
       );
-      await replyText(
-        `產出試算表時發生錯誤，請稍後再試或聯繫管理員。\n（錯誤代碼：${errorId}，提供此代碼可加速排查）`,
-      );
+      // 從錯誤內容抽出簡短原因，讓使用者在 LINE 能看到（不暴露敏感資訊）
+      let reason = '';
+      const msg = (e?.response?.data?.error?.message || e?.message || '').trim();
+      if (/資料夾擁有者|資料夾.*儲存.*滿/i.test(msg)) reason = '可能原因：資料夾擁有者的 Drive 已滿，請至 drive.google.com 清理該帳號的檔案或換一個有空間的資料夾';
+      else if (/quota|storage.*exceeded|儲存.*滿/i.test(msg)) reason = '可能原因：Drive 儲存空間已滿';
+      else if (/permission|403|權限/i.test(msg)) reason = '可能原因：權限不足';
+      else if (/File not found/i.test(msg)) reason = '可能原因：指定的資料夾不存在或未分享給服務帳號，請將資料夾分享給 pao-sheets-creator@gen-lang-client-0828139766.iam.gserviceaccount.com 權限「編輯者」';
+      else if (msg) reason = '原因：' + String(msg).slice(0, 80).replace(/\n/g, ' ');
+      const reply =
+        `產出試算表時發生錯誤，請稍後再試或聯繫管理員。\n（錯誤代碼：${errorId}，提供此代碼可加速排查）` +
+        (reason ? `\n${reason}` : '');
+      await replyText(reply);
     }
     return true;
   }
@@ -592,7 +712,7 @@ async function handleAttendanceCommand({
     return true;
   }
 
-  // 上月出勤：employee → 本人上月 formatAtt；manager → 引導改用店家上月出勤（GAS sendAtt）
+  // 上月出勤：employee → Excel + GCS（若有 bucket）或文字摘要；manager → 引導改用店家上月出勤（GAS sendAtt）
   if (textNorm === '上月出勤') {
     if (!authResult.identity.includes('employee') && !authResult.identity.includes('manager')) {
       await replyText(MSG_NO_ACTION_PERMISSION);
@@ -610,10 +730,75 @@ async function handleAttendanceCommand({
       ym = 12;
       yy -= 1;
     }
+    const yyyyMM = `${yy}-${String(ym).padStart(2, '0')}`;
     const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
     const lastDay = new Date(yy, ym, 0).getDate();
     const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
     const records = await readAttendance(authClient, [userId], monthStart, monthEnd, sheetReader);
+
+    if (GCS_BUCKET_ATTENDANCE) {
+      const emp = maps.byLineId.get(userId);
+      if (emp) {
+        const storeLabel = getStoreDisplayName(storeNameMap, emp.store, null) || emp.store || '未設定門市';
+        const byDateUser = {};
+        for (const r of records) {
+          const dateStr = fmtDate(r.time);
+          if (!byDateUser[dateStr]) byDateUser[dateStr] = { checkIn: '-', checkOut: '-' };
+          const cell = byDateUser[dateStr];
+          const t = fmtDateTime(r.time).slice(11, 16);
+          if (String(r.type).includes('上班')) cell.checkIn = cell.checkIn === '-' ? t : cell.checkIn + '\n' + t;
+          if (String(r.type).includes('下班')) cell.checkOut = cell.checkOut === '-' ? t : cell.checkOut + '\n' + t;
+        }
+        const sortedDates = [];
+        for (let d = new Date(monthStart.getTime()); d <= monthEnd; d.setDate(d.getDate() + 1)) {
+          sortedDates.push(fmtDate(d));
+        }
+        const headerRow1 = [storeLabel, emp.name, ''];
+        const headerRow2 = ['日期', '上班', '下班'];
+        const dataRows = sortedDates.map((dateStr) => {
+          const c = byDateUser[dateStr] || { checkIn: '-', checkOut: '-' };
+          return [dateStr, c.checkIn, c.checkOut];
+        });
+        const perStoreData = [{ sheetTitle: `${emp.name} (${storeLabel})`, headerRow1, headerRow2, dataRows }];
+        const title =
+          `泡泡貓_出勤記錄_` +
+          new Date()
+            .toLocaleString('sv-SE', {
+              timeZone: 'Asia/Taipei',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false,
+            })
+            .replace(/-/g, '')
+            .replace(/:/g, '')
+            .replace(' ', '_');
+        try {
+          const { url: excelUrl } = await createAttendanceExcelAndUpload(
+            title,
+            perStoreData,
+            userId,
+            yyyyMM,
+          );
+          await replyMessages([
+            {
+              type: 'template',
+              altText: '打卡紀錄 Excel 已準備好，請點擊按鈕下載',
+              template: {
+                type: 'buttons',
+                text: '📂 你的打卡紀錄 Excel 檔案已準備好！\n請點擊下方按鈕下載',
+                actions: [{ type: 'uri', label: '📥 下載 Excel', uri: excelUrl }],
+              },
+            },
+          ]);
+          return true;
+        } catch (e) {
+          console.warn('[handleAttendanceCommand] 上月出勤 Excel 產出失敗，改回文字:', e?.message);
+        }
+      }
+    }
     await replyText(buildAttendanceMessage(records, maps.byLineId, storeNameMap));
     return true;
   }
