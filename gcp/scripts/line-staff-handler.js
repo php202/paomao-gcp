@@ -208,6 +208,35 @@ async function readStoreNameMap(auth, sheetReader) {
   return map;
 }
 
+/** 店碼 → SayDou 店家 ID（員工清單 byStore 以 saydouId 為 key，管理者清單給的是店碼，需對照才查得到人） */
+async function readStoreIdToSaydouId(auth, sheetReader) {
+  const map = new Map();
+  if (!STORE_INFO_SS_ID) return map;
+  const rows = await sheetReader(auth, STORE_INFO_SS_ID, "'店家基本資料'!A:I");
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const storeCode = String(row[0] || '').trim();
+    const saydouId = String(row[5] || '').trim();
+    if (!storeCode || !saydouId) continue;
+    for (const key of storeIdCandidates(storeCode)) map.set(key, saydouId);
+  }
+  return map;
+}
+
+/** 依店碼取得該店成員（先試 storeId，再試店碼對應的 saydouId，最後 fallback 店名） */
+function getMembersForStore(storeId, maps, storeNameMap, storeIdToSaydouId) {
+  let members = maps.byStore.get(storeId) || [];
+  if (!members.length && storeIdToSaydouId) {
+    const saydouId = storeIdToSaydouId.get(storeId);
+    if (saydouId) members = maps.byStore.get(saydouId) || [];
+  }
+  if (!members.length) {
+    const storeName = getStoreDisplayName(storeNameMap, storeId);
+    members = maps.byStoreName.get(String(storeName || '').trim()) || maps.byStore.get(storeId) || [];
+  }
+  return members;
+}
+
 function resolveStoreName(storeNameMap, storeId) {
   for (const key of storeIdCandidates(storeId)) {
     const name = storeNameMap.get(key);
@@ -261,11 +290,13 @@ function buildAttendanceMessage(records, employeeMap, storeNameMap = new Map()) 
     const sortedDates = [...byDate.keys()].sort();
     for (const date of sortedDates) {
       const dayItems = byDate.get(date);
-      const on = dayItems.filter((x) => String(x.type).includes('上班')).map((x) => fmtTimeHHmmss(x.time));
-      const off = dayItems.filter((x) => String(x.type).includes('下班')).map((x) => fmtTimeHHmmss(x.time));
+      const onItems = dayItems.filter((x) => String(x.type).includes('上班')).sort((a, b) => a.time - b.time);
+      const offItems = dayItems.filter((x) => String(x.type).includes('下班')).sort((a, b) => a.time - b.time);
+      const onStr = onItems.length ? fmtTimeHHmmss(onItems[0].time) : '';
+      const offStr = offItems.length ? fmtTimeHHmmss(offItems[offItems.length - 1].time) : '';
       lines.push(`🔹 ${date} 出勤紀錄`);
-      lines.push(`✅ 上班: ${on.join(' 、') || ''}`);
-      lines.push(`✅ 下班: ${off.join(' 、') || ''}`);
+      lines.push(`✅ 上班: ${onStr}`);
+      lines.push(`✅ 下班: ${offStr}`);
     }
     lines.push('');
   }
@@ -417,6 +448,7 @@ async function handleAttendanceCommand({
   const m = taipeiM - 1;
   const maps = await readEmployeeMaps(authClient, sheetReader);
   const storeNameMap = await readStoreNameMap(authClient, sheetReader);
+  const storeIdToSaydouId = STORE_INFO_SS_ID ? await readStoreIdToSaydouId(authClient, sheetReader).catch(() => new Map()) : new Map();
 
   // #region agent log
   try {
@@ -443,6 +475,7 @@ async function handleAttendanceCommand({
   const managedStores = splitStoreIds(authResult.managedStores);
 
   // 先處理「店家本月／上月出勤」（Excel 連結），與 GAS sendAtt 順序一致，避免與「本月出勤」混淆
+  // 資料來源：本月＝員工打卡紀錄；上月＝員工打卡紀錄＋打卡紀錄封存（readAttendance 依 cutoff 自動選表）
   if (textNorm === '店家本月出勤' || textNorm === '店家上月出勤') {
     if (!managedStores.length) {
       await replyText(MSG_NO_MANAGED_STORES);
@@ -522,15 +555,8 @@ async function handleAttendanceCommand({
       sortedDates.push(fmtDate(d));
     }
     for (const storeId of managedStores) {
-      let members = (maps.byStore.get(storeId) || []).filter(
-        (m) => m.lineId && String(m.lineId) !== '#N/A',
-      );
-      if (!members.length && maps.byStoreName) {
-        const storeName = getStoreDisplayName(storeNameMap, storeId);
-        members = (maps.byStoreName.get(String(storeName || '').trim()) || maps.byStoreName.get(String(storeId || '').trim()) || []).filter(
-          (m) => m.lineId && String(m.lineId) !== '#N/A',
-        );
-      }
+      let members = getMembersForStore(storeId, maps, storeNameMap, storeIdToSaydouId);
+      members = members.filter((m) => m.lineId && String(m.lineId) !== '#N/A');
       if (!members.length) continue;
       const storeName = String(getStoreDisplayName(storeNameMap, storeId) ?? storeId ?? '');
       const records = await readAttendance(
@@ -567,7 +593,7 @@ async function handleAttendanceCommand({
       perStoreData.push({ sheetTitle: storeName, headerRow1, headerRow2, dataRows });
     }
     if (perStoreData.length === 0) {
-      await replyText('⚠️ 查無此區間的員工或打卡資料，無法產生檔案。');
+      await replyText('⚠️ 查無此區間的員工或打卡資料，無法產生檔案。\n（資料來源：試算表「員工打卡紀錄」）');
       return true;
     }
     const errorId =
@@ -694,7 +720,7 @@ async function handleAttendanceCommand({
       const dayEnd = new Date(`${taipeiTodayStr}T23:59:59.999+08:00`);
       const lines = [];
       for (const storeId of managedStoresForToday) {
-        const members = maps.byStore.get(storeId) || [];
+        const members = getMembersForStore(storeId, maps, storeNameMap, storeIdToSaydouId);
         if (!members.length) continue;
         const records = await readAttendance(
           authClient,
@@ -722,7 +748,7 @@ async function handleAttendanceCommand({
           if (hasClockIn) {
             const detail = rs
               .sort((a, b) => a.time - b.time)
-              .map((r) => `${r.type} ${fmtTimeHHmm(r.time)}`)
+              .map((r) => `${r.type} ${fmtDateTime(r.time).slice(11, 16)}`)
               .join('、');
             attended.push(`${mbr.name}: ${detail}`);
           } else {
@@ -842,7 +868,7 @@ async function handleAttendanceCommand({
     const dayEnd = new Date(`${taipeiTodayStr}T23:59:59.999+08:00`);
     const lines = [];
     for (const storeId of managedStores) {
-      const members = maps.byStore.get(storeId) || [];
+      const members = getMembersForStore(storeId, maps, storeNameMap, storeIdToSaydouId);
       if (!members.length) continue;
       const records = await readAttendance(
         authClient,
@@ -870,7 +896,7 @@ async function handleAttendanceCommand({
         if (hasClockIn) {
           const detail = rs
             .sort((a, b) => a.time - b.time)
-            .map((r) => `${r.type} ${fmtTimeHHmm(r.time)}`)
+            .map((r) => `${r.type} ${fmtDateTime(r.time).slice(11, 16)}`)
             .join('、');
           attended.push(`${mbr.name}: ${detail}`);
         } else {
@@ -965,7 +991,7 @@ async function handleAttendanceCommand({
   const dayEnd = new Date(`${taipeiTodayStr}T23:59:59.999+08:00`);
   const lines = [];
   for (const storeId of managedStores) {
-    const members = maps.byStore.get(storeId) || [];
+    const members = getMembersForStore(storeId, maps, storeNameMap, storeIdToSaydouId);
     if (!members.length) continue;
     const records = await readAttendance(
       authClient,
@@ -993,14 +1019,14 @@ async function handleAttendanceCommand({
       if (hasClockIn) {
         const detail = rs
           .sort((a, b) => a.time - b.time)
-          .map((r) => `${r.type} ${fmtTimeHHmm(r.time)}`)
+          .map((r) => `${r.type} ${fmtDateTime(r.time).slice(11, 16)}`)
           .join('、');
         attended.push(`${mbr.name}: ${detail}`);
       } else {
         absent.push(mbr.name);
       }
     }
-      lines.push(`【${getStoreDisplayName(storeNameMap, storeId)}】`);
+    lines.push(`【${getStoreDisplayName(storeNameMap, storeId)}】`);
     lines.push(`✅ 有上班：\n${attended.join('\n') || '無'}`);
     lines.push(`❌ 沒上班：${absent.join('、') || '無'}`);
     lines.push(`⚠️ 尚未註冊：${unregistered.join('、') || '無'}`);
