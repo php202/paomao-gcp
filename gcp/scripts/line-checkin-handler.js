@@ -16,7 +16,10 @@ const MANAGER_SHEET = '管理者清單';
 const LOG_SHEET = '員工打卡紀錄';
 const APPLY_SHEET = '請求員工ID';
 
-/** 與 GAS IsUserAuthorized 一致：員工清單 D 欄 (index 3)= userId，管理者清單 A 欄 (index 0)= userId */
+/**
+ * 與 GAS IsUserAuthorized 一致：員工清單 D 欄 (index 3)= userId，管理者清單 A 欄 (index 0)= userId。
+ * 若讀取試算表拋錯（權限／逾時），會設 result.sheetError = true，呼叫端可區分「未開通」與「系統錯誤」。
+ */
 export async function isUserAuthorized(auth, spreadsheetId, userId) {
   const result = {
     isAuthorized: false,
@@ -24,6 +27,7 @@ export async function isUserAuthorized(auth, spreadsheetId, userId) {
     managedStores: [],
     workStores: [],
     employeeCode: '',
+    sheetError: false,
   };
   if (!userId || !spreadsheetId) return result;
   try {
@@ -51,6 +55,7 @@ export async function isUserAuthorized(auth, spreadsheetId, userId) {
     result.managedStores = [...new Set(result.managedStores)];
   } catch (e) {
     console.error('[line-checkin] isUserAuthorized error:', e.message);
+    result.sheetError = true;
   }
   return result;
 }

@@ -48,18 +48,34 @@ function splitStoreIds(list) {
   return [...new Set(out)];
 }
 
+/**
+ * 將試算表 B 欄「打卡時間」各種格式統一為 Date（台北時間解讀）。
+ * 支援：Excel 序列數字、Date、YYYY/MM/DD、YYYY-MM-DD、YYYY/M/D 上午 H:mm:ss、YYYY/M/D 下午 H:mm:ss 等。
+ */
 function normalizeDate(value) {
   if (value == null || value === '') return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
   if (typeof value === 'number') {
-    // Excel 序列日期（1900-01-01 起算的天數）
     if (value > 100000) return null; // 可能是 Unix ms
     const d = new Date((value - 25569) * 86400 * 1000);
     return Number.isNaN(d.getTime()) ? null : d;
   }
   const s = String(value).trim();
   if (!s) return null;
-  // 試算表常存「YYYY-MM-DD」「YYYY/MM/DD」「YYYY-MM-DD HH:mm:ss」為台北時間
+
+  // 試算表 zh-TW 常出現「2026/2/1 上午 9:41:36」「2026/2/1 下午 10:30:00」— 先正規化
+  const matchTw = s.match(/^\s*(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\s*(上午|下午)?\s*(\d{1,2})?:?(\d{2})?:?(\d{2})?\s*$/i);
+  if (matchTw) {
+    const [, y, m, d, ampm, h = '0', min = '0', sec = '0'] = matchTw;
+    let hour = parseInt(h, 10) || 0;
+    if (String(ampm || '').includes('下午') && hour < 12) hour += 12;
+    if (String(ampm || '').includes('上午') && hour === 12) hour = 0;
+    const iso = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}+08:00`;
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  // 其餘：YYYY-MM-DD、YYYY/MM/DD、YYYY-MM-DD HH:mm 等
   const iso = s.replace(/^\s*(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/, (_, y, m, d) =>
     `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`,
   );
@@ -767,31 +783,29 @@ async function handleAttendanceCommand({
     return true;
   }
 
-  // 上月出勤：employee → Excel + GCS（若有 bucket）或文字摘要；manager → 引導改用店家上月出勤（GAS sendAtt）
+  // 上月出勤：與本月出勤一致，employee 優先 → 個人上月（打卡紀錄封存 gid=930376461）+ 產出格式同本月出勤；僅 manager → 引導改用店家上月出勤
   if (textNorm === '上月出勤') {
     if (!authResult.identity.includes('employee') && !authResult.identity.includes('manager')) {
       await replyText(MSG_NO_ACTION_PERMISSION);
       return true;
     }
-    if (authResult.identity.includes('manager')) {
-      await replyText(MSG_USE_STORE_LAST_MONTH);
-      return true;
-    }
-    const [yStr, mStr] = taipeiTodayStr.split('-');
-    let ym = parseInt(mStr, 10);
-    let yy = parseInt(yStr, 10);
-    ym -= 1;
-    if (ym === 0) {
-      ym = 12;
-      yy -= 1;
-    }
-    const yyyyMM = `${yy}-${String(ym).padStart(2, '0')}`;
-    const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
-    const lastDay = new Date(yy, ym, 0).getDate();
-    const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
-    const records = await readAttendance(authClient, [userId], monthStart, monthEnd, sheetReader);
+    if (authResult.identity.includes('employee')) {
+      const [yStr, mStr] = taipeiTodayStr.split('-');
+      let ym = parseInt(mStr, 10);
+      let yy = parseInt(yStr, 10);
+      ym -= 1;
+      if (ym === 0) {
+        ym = 12;
+        yy -= 1;
+      }
+      const yyyyMM = `${yy}-${String(ym).padStart(2, '0')}`;
+      const monthStart = new Date(`${yy}-${String(ym).padStart(2, '0')}-01T00:00:00+08:00`);
+      const lastDay = new Date(yy, ym, 0).getDate();
+      const monthEnd = new Date(`${yy}-${String(ym).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}T23:59:59.999+08:00`);
+      // 上月區間會讀「打卡紀錄封存」(gid=930376461)，與試算表一致
+      const records = await readAttendance(authClient, [userId], monthStart, monthEnd, sheetReader);
 
-    if (GCS_BUCKET_ATTENDANCE) {
+      if (GCS_BUCKET_ATTENDANCE) {
       const emp = maps.byLineId.get(userId);
       if (emp) {
         const storeLabel = getStoreDisplayName(storeNameMap, emp.store, null) || emp.store || '未設定門市';
@@ -853,9 +867,14 @@ async function handleAttendanceCommand({
           console.warn('[handleAttendanceCommand] 上月出勤 Excel 產出失敗，改回文字:', e?.message);
         }
       }
+      }
+      await replyText(buildAttendanceMessage(records, maps.byLineId, storeNameMap));
+      return true;
     }
-    await replyText(buildAttendanceMessage(records, maps.byLineId, storeNameMap));
-    return true;
+    if (authResult.identity.includes('manager')) {
+      await replyText(MSG_USE_STORE_LAST_MONTH);
+      return true;
+    }
   }
 
   // 店家今天出勤：manager → 今日各店出勤（與 GAS sendAtt 一致）
@@ -1412,7 +1431,11 @@ export async function handleStaffCommand({
 
   const authResult = await authorizeFn(authClient, LINE_STAFF_SS_ID, userId);
   if (!authResult.isAuthorized) {
-    await replyText('⚠️ 你的帳號尚未開通，麻煩通知泡泡貓負責顧問！');
+    if (authResult.sheetError) {
+      await replyText('⚠️ 系統暫時無法驗證權限，請稍後再試。若持續出現請通知泡泡貓負責顧問。');
+    } else {
+      await replyText('⚠️ 你的帳號尚未開通，麻煩通知泡泡貓負責顧問！');
+    }
     return true;
   }
 
