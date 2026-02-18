@@ -392,6 +392,7 @@ export function startServer() {
         return;
       }
       if (method === 'GET') {
+        const authClient = await getAuthCached();
         await handleCustomerApi(req, res, { authClient, url: fullUrl });
         return;
       }

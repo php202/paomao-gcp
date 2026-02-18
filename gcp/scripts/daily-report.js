@@ -3,8 +3,11 @@
  * 目的：以 Node.js 直接呼叫 SayDou dailyIncome，避開 GAS UrlFetch 配額。
  *
  * 用法：
+ *   node index.js daily-report
+ *     → 無參數時：從試算表「營收報表」B 欄最後一筆日期的隔天跑到今天，避免漏跑。
  *   node index.js daily-report [date]
  *   node index.js daily-report [startDate] [endDate]
+ *     → 指定日期區間補跑（例如 SayDou Token 失效後重跑）。
  * 範例：
  *   node index.js daily-report 2026-02-11
  *   node index.js daily-report 2026-02-10 2026-02-11
@@ -18,7 +21,7 @@ import { sendNotification } from '../lib/email.js';
 
 const SHEET_ALL = '營收報表';
 const SHEET_DIRECT = '營收報表_直營';
-const HEADER = ['日期', '店家', '現金總額', '消費紀錄(現金)', '儲值(現金)', '第三方總額', '轉帳入帳', 'LINE入帳', '轉帳未收', 'LINE未收', '今日業績'];
+const HEADER_ROW = ['', '日期', '店家', '現金總額', '消費紀錄(現金)', '儲值(現金)', '第三方總額', '轉帳入帳', 'LINE入帳', '轉帳未收', 'LINE未收', '今日業績'];
 const FETCH_BATCH_SIZE = Number.parseInt(process.env.FETCH_BATCH_SIZE || '10', 10);
 const BATCH_DELAY_MS = Number.parseInt(process.env.DAILY_REPORT_BATCH_DELAY_MS || '1500', 10);
 
@@ -76,6 +79,25 @@ function getDateRange(args = []) {
 
   const today = new Date();
   return { start: today, end: today };
+}
+
+/** 從試算表 B 欄讀取日期，回傳最大日期（Date）或 null */
+async function getSheetMaxDate(sheets, spreadsheetId, sheetName) {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${sheetName}'!B2:B5000`,
+  });
+  const rows = res.data.values || [];
+  let maxDate = null;
+  for (const r of rows) {
+    const v = r?.[0];
+    if (v == null || String(v).trim() === '') continue;
+    const d = parseYmd(String(v).trim()) || (typeof v === 'number' ? new Date((v - 25569) * 86400 * 1000) : null);
+    if (d && !Number.isNaN(d.getTime())) {
+      if (!maxDate || d > maxDate) maxDate = d;
+    }
+  }
+  return maxDate;
 }
 
 async function callCoreApi(coreUrl, coreKey, action) {
@@ -155,9 +177,11 @@ function parseDailyRow(dateStr, store, apiJson) {
   const lineUnearn = lineTotal - lineRecord;
   const todayService = runData.businessIncome?.service ?? 0;
 
+  // A 欄留空；日期、店家一律字串，避免直營表日期顯示成數字
   return [
-    dateStr,
-    store.alias,
+    '',
+    String(dateStr || ''),
+    String((store.alias || '').trim() || store.storid),
     cashTotal,
     cashBusiness,
     cashUnearn,
@@ -173,13 +197,64 @@ function parseDailyRow(dateStr, store, apiJson) {
 async function ensureHeader(sheets, spreadsheetId, sheetName) {
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `'${sheetName}'!B1:L1`,
+    range: `'${sheetName}'!A1:L1`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [HEADER] },
+    requestBody: { values: [HEADER_ROW] },
   });
 }
 
+/**
+ * Some spreadsheets were historically written starting from column A.
+ * After we moved to starting at column B (leaving column A blank), the old
+ * column A values may remain and make it look like we "didn't leave a blank
+ * column". To avoid wiping user notes in column A, we only clear column A when
+ * we detect legacy duplicated data (A and B columns are identical for many rows).
+ */
+async function maybeClearLegacyColumnA(sheets, spreadsheetId, sheetName) {
+  try {
+    const peek = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetName}'!A1:C200`,
+    });
+    const rows = peek.data.values || [];
+    const a1 = String(rows[0]?.[0] ?? '').trim();
+    const b1 = String(rows[0]?.[1] ?? '').trim();
+    const c1 = String(rows[0]?.[2] ?? '').trim();
+    // Header is now A1:L1 with A1='', B1='日期', C1='店家'. Accept either layout.
+    const headerOk = (b1 === '日期' && c1 === '店家') || (a1 === '日期' && b1 === '店家');
+    if (!headerOk && (b1 || a1)) return false;
+
+    let dup = 0;
+    let dateLikeA = 0;
+    let numericA = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const a = String(rows[i]?.[0] ?? '').trim();
+      const b = String(rows[i]?.[1] ?? '').trim();
+      if (a && b && a === b) dup += 1;
+      if (i >= 1 && a) {
+        if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(a)) dateLikeA += 1;
+        if (/^\d+$/.test(a)) numericA += 1; // 店碼或數字誤寫入 A 欄
+      }
+    }
+    const shouldClear = dup >= 10 || dateLikeA >= 20 || numericA >= 5 || a1 === '日期';
+    if (!shouldClear) return false;
+
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId,
+      range: `'${sheetName}'!A:A`,
+    });
+    console.warn(
+      `[GCP][daily-report] cleared legacy column A for sheet: ${sheetName} (dupRows=${dup}, dateLikeA=${dateLikeA}, a1=${a1 || '-'})`,
+    );
+    return true;
+  } catch (e) {
+    console.warn('[GCP][daily-report] maybeClearLegacyColumnA failed:', e?.message || e);
+    return false;
+  }
+}
+
 async function buildDateStoreRowMap(sheets, spreadsheetId, sheetName) {
+  // 讀 B=日期、C=店家（與 A1:L1 標題對齊，A 欄留空）
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${sheetName}'!B2:C5000`,
@@ -196,15 +271,15 @@ async function buildDateStoreRowMap(sheets, spreadsheetId, sheetName) {
 
 async function upsertRows(sheets, spreadsheetId, sheetName, rowMap, rows) {
   if (!rows.length) return { updated: 0, appended: 0 };
-
+  // row = ['', dateStr, store, ...] 共 12 欄，key 為 dateStr|store
   const updates = [];
   const appends = [];
 
   for (const row of rows) {
-    const key = `${row[0]}|${String(row[1] || '').trim()}`;
+    const key = `${row[1]}|${String(row[2] || '').trim()}`;
     const rowIndex = rowMap[key];
     if (rowIndex) {
-      updates.push({ range: `'${sheetName}'!B${rowIndex}:L${rowIndex}`, values: [row] });
+      updates.push({ range: `'${sheetName}'!A${rowIndex}:L${rowIndex}`, values: [row] });
     } else {
       appends.push(row);
     }
@@ -220,7 +295,7 @@ async function upsertRows(sheets, spreadsheetId, sheetName, rowMap, rows) {
   if (appends.length) {
     await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: `'${sheetName}'!B:L`,
+      range: `'${sheetName}'!A:L`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: appends },
@@ -270,7 +345,6 @@ async function runOneDate(sheets, spreadsheetId, bearerToken, stores, dateStr, r
 }
 
 export async function run(args = []) {
-  const { start, end } = getDateRange(args);
   const auth = await getAuth();
   const creds = await auth.getCredentials?.().catch(() => null);
   const callerEmail = creds?.client_email ?? '(no client_email)';
@@ -282,8 +356,14 @@ export async function run(args = []) {
   } catch (e) {
     if (isPermissionDeniedError(e)) {
       const tokenSheetId = (process.env.TOKEN_SHEET_SS_ID || '').trim();
-      throw new Error(`${permissionHint(tokenSheetId, callerEmail, '讀取 Token 試算表')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
+      const msg = `${permissionHint(tokenSheetId, callerEmail, '讀取 Token 試算表')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`;
+      await sendNotification('[泡泡貓] daily-report 權限不足', msg);
+      throw new Error(msg);
     }
+    await sendNotification(
+      '[泡泡貓] daily-report 取得 Token 失敗',
+      `daily-report 取得 SayDou Token 時失敗。\n\n錯誤：${getGoogleApiErrorMessage(e)}`,
+    );
     throw e;
   }
   if (!bearerToken) throw new Error('無 Bearer Token，請設 SAYDOU_BEARER_TOKEN 或 TOKEN_SHEET_SS_ID');
@@ -306,6 +386,8 @@ export async function run(args = []) {
   try {
     await ensureHeader(sheets, spreadsheetId, SHEET_ALL);
     await ensureHeader(sheets, spreadsheetId, SHEET_DIRECT);
+    await maybeClearLegacyColumnA(sheets, spreadsheetId, SHEET_ALL);
+    await maybeClearLegacyColumnA(sheets, spreadsheetId, SHEET_DIRECT);
     rowMapAll = await buildDateStoreRowMap(sheets, spreadsheetId, SHEET_ALL);
     rowMapDirect = await buildDateStoreRowMap(sheets, spreadsheetId, SHEET_DIRECT);
   } catch (e) {
@@ -313,6 +395,32 @@ export async function run(args = []) {
       throw new Error(`${permissionHint(spreadsheetId, callerEmail, '讀寫日報試算表')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
     }
     throw e;
+  }
+
+  let start;
+  let end;
+  if (args.length === 0) {
+    const today = new Date();
+    const maxDate = await getSheetMaxDate(sheets, spreadsheetId, SHEET_ALL);
+    if (!maxDate) {
+      start = end = today;
+      console.log('[GCP][daily-report] 表上無日期，跑今天:', formatYmd(today));
+    } else {
+      const nextDay = new Date(maxDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      if (nextDay > today) {
+        start = end = today;
+        console.log('[GCP][daily-report] 表上最後日期已到今日或之後，跑今天:', formatYmd(today));
+      } else {
+        start = nextDay;
+        end = today;
+        console.log('[GCP][daily-report] 無參數：從表上最後日期隔天跑至今天', formatYmd(maxDate), '→', formatYmd(start), '~', formatYmd(end));
+      }
+    }
+  } else {
+    const range = getDateRange(args);
+    start = range.start;
+    end = range.end;
   }
 
   const dates = [];
@@ -333,10 +441,18 @@ export async function run(args = []) {
           '[泡泡貓] daily-report SayDou Token 過期',
           `daily-report 執行時 SayDou API 回傳 Token 無效或過期（HTTP 401/403）。\n\n請執行「pao check token」或更新 Token 試算表／Token Web App 後再跑 daily-report。\n\n錯誤：${msg}`
         );
+      } else if (isPermissionDeniedError(e)) {
+        const hint = `${permissionHint(spreadsheetId, callerEmail, '寫入日報資料')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`;
+        await sendNotification('[泡泡貓] daily-report 權限不足', hint);
       }
-      if (isPermissionDeniedError(e)) {
-        throw new Error(`${permissionHint(spreadsheetId, callerEmail, '寫入日報資料')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
+      // Generic failure alert (best-effort). Avoid spamming: Job usually runs once per day.
+      if (!msg.includes('Token 無效或過期') && !msg.includes('HTTP 401') && !msg.includes('HTTP 403') && !isPermissionDeniedError(e)) {
+        await sendNotification(
+          '[泡泡貓] daily-report 執行失敗',
+          `daily-report 執行失敗（date=${dateStr}）。\n\n錯誤：${msg}`,
+        );
       }
+      if (isPermissionDeniedError(e)) throw new Error(`${permissionHint(spreadsheetId, callerEmail, '寫入日報資料')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
       throw e;
     }
   }

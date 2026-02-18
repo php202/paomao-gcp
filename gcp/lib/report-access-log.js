@@ -8,6 +8,25 @@ import { appendSheet } from './sheets.js';
 
 const SHEET_NAME = '神美日報_開啟紀錄';
 
+function formatYmdTaipei(date) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Taipei',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(date);
+  } catch {
+    return '';
+  }
+}
+
+function toSheetText(value) {
+  if (value == null) return '';
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
 function nowStr() {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Taipei',
@@ -35,14 +54,17 @@ export async function writeDailyReportAccessLog(auth, payload) {
     return { ok: false, message: '未設定 REPORT_ACCESS_LOG_SS_ID 或 LINE_HQ_SS_ID' };
   }
   try {
+    // Product requirement: leave column A empty (reserve for manual flags / formulas).
+    // This means the sheet header should start from column B.
     const row = [
-      nowStr(),
-      payload.dateStr || '',
-      payload.role || '',
-      payload.userId || '',
-      payload.employeeCode || '',
-      payload.employeeName || '',
-      Array.isArray(payload.storeIds) ? payload.storeIds.join(',') : '',
+      '',
+      toSheetText(nowStr()),
+      payload?.dateStr instanceof Date ? formatYmdTaipei(payload.dateStr) : toSheetText(payload?.dateStr || ''),
+      toSheetText(payload?.role || ''),
+      toSheetText(payload?.userId || ''),
+      toSheetText(payload?.employeeCode || ''),
+      toSheetText(payload?.employeeName || ''),
+      Array.isArray(payload?.storeIds) ? payload.storeIds.map((s) => String(s || '').trim()).filter(Boolean).join(',') : toSheetText(payload?.storeIds || ''),
     ];
     await appendSheet(auth, ssId, SHEET_NAME, row);
     return { ok: true };

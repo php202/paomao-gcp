@@ -12,7 +12,7 @@ export async function writeSheet(auth, spreadsheetId, range, values) {
   const rows = Array.isArray(values[0]) ? values : [values];
   const sanitized = rows.map((row) =>
     (Array.isArray(row) ? row : [row]).map((c) =>
-      c == null || c === undefined ? '' : c
+      c == null || c === undefined ? '' : c instanceof Date ? c.toISOString() : c
     )
   );
   await sheets.spreadsheets.values.update({
@@ -56,12 +56,15 @@ export async function getLastRow(auth, spreadsheetId, sheetName, columnLetter = 
 export async function appendSheet(auth, spreadsheetId, sheetName, rowValues) {
   const sheets = google.sheets({ version: 'v4', auth });
   const range = `'${sheetName}'!A:A`;
+  const row = (Array.isArray(rowValues) ? rowValues : [rowValues]).map((c) =>
+    c == null || c === undefined ? '' : c instanceof Date ? c.toISOString() : c
+  );
   await sheets.spreadsheets.values.append({
     spreadsheetId,
     range,
     valueInputOption: 'USER_ENTERED',
     insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: [Array.isArray(rowValues) ? rowValues : [rowValues]] },
+    requestBody: { values: [row] },
   });
 }
 
