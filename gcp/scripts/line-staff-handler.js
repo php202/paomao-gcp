@@ -23,7 +23,7 @@ import {
 const REPORT_PAGE_URL = process.env.REPORT_PAGE_URL || 'https://www.paopaomao.tw/report';
 /** 報告頁在官網/Odoo 開啟時，需帶 api_base 指向 GCP report-api（例：https://xxx.run.app/report-api） */
 const REPORT_API_BASE = (process.env.REPORT_API_BASE || '').trim();
-const TOMORROW_BRIEFING_WEB_APP_URL = process.env.TOMORROW_BRIEFING_WEB_APP_URL || '';
+const CUSTOMER_INFO_PAGE_URL = process.env.CUSTOMER_INFO_PAGE_URL || 'https://www.paopaomao.tw/customer-info';
 const PAO_CAT_CORE_API_URL = process.env.PAO_CAT_CORE_API_URL || '';
 const PAO_CAT_SECRET_KEY = process.env.PAO_CAT_SECRET_KEY || '';
 const LINE_STAFF_SS_ID = process.env.LINE_STAFF_SS_ID || '';
@@ -1228,8 +1228,26 @@ async function handleMakeUpTime(authClient, authResult, userId, text, replyText,
  * @param {Map<string, string>} [storeNameMap] - 店碼→店名（店家基本資料），有則顯示店名
  * @returns {{ lines: string[], phonesForQuickReply: Array<{ phone: string, label: string }> }}
  */
-function formatTomorrowListPayload(data, storeNameMap = new Map()) {
+function buildTomorrowListFlexMessage(data, storeNameMap = new Map(), recipientUserId = '') {
   const stores = Array.isArray(data?.byStore) ? data.byStore : [];
+  const customerInfoBase = String(CUSTOMER_INFO_PAGE_URL || '').trim() || 'https://www.paopaomao.tw/customer-info';
+
+  const customerInfoUri = (item) => {
+    const token = String(item?.token || '').trim();
+    if (!token) return '';
+    let uri = `${customerInfoBase}${customerInfoBase.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+    if (recipientUserId) uri += `&userId=${encodeURIComponent(String(recipientUserId))}`;
+    return uri;
+  };
+
+  const normalizePhoneDisplay = (phone) => {
+    if (!phone) return '—';
+    const digits = String(phone).replace(/\D/g, '');
+    if (digits.length === 9 && digits[0] === '9') return `0${digits}`;
+    if (digits.length >= 10) return digits.slice(-10);
+    return digits || '—';
+  };
+
   let totalStores = 0;
   let totalGuests = 0;
   for (const s of stores) {
@@ -1239,40 +1257,118 @@ function formatTomorrowListPayload(data, storeNameMap = new Map()) {
       totalGuests += n;
     }
   }
-  const lines = [`明日預約 ${data?.dateStr || ''} 共 ${totalStores}店、${totalGuests}人`];
-  const phonesForQuickReply = [];
-  for (const s of stores.slice(0, 8)) {
+
+  const dateStr = String(data?.dateStr || '').trim();
+  const bodyContents = [];
+  const storeLimit = 8;
+  const guestLimit = 10;
+
+  for (const s of stores.slice(0, storeLimit)) {
     const items = Array.isArray(s.items) ? s.items : [];
     const slotsText = String(s.availableSlotsText || '').trim();
     const hasValidSlots = slotsText && slotsText !== '—' && slotsText !== '0 個空位' && slotsText.indexOf('還有') >= 0;
-    lines.push(`\n【${getStoreDisplayName(storeNameMap, s.storeId, s.storeName)}】`);
-    if (hasValidSlots) lines.push(`明日可預約空位 : ${slotsText}`);
-    lines.push(`明天預約人數 : ${items.length}`);
-    if (!items.length) {
-      lines.push('（無預約）');
-      continue;
+
+    const headerContents = [
+      { type: 'text', text: `【${getStoreDisplayName(storeNameMap, s.storeId, s.storeName)}】`, weight: 'bold', size: 'sm' },
+      { type: 'text', text: `明天預約人數：${items.length}`, size: 'xs' },
+    ];
+    if (hasValidSlots) {
+      headerContents.splice(1, 0, { type: 'text', text: `明日可預約空位：${slotsText}`, size: 'xs', color: '#666666', wrap: true });
     }
-    for (const it of items.slice(0, 8)) {
-      const phone = String(it.phone || '').trim();
-      const name = String(it.name || '').trim();
-      let timeStr = String(it.rsvtim || '').trim();
-      if (timeStr.includes('T') || timeStr.includes(' ')) timeStr = (timeStr.split(/[T\s]/)[1] || '').slice(0, 5);
-      if (!timeStr || timeStr.length < 4) timeStr = '--:--';
-      lines.push(`- ${name || '-'} (${timeStr}) - ${phone || '（無電話）'}`.trim());
-      if (phone && phonesForQuickReply.length < 13) {
-        phonesForQuickReply.push({
-          phone,
-          label: name ? `了解 ${phone} ${name}` : `了解 ${phone}`,
+
+    const storeBlockContents = [
+      { type: 'box', layout: 'vertical', spacing: 'none', contents: headerContents },
+    ];
+
+    if (!items.length) {
+      storeBlockContents.push({
+        type: 'box',
+        layout: 'vertical',
+        margin: 'none',
+        spacing: 'none',
+        contents: [{ type: 'text', text: '（無預約）', size: 'xxs', color: '#999999' }],
+      });
+    } else {
+      for (let chunkStart = 0; chunkStart < items.length; chunkStart += guestLimit) {
+        const chunk = items.slice(chunkStart, chunkStart + guestLimit);
+        const guestListContents = [];
+        for (const o of chunk) {
+          let timeText = String(o?.timeText || '').trim().slice(0, 5);
+          if (!timeText) {
+            let raw = String(o?.rsvtim || '').trim();
+            if (raw.includes('T') || raw.includes(' ')) raw = (raw.split(/[T\s]/)[1] || '').slice(0, 5);
+            timeText = raw || '';
+          }
+          const name = String(o?.name || '—').trim();
+          const phone = String(o?.phone || '').trim();
+          const displayPhone = normalizePhoneDisplay(phone);
+          const uri = customerInfoUri(o);
+          const mainText = timeText ? `${name}（${timeText}）` : name;
+
+          if (uri) {
+            guestListContents.push({
+              type: 'box',
+              layout: 'horizontal',
+              margin: 'none',
+              contents: [
+                { type: 'text', text: mainText, size: 'xxs', wrap: true },
+                {
+                  type: 'box',
+                  layout: 'vertical',
+                  action: { type: 'uri', uri },
+                  contents: [{ type: 'text', text: displayPhone, size: 'xxs', color: '#0066cc' }],
+                },
+              ],
+            });
+          } else {
+            guestListContents.push({ type: 'text', text: `${mainText} ${displayPhone}`.trim(), size: 'xxs', wrap: true, margin: 'none' });
+          }
+        }
+        storeBlockContents.push({
+          type: 'box',
+          layout: 'vertical',
+          margin: 'none',
+          spacing: 'none',
+          contents: guestListContents.length ? guestListContents : [{ type: 'text', text: '（無預約）', size: 'xxs', color: '#999999' }],
         });
-        if (phonesForQuickReply.length >= 13) break;
       }
     }
-    if (phonesForQuickReply.length >= 13) break;
+
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'sm',
+      spacing: 'none',
+      contents: storeBlockContents,
+    });
   }
-  return { lines, phonesForQuickReply };
+
+  const bubble = {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        { type: 'text', text: `📅 明日預約 ${dateStr} 共 ${totalStores} 店、${totalGuests} 人`, weight: 'bold', size: 'sm', wrap: true },
+      ],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      margin: 'none',
+      spacing: 'xs',
+      contents: bodyContents.length ? bodyContents : [{ type: 'text', text: '無預約資料', size: 'xs', color: '#999999' }],
+    },
+  };
+
+  return {
+    type: 'flex',
+    altText: `明日預約 ${dateStr} 共 ${totalStores} 店、${totalGuests} 人`,
+    contents: bubble,
+  };
 }
 
-async function handleTomorrowList(text, authClient, authResult, replyText, replyMessages, fetcher, sheetReader) {
+async function handleTomorrowList(text, authClient, authResult, replyText, replyMessages, fetcher, sheetReader, recipientUserId = '') {
   if (!(text === '明天預約清單' || text === '明日預約清單')) return false;
   const ids = splitStoreIds(authResult.identity.includes('manager') ? authResult.managedStores : authResult.workStores);
   if (!ids.length) {
@@ -1288,23 +1384,11 @@ async function handleTomorrowList(text, authClient, authResult, replyText, reply
     } catch (_) {}
   }
 
-  // Preferred: run fully on GCP (no legacy GAS URL needed).
-  // Fallback to TOMORROW_BRIEFING_WEB_APP_URL only if explicitly configured.
   let data = null;
-  if (TOMORROW_BRIEFING_WEB_APP_URL) {
-    const url = new URL(TOMORROW_BRIEFING_WEB_APP_URL);
-    url.searchParams.set('action', 'getTomorrowReservationList');
-    url.searchParams.set('storeIds', ids.join(','));
-    const res = await fetcher(url.toString(), { method: 'get' });
-    if (res.ok) data = await res.json().catch(() => null);
-  }
-  if (!data) {
-    try {
-      data = await getTomorrowReservationList(authClient, ids);
-    } catch {
-      // If we don't have a usable authClient in this call site, fallback to the old error.
-      data = null;
-    }
+  try {
+    data = await getTomorrowReservationList(authClient, ids);
+  } catch {
+    data = null;
   }
   if (!data) {
     await replyText('取得明日預約清單失敗（GCP 尚未取得必要權限/設定），請稍後再試。');
@@ -1319,27 +1403,8 @@ async function handleTomorrowList(text, authClient, authResult, replyText, reply
     await replyText(`📅 明日（${data.dateStr || ''}）您負責的店家目前無預約。`);
     return true;
   }
-  const { lines, phonesForQuickReply } = formatTomorrowListPayload(data, storeNameMap);
-  const textPayload = lines.join('\n').slice(0, 4500);
-  if (phonesForQuickReply.length > 0) {
-    const quickReplyItems = phonesForQuickReply.map(({ phone, label }) => ({
-      type: 'action',
-      action: {
-        type: 'message',
-        label: label.slice(0, 20),
-        text: `我要了解客人 ${phone}`,
-      },
-    }));
-    await replyMessages([
-      {
-        type: 'text',
-        text: textPayload,
-        quickReply: { items: quickReplyItems },
-      },
-    ]);
-  } else {
-    await replyText(textPayload);
-  }
+  const flex = buildTomorrowListFlexMessage(data, storeNameMap, recipientUserId);
+  await replyMessages([flex]);
   return true;
 }
 
@@ -1483,7 +1548,7 @@ export async function handleStaffCommand({
   }
 
   // 7. 完全匹配：明天預約清單 / 明日預約清單
-  if (await handleTomorrowList(text, authClient, authResult, replyText, replyMessages, fetcher, sheetReader)) {
+  if (await handleTomorrowList(text, authClient, authResult, replyText, replyMessages, fetcher, sheetReader, userId)) {
     return true;
   }
 

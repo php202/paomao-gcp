@@ -8,6 +8,7 @@ dotenv.config({ override: true });
  *   node index.js employee-monthly-report [startYm] [endYm]
  *   node index.js daily-report [date] 或 [startDate] [endDate]
  *   node index.js check-token
+ *   node index.js check-auth <LINE_userId>  → 查詢該 userId 在員工清單/管理者清單的權限
  *   node index.js serve   → 啟動打卡 API HTTP 服務（Cloud Run Service 用）
  *
  * 未指定指令時預設執行 employee-monthly-report
@@ -20,6 +21,25 @@ async function main() {
   if (cmd === 'check-token') {
     const { run } = await import('./scripts/check-token.js');
     await run();
+    return;
+  }
+
+  if (cmd === 'check-auth') {
+    const userId = rest[0]?.trim() || '';
+    if (!userId) {
+      console.error('用法: node index.js check-auth <LINE_userId>');
+      process.exit(1);
+    }
+    const { getAuth } = await import('./lib/auth.js');
+    const { isUserAuthorized } = await import('./scripts/line-checkin-handler.js');
+    const ssId = process.env.LINE_STAFF_SS_ID || '';
+    if (!ssId) {
+      console.error('[GCP] 請設定 LINE_STAFF_SS_ID');
+      process.exit(1);
+    }
+    const auth = await getAuth();
+    const result = await isUserAuthorized(auth, ssId, userId);
+    console.log(JSON.stringify({ userId, spreadsheetId: ssId.slice(0, 12) + '...', ...result }, null, 2));
     return;
   }
 
@@ -49,6 +69,12 @@ async function main() {
 
   if (cmd === 'waitlist-auto-push') {
     const { run } = await import('./scripts/waitlist-auto-push.js');
+    await run();
+    return;
+  }
+
+  if (cmd === 'refresh-customers-by-tomorrow-reservations') {
+    const { run } = await import('./scripts/refresh-customers-by-tomorrow-reservations.js');
     await run();
     return;
   }

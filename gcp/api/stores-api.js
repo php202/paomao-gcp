@@ -3,9 +3,14 @@ import { readSheet, writeSheet } from '../lib/sheets.js';
 import { sendJson } from './http-utils.js';
 import { findAvailableSlotsAction, getLineSayDouInfoMap } from './core-api.js';
 import { getBearerToken } from '../lib/saydou.js';
+import { createCustomerInfoToken } from '../lib/customer-token.js';
 
 const INTEGRATED_SHEET_SS_ID = (process.env.INTEGRATED_SHEET_SS_ID || process.env.LINE_STORE_SS_ID || '').trim();
 const LEGACY_GAS_STORES_API_URL = (process.env.LEGACY_GAS_STORES_API_URL || '').trim();
+const TOMORROW_REPORT_CLOSED_DATES = String(process.env.TOMORROW_REPORT_CLOSED_DATES || '')
+  .split(/[,、，]/)
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 function fmtYmdTaipei(date) {
   return new Intl.DateTimeFormat('en-CA', {
@@ -82,10 +87,19 @@ function resolveStoreIds(inputIds, storeMap) {
   return [...new Set(out)];
 }
 
-export async function getTomorrowReservationList(auth, storeIds) {
+async function buildTomorrowReservations(auth, storeIds, { includeSlots }) {
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   const dateStr = fmtYmdTaipei(tomorrow);
+
+  if (TOMORROW_REPORT_CLOSED_DATES.includes(dateStr)) {
+    return {
+      dateStr,
+      byStore: [],
+      closed: true,
+      message: `明日預約報告 ${dateStr} 已關閉，當日不提供預約清單。`,
+    };
+  }
 
   const storeMap = await getLineSayDouInfoMap(auth);
   const ids = resolveStoreIds(storeIds, storeMap);
@@ -100,27 +114,60 @@ export async function getTomorrowReservationList(auth, storeIds) {
     } catch {
       reservations = [];
     }
-    const items = reservations.map(normalizeReservationRow).filter(Boolean);
-    items.sort((a, b) => String(a.rsvtim || '').localeCompare(String(b.rsvtim || '')));
-    let availableSlotsText = '—';
-    try {
-      const slotResult = await findAvailableSlotsAction(auth, {
-        sayId: id,
-        startDate: dateStr,
-        endDate: dateStr,
+    const items = reservations
+      .map(normalizeReservationRow)
+      .filter(Boolean)
+      .map((it) => {
+        // Token is used by LINE clickable phone → /customer-info?token=...
+        if (!includeSlots) return it;
+        const phone = String(it.phone || '').trim();
+        if (!phone) return it;
+        try {
+          const expMs = Date.now() + 24 * 60 * 60 * 1000;
+          const token = createCustomerInfoToken({ phone, expMs });
+          return { ...it, token };
+        } catch {
+          return it;
+        }
       });
-      if (slotResult?.status && Array.isArray(slotResult.data) && slotResult.data.length > 0) {
-        const times = slotResult.data[0].times || [];
-        const n = times.length;
-        availableSlotsText = n > 0 ? `1.5hr 還有 ${n} 個空位` : '—';
+    items.sort((a, b) => String(a.rsvtim || '').localeCompare(String(b.rsvtim || '')));
+
+    let availableSlotsText = '—';
+    if (includeSlots) {
+      try {
+        const slotResult = await findAvailableSlotsAction(auth, {
+          sayId: id,
+          startDate: dateStr,
+          endDate: dateStr,
+        });
+        if (slotResult?.status && Array.isArray(slotResult.data) && slotResult.data.length > 0) {
+          const times = slotResult.data[0].times || [];
+          const n = times.length;
+          availableSlotsText = n > 0 ? `1.5hr 還有 ${n} 個空位` : '—';
+        }
+      } catch {
+        availableSlotsText = '—';
       }
-    } catch {
-      availableSlotsText = '—';
     }
-    byStore.push({ storeId: String(id), storeName, items, availableSlotsText });
+
+    byStore.push(
+      includeSlots
+        ? { storeId: String(id), storeName, items, availableSlotsText }
+        : { storeId: String(id), storeName, items },
+    );
   }
 
   return { dateStr, byStore };
+}
+
+// On-demand usage (LINE command): includes available slots calculation (slower).
+export async function getTomorrowReservationList(auth, storeIds) {
+  return buildTomorrowReservations(auth, storeIds, { includeSlots: true });
+}
+
+// Batch usage (22:00 job): reservations only (fast), avoids calling findAvailableSlotsAction.
+export async function getTomorrowReservationsOnly(auth, storeIds) {
+  return buildTomorrowReservations(auth, storeIds, { includeSlots: false });
 }
 
 function fmtTaipeiDateTime(value) {

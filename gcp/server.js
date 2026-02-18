@@ -19,6 +19,7 @@ import { handleStoreLineWebhook } from './api/store-line-webhook.js';
 import { handlePaopaoWebhook } from './api/paopao-webhook.js';
 import { handleAdmin } from './api/admin-api.js';
 import { handleReportApi } from './api/report-api.js';
+import { handleCustomerApi } from './api/customer-api.js';
 import { appendWebhookError } from './lib/webhook-error-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -362,6 +363,38 @@ export function startServer() {
         send(res, 500, '<!DOCTYPE html><html><body>報告頁面暫時無法載入。</body></html>', 'text/html; charset=utf-8');
       }
       return;
+    }
+
+    if (method === 'GET' && url === '/customer-info') {
+      const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+      const host = req.headers['x-forwarded-host'] || req.headers['host'] || '';
+      const apiBase = `${proto}://${host}`;
+      const p = path.join(__dirname, 'public', 'customer-info.html');
+      try {
+        let html = fs.readFileSync(p, 'utf8');
+        html = html.replace(/__CUSTOMER_API_BASE__/g, apiBase);
+        send(res, 200, html, 'text/html; charset=utf-8');
+      } catch (e) {
+        console.error('[customer-info] read customer-info.html:', e?.message);
+        send(res, 500, '<!DOCTYPE html><html><body>客人狀態頁暫時無法載入。</body></html>', 'text/html; charset=utf-8');
+      }
+      return;
+    }
+
+    if (url === '/customer-api') {
+      if (method === 'OPTIONS') {
+        res.writeHead(204, {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Max-Age': '86400',
+        });
+        res.end();
+        return;
+      }
+      if (method === 'GET') {
+        await handleCustomerApi(req, res, { authClient, url: fullUrl });
+        return;
+      }
     }
 
     if (url === '/report-api') {

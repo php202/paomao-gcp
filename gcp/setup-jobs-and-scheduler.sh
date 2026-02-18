@@ -68,10 +68,12 @@ gcloud run jobs create pao-daily-report \
   --image "$IMAGE" \
   --region "$REGION" \
   --task-timeout 60m \
-  --set-env-vars "TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,PAO_CAT_CORE_API_URL=$PAO_CAT_CORE_API_URL,PAO_CAT_SECRET_KEY=$PAO_CAT_SECRET_KEY,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
+  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,PAO_CAT_CORE_API_URL=$PAO_CAT_CORE_API_URL,PAO_CAT_SECRET_KEY=$PAO_CAT_SECRET_KEY,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
+  --set-secrets "GMAIL_USER=gmail-user:latest,GMAIL_APP_PASSWORD=gmail-app-password:latest" \
   $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
   2>/dev/null || gcloud run jobs update pao-daily-report --image "$IMAGE" --region "$REGION" \
-  --set-env-vars "TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,PAO_CAT_CORE_API_URL=$PAO_CAT_CORE_API_URL,PAO_CAT_SECRET_KEY=$PAO_CAT_SECRET_KEY,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
+  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,PAO_CAT_CORE_API_URL=$PAO_CAT_CORE_API_URL,PAO_CAT_SECRET_KEY=$PAO_CAT_SECRET_KEY,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
+  --set-secrets "GMAIL_USER=gmail-user:latest,GMAIL_APP_PASSWORD=gmail-app-password:latest" \
   $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
 
 gcloud run jobs update pao-daily-report --region "$REGION" \
@@ -116,6 +118,19 @@ gcloud run jobs create pao-stores-waitlist-auto-push \
 gcloud run jobs update pao-stores-waitlist-auto-push --region "$REGION" \
   --command "node" --args "index.js,waitlist-auto-push"
 
+# Job 7：各店訊息一覽表 - 產出明日預約客人客戶狀態（每日 22:00；不 Push）
+gcloud run jobs create pao-stores-refresh-customers-tomorrow \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --task-timeout 60m \
+  --set-env-vars "LINE_STORE_SS_ID=$LINE_STORE_SS_ID,CUSTOMER_SHEET_ID=${CUSTOMER_SHEET_ID:-1wAfl4Dipag6Eh8msOYUc0ZUepaeQR_HnQNEcxIVUt3M},CUSTOMER_HISTORY_SHEET_NAMES=${CUSTOMER_HISTORY_SHEET_NAMES:-sheet1,2025前},EMPLOYEE_NOTES_SHEET_NAME=${EMPLOYEE_NOTES_SHEET_NAME:-表單回覆 3},REFRESH_CUSTOMER_CONCURRENCY=${REFRESH_CUSTOMER_CONCURRENCY:-3}" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
+  2>/dev/null || gcloud run jobs update pao-stores-refresh-customers-tomorrow --image "$IMAGE" --region "$REGION" \
+  --set-env-vars "LINE_STORE_SS_ID=$LINE_STORE_SS_ID,CUSTOMER_SHEET_ID=${CUSTOMER_SHEET_ID:-1wAfl4Dipag6Eh8msOYUc0ZUepaeQR_HnQNEcxIVUt3M},CUSTOMER_HISTORY_SHEET_NAMES=${CUSTOMER_HISTORY_SHEET_NAMES:-sheet1,2025前},EMPLOYEE_NOTES_SHEET_NAME=${EMPLOYEE_NOTES_SHEET_NAME:-表單回覆 3},REFRESH_CUSTOMER_CONCURRENCY=${REFRESH_CUSTOMER_CONCURRENCY:-3}" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
+gcloud run jobs update pao-stores-refresh-customers-tomorrow --region "$REGION" \
+  --command "node" --args "index.js,refresh-customers-by-tomorrow-reservations"
+
 echo "=== 5. 給 Scheduler 觸發 Job 的權限 ==="
 gcloud run jobs add-iam-policy-binding pao-check-token --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
@@ -128,6 +143,8 @@ gcloud run jobs add-iam-policy-binding pao-stores-check-timeout-pending --region
 gcloud run jobs add-iam-policy-binding pao-stores-cleanup-retention --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
 gcloud run jobs add-iam-policy-binding pao-stores-waitlist-auto-push --region="$REGION" \
+  --member="serviceAccount:${SA}" --role="roles/run.invoker"
+gcloud run jobs add-iam-policy-binding pao-stores-refresh-customers-tomorrow --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
 
 echo "=== 6. 建立 Cloud Scheduler 排程 ==="
@@ -193,6 +210,16 @@ gcloud scheduler jobs create http pao-stores-waitlist-auto-push-daily \
   --http-method POST \
   --oauth-service-account-email "${SA}" \
   2>/dev/null || echo "（pao-stores-waitlist-auto-push-daily 可能已存在，可略過或到 Console 編輯）"
+
+# 每日 22:00（台灣）：明日預約客人 - 產出客人消費狀態（不 Push）
+gcloud scheduler jobs create http pao-stores-refresh-customers-tomorrow-daily \
+  --location "$REGION" \
+  --schedule "0 22 * * *" \
+  --time-zone "Asia/Taipei" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/pao-stores-refresh-customers-tomorrow:run" \
+  --http-method POST \
+  --oauth-service-account-email "${SA}" \
+  2>/dev/null || echo "（pao-stores-refresh-customers-tomorrow-daily 可能已存在，可略過或到 Console 編輯）"
 
 echo "完成。請到 Console 手動執行一次 Job 測試："
 echo "  https://console.cloud.google.com/run?project=$PROJECT_ID"
