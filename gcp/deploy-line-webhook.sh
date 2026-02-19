@@ -104,8 +104,7 @@ if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
     --platform managed \
     --allow-unauthenticated \
     --command "node" \
-    --args "index.js" \
-    --args "serve" \
+    --args "index.js,serve" \
     --set-env-vars "$ENV_VARS" \
     --set-secrets "/secrets/sa-key.json=${SA_KEY_SECRET_NAME}:latest" \
     --min-instances 0 \
@@ -117,8 +116,7 @@ else
     --platform managed \
     --allow-unauthenticated \
     --command "node" \
-    --args "index.js" \
-    --args "serve" \
+    --args "index.js,serve" \
     --set-env-vars "$ENV_VARS" \
     --min-instances 0 \
     --max-instances 10
