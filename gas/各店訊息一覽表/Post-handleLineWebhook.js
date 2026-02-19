@@ -398,11 +398,12 @@ function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToke
     finalContent = "(系統指令，無需挽留)";
   }
   
-  // D. 線上預約（查詢空位）用 reply token 傳給客人；I 欄 isReply 為 false 時不發送，其餘照常
+  // D. 線上預約（查詢空位）用 reply token 傳給客人；I 欄 isReply 為 false 時不發送。拉不到 token 或 token 失效時不傳訊息給客戶。
   var rowStatus = "Pending";
   var allowReply = (storeInfo == null || storeInfo.isReply !== false);
   var isQuerySlots = (context.desc === "查詢空位");
-  if (allowReply && isQuerySlots && finalContent && replyToken && token && context.type !== "IGNORE" && finalContent.indexOf("(系統") !== 0) {
+  var hasValidToken = token && String(token).trim();
+  if (allowReply && isQuerySlots && finalContent && replyToken && hasValidToken && context.type !== "IGNORE" && finalContent.indexOf("(系統") !== 0) {
     try {
       var sent = sendLineReplyViaCoreApi(replyToken, finalContent, token);
       if (sent) {
