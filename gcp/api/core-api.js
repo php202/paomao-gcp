@@ -88,14 +88,16 @@ async function saydouFetchJson(url, token, init = {}) {
   return json;
 }
 
-async function fetchBaseData(auth, token) {
+/** @param {{ skipCache?: boolean }} opts - skipCache: true 時略過快取（線上預約查空位用，避免 6 小時舊資料導致誤判「都滿了」） */
+async function fetchBaseData(auth, token, opts = {}) {
   const prefix = String(token || '').slice(0, 24);
   const now = Date.now();
-  if (cachedBaseData.value && cachedBaseData.expiresAt > now && cachedBaseData.tokenPrefix === prefix) return cachedBaseData.value;
+  if (!opts.skipCache && cachedBaseData.value && cachedBaseData.expiresAt > now && cachedBaseData.tokenPrefix === prefix)
+    return cachedBaseData.value;
   const url =
     'https://saywebdatafeed.saydou.com/api/management/baseData?kind%5B%5D=stores&kind%5B%5D=positions&kind%5B%5D=staffs';
   const json = await saydouFetchJson(url, token, { method: 'GET' });
-  cachedBaseData = { value: json, expiresAt: now + 6 * 60 * 60 * 1000, tokenPrefix: prefix };
+  if (!opts.skipCache) cachedBaseData = { value: json, expiresAt: now + 6 * 60 * 60 * 1000, tokenPrefix: prefix };
   return json;
 }
 
@@ -165,7 +167,7 @@ export async function findAvailableSlotsAction(auth, params) {
   const timeEnd = String(params.timeEnd || '21:00');
 
   const token = String(params.token || '') || (await getBearerToken(auth));
-  const baseData = await fetchBaseData(auth, token);
+  const baseData = await fetchBaseData(auth, token, { skipCache: true });
   const validStaffSet = buildValidStaffSet(baseData, sayId);
   const { reservations, dutyoffs } = await fetchReservationsAndDutyoffs(auth, sayId, startDate, endDate, token);
 

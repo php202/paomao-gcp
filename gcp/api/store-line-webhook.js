@@ -104,7 +104,7 @@ async function fetchDisplayName(userId, token) {
   }
 }
 
-/** 與 GAS getUpcomingSlots 一致：近期 3 天空位，格式「近期空位:\nMM-DD (週x)：時段、時段」 */
+/** 與 GAS getUpcomingSlots 一致：近期 3 天空位，格式「近期空位:\nMM-DD (週x)：時段、時段」。查空位時 core-api 已略過 baseData 快取。 */
 async function getUpcomingSlotsText(auth, sayId) {
   if (!sayId || !auth) return null;
   const today = new Date();
@@ -120,7 +120,10 @@ async function getUpcomingSlotsText(auth, sayId) {
       needPeople: 1,
       durationMin: 90,
     });
-    if (!result?.status || !Array.isArray(result.data) || result.data.length === 0) return null;
+    if (!result?.status || !Array.isArray(result.data) || result.data.length === 0) {
+      console.warn('[store-line-webhook] getUpcomingSlotsText 無空位或 API 無資料 sayId=%s start=%s end=%s dataLen=%s', sayId, startDate, endDate, result?.data?.length ?? 'n/a');
+      return null;
+    }
     const lines = result.data.map((day) => {
       const datePart = (day.date && String(day.date).length >= 10) ? String(day.date).slice(5, 10) : (day.date || '');
       const weekPart = day.week || '';
@@ -128,7 +131,8 @@ async function getUpcomingSlotsText(auth, sayId) {
       return datePart + (weekPart ? ` (${weekPart})` : '') + '：' + slotsStr;
     });
     return lines.length > 0 ? '近期空位:\n' + lines.join(',\n') : null;
-  } catch {
+  } catch (err) {
+    console.error('[store-line-webhook] getUpcomingSlotsText 查空位失敗 sayId=%s', sayId, err);
     return null;
   }
 }
