@@ -97,14 +97,15 @@ if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
   echo "將掛載 Secret: ${SA_KEY_SECRET_NAME} -> /secrets/sa-key.json（店家本月出勤用）"
 fi
 
+# Cloud Run Service 需執行 node index.js serve；用 sh -c 確保指令正確傳遞
 if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
   gcloud run deploy "$SERVICE_NAME" \
     --image "$IMAGE" \
     --region "$REGION" \
     --platform managed \
     --allow-unauthenticated \
-    --command "node" \
-    --args "index.js,serve" \
+    --command "/bin/sh" \
+    --args "-c,exec node index.js serve" \
     --set-env-vars "$ENV_VARS" \
     --set-secrets "/secrets/sa-key.json=${SA_KEY_SECRET_NAME}:latest" \
     --min-instances 0 \
@@ -115,8 +116,8 @@ else
     --region "$REGION" \
     --platform managed \
     --allow-unauthenticated \
-    --command "node" \
-    --args "index.js,serve" \
+    --command "/bin/sh" \
+    --args "-c,exec node index.js serve" \
     --set-env-vars "$ENV_VARS" \
     --min-instances 0 \
     --max-instances 10
