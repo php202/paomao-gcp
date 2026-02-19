@@ -114,25 +114,14 @@ async function fetchDisplayName(userId, token) {
   }
 }
 
-/** 每日最多顯示的時段數，超過則顯示前一半 + … + 後一半，避免單日時段過多。 */
-const MAX_SLOTS_DISPLAY_PER_DAY = 8;
-
-/** 將 findAvailableSlotsAction 回傳的 data 轉成「近期空位:\nMM-DD (週x)：時段」字串；單日時段過多時篩選為前/後各半。 */
+/** 將 findAvailableSlotsAction 回傳的 data 轉成「近期空位:\nMM-DD (週x)：時段」字串；core-api 已用 getSmartSlots 每 day 最多 5 個精選時段，不再在此做截斷。 */
 function formatSlotsLines(data) {
   if (!Array.isArray(data) || data.length === 0) return null;
   const lines = data.map((day) => {
     const datePart = (day.date && String(day.date).length >= 10) ? String(day.date).slice(5, 10) : (day.date || '');
     const weekPart = day.week || '';
     const times = Array.isArray(day.times) ? day.times : [];
-    let slotsStr;
-    if (times.length <= MAX_SLOTS_DISPLAY_PER_DAY) {
-      slotsStr = times.join('、');
-    } else {
-      const half = Math.floor(MAX_SLOTS_DISPLAY_PER_DAY / 2);
-      const first = times.slice(0, half);
-      const last = times.slice(-half);
-      slotsStr = first.join('、') + '、…、' + last.join('、');
-    }
+    const slotsStr = times.join('、');
     return datePart + (weekPart ? ` (${weekPart})` : '') + '：' + slotsStr;
   });
   return lines.length > 0 ? '近期空位:\n' + lines.join(',\n') : null;

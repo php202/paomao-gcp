@@ -126,6 +126,22 @@ function addDays(date, d) {
   return x;
 }
 
+/** 與 GAS getSmartSlots 一致：依服務時長間隔取精選時段，單日最多 limit 個，避免密集列表。 */
+function getSmartSlots(slots, durationMin, limit = 5) {
+  if (!Array.isArray(slots) || slots.length === 0) return [];
+  const result = [];
+  let nextAvailableMin = -1;
+  for (const timeStr of slots) {
+    if (result.length >= limit) break;
+    const currentMin = hhmmToMinutes(timeStr);
+    if (nextAvailableMin === -1 || currentMin >= nextAvailableMin) {
+      result.push(timeStr);
+      nextAvailableMin = currentMin + durationMin;
+    }
+  }
+  return result;
+}
+
 function formatYmdTz(date) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 }
@@ -251,7 +267,8 @@ export async function findAvailableSlotsAction(auth, params) {
       }
     }
     if (times.length) {
-      data.push({ date: dateStr, week: ['日', '一', '二', '三', '四', '五', '六'][dayOfWeek], times });
+      const smartTimes = getSmartSlots(times, durationMin, 5);
+      data.push({ date: dateStr, week: ['日', '一', '二', '三', '四', '五', '六'][dayOfWeek], times: smartTimes });
     }
   }
   return { status: true, data, totalStaff: validStaffSet.size || 4, validStaffSet: Array.from(validStaffSet) };
