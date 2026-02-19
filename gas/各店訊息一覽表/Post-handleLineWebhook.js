@@ -635,53 +635,55 @@ function generateContextualAI(name, context, extraInfo) {
   return `Hi ${name}，我們收到您的${context.desc}需求，稍後將有專人為您服務。`;
 }
 
-// [修正] 查空位函式 (使用台灣時區)，同一間店 10 分鐘內共用同一份空位，減少 SayDou API 呼叫
-// 僅快取「有空位」的結果；空結果不寫入且清除舊快取，避免誤顯示「近幾天都滿了」而客服小幫手查有空的狀況
-var SLOTS_CACHE_TTL_SEC = 600; // 0=關閉快取；要開啟請改為 600（10 分鐘）
+// [修正] 查空位函式 (使用台灣時區)。不快取，每次都即時查詢。
+// 規則：先查四天內；若四天內都沒有空位，往後查至多 MAX_DAYS_AHEAD 天，取「至少 MIN_DAYS_WITH_SLOTS 天」有空位的時段
+var FIRST_RANGE_DAYS = 4;
+var MIN_DAYS_WITH_SLOTS = 3;
+var MAX_DAYS_AHEAD = 30;
+
+function formatSlotsLinesFromData(data) {
+  if (!data || !data.length) return null;
+  var lines = [];
+  for (var i = 0; i < data.length; i++) {
+    var day = data[i];
+    if (!day || !day.times) continue;
+    var slotsStr = Array.isArray(day.times) ? day.times.join("、") : String(day.times);
+    var datePart = (day.date && day.date.length >= 10 && day.date.charAt(4) === "-") ? day.date.substring(5) : (day.date || "");
+    var weekPart = day.week || "";
+    lines.push(datePart + (weekPart ? " (" + weekPart + ")" : "") + "：" + slotsStr);
+  }
+  return lines.length > 0 ? "近期空位:\n" + lines.join(",\n") : null;
+}
 
 function getUpcomingSlots(sayId) {
   if (!sayId) return null;
-  var cacheKey = "slots_" + String(sayId);
-  if (SLOTS_CACHE_TTL_SEC > 0) {
-    var cache = CacheService.getScriptCache();
-    var cached = cache.get(cacheKey);
-    if (cached != null && cached !== "") return cached;
-  }
-
-  // 1. 設定參數
+  const timeZone = Session.getScriptTimeZone() || "Asia/Taipei";
   const today = new Date();
-  const threeDaysLater = new Date();
-  threeDaysLater.setDate(today.getDate() + 3);
-  const timeZone = Session.getScriptTimeZone();
+  const endFirst = new Date(today);
+  endFirst.setDate(endFirst.getDate() + FIRST_RANGE_DAYS - 1);
   const startDateStr = Utilities.formatDate(today, timeZone, "yyyy-MM-dd");
-  const endDateStr = Utilities.formatDate(threeDaysLater, timeZone, "yyyy-MM-dd");
+  const endDateFirstStr = Utilities.formatDate(endFirst, timeZone, "yyyy-MM-dd");
 
   try {
-    const findSlots = Core.findAvailableSlots(sayId, startDateStr, endDateStr, 1, 90, {});
+    var findSlots = Core.findAvailableSlots(sayId, startDateStr, endDateFirstStr, 1, 90, {});
     var data = (findSlots && findSlots.data) ? findSlots.data : [];
-    var lines = [];
-    for (var i = 0; i < data.length; i++) {
-      var day = data[i];
-      if (!day || !day.times) continue;
-      var slotsStr = Array.isArray(day.times) ? day.times.join("、") : String(day.times);
-      // 不顯示年份：yyyy-MM-dd 只取 MM-DD，其餘沿用
-      var datePart = (day.date && day.date.length >= 10 && day.date.charAt(4) === "-") ? day.date.substring(5) : (day.date || "");
-      var weekPart = day.week || "";
-      lines.push(datePart + (weekPart ? " (" + weekPart + ")" : "") + "：" + slotsStr);
+    var daysWithSlots = data.filter(function (d) { return d && d.times && (Array.isArray(d.times) ? d.times.length : 1); });
+
+    if (daysWithSlots.length > 0) {
+      return formatSlotsLinesFromData(data);
     }
-    var result = (lines.length > 0) ? "近期空位:\n" + lines.join(",\n") : null;
-    if (SLOTS_CACHE_TTL_SEC > 0) {
-      var scriptCache = CacheService.getScriptCache();
-      if (result) {
-        scriptCache.put(cacheKey, result, SLOTS_CACHE_TTL_SEC);
-      } else {
-        scriptCache.remove(cacheKey);
-      }
-    }
-    return result;
+
+    var endExtended = new Date(today);
+    endExtended.setDate(endExtended.getDate() + MAX_DAYS_AHEAD);
+    var endDateExtendedStr = Utilities.formatDate(endExtended, timeZone, "yyyy-MM-dd");
+    findSlots = Core.findAvailableSlots(sayId, startDateStr, endDateExtendedStr, 1, 90, {});
+    data = (findSlots && findSlots.data) ? findSlots.data : [];
+    daysWithSlots = data.filter(function (d) { return d && d.times && (Array.isArray(d.times) ? d.times.length : 1); });
+    var take = Math.min(MIN_DAYS_WITH_SLOTS, daysWithSlots.length);
+    if (take === 0) return null;
+    return formatSlotsLinesFromData(daysWithSlots.slice(0, take));
   } catch (e) {
     Logger.log("查空位發生錯誤: " + e.toString());
-    if (SLOTS_CACHE_TTL_SEC > 0) CacheService.getScriptCache().remove(cacheKey);
     return null;
   }
 }
