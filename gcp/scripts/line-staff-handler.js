@@ -1596,5 +1596,5 @@ export const __testables__ = {
   formatDirectStoreCompletionRate,
   splitStoreIds,
   buildAttendanceMessage,
-  formatTomorrowListPayload,
+  buildTomorrowListFlexMessage,
 };

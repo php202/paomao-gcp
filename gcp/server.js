@@ -432,7 +432,7 @@ export function startServer() {
     console.log('[GCP] FORWARD_UNKNOWN_TO_GAS=0：優先走 GCP 本地指令，不再預設轉發 GAS。');
   }
 
-  server.listen(PORT, () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`[GCP] Server listening on port ${PORT}`);
     console.log('[GCP] GET / 健康檢查、POST /line-webhook LINE Webhook');
   });

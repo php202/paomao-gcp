@@ -97,32 +97,33 @@ if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
   echo "將掛載 Secret: ${SA_KEY_SECRET_NAME} -> /secrets/sa-key.json（店家本月出勤用）"
 fi
 
-# Cloud Run Service 需執行 node index.js serve；用 sh -c 'exec node index.js serve'
+# Cloud Run Service 需執行 node index.js serve（--args 多個值用逗號分隔）
+RUN_ARGS="index.js,serve"
 if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
   gcloud run deploy "$SERVICE_NAME" \
     --image "$IMAGE" \
     --region "$REGION" \
     --platform managed \
     --allow-unauthenticated \
-    --command "/bin/sh" \
-    --args "-c" \
-    --args "exec node index.js serve" \
+    --command "node" \
+    --args "$RUN_ARGS" \
     --set-env-vars "$ENV_VARS" \
     --set-secrets "/secrets/sa-key.json=${SA_KEY_SECRET_NAME}:latest" \
     --min-instances 0 \
-    --max-instances 10
+    --max-instances 10 \
+    --cpu-boost
 else
   gcloud run deploy "$SERVICE_NAME" \
     --image "$IMAGE" \
     --region "$REGION" \
     --platform managed \
     --allow-unauthenticated \
-    --command "/bin/sh" \
-    --args "-c" \
-    --args "exec node index.js serve" \
+    --command "node" \
+    --args "$RUN_ARGS" \
     --set-env-vars "$ENV_VARS" \
     --min-instances 0 \
-    --max-instances 10
+    --max-instances 10 \
+    --cpu-boost
 fi
 
 URL=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" --format='value(status.url)')
