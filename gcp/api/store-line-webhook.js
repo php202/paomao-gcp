@@ -118,9 +118,11 @@ function formatSlotsLines(data) {
   return lines.length > 0 ? '近期空位:\n' + lines.join(',\n') : null;
 }
 
-/** 呼叫與客服小幫手同一支 GAS searchAvailability（同 Action-getSlots cleanData），參數對齊：1 人、1.5hr、全天 11:00~21:00、全星期。 */
+/** 呼叫與客服小幫手同一支 GAS searchAvailability（同 Action-getSlots cleanData），參數對齊：1 人、1.5hr、全天 11:00~21:00、全星期。回傳 { text, debug } 供除錯。 */
 async function fetchSlotsFromGasSearchAvailability(botId, startDate, endDate) {
-  if (!LEGACY_GAS_STORES_API_URL || !botId) return null;
+  if (!LEGACY_GAS_STORES_API_URL || !botId) {
+    return { text: null, debug: !LEGACY_GAS_STORES_API_URL ? 'GAS_URL未設定' : 'botId空' };
+  }
   const params = new URLSearchParams({
     action: 'searchAvailability',
     botId: String(botId),
@@ -132,29 +134,39 @@ async function fetchSlotsFromGasSearchAvailability(botId, startDate, endDate) {
     timeStart: '11:00',
     timeEnd: '21:00',
   });
-  const url = `${LEGACY_GAS_STORES_API_URL.replace(/\?.*$/, '')}?${params.toString()}`;
+  const baseUrl = LEGACY_GAS_STORES_API_URL.replace(/\?.*$/, '');
+  const url = `${baseUrl}?${params.toString()}`;
   try {
     const res = await fetch(url, { method: 'get', signal: AbortSignal.timeout(25000) });
     const text = await res.text();
     const json = (() => { try { return JSON.parse(text); } catch { return {}; } })();
-    if (json.status === 'success' && json.text != null && String(json.text).trim() !== '') {
+    if (res.ok && json.status === 'success' && json.text != null && String(json.text).trim() !== '') {
       const gasText = String(json.text).trim();
-      return gasText.indexOf('近期空位') === 0 ? gasText : '近期空位:\n' + gasText;
+      const out = gasText.indexOf('近期空位') === 0 ? gasText : '近期空位:\n' + gasText;
+      console.log('[store-line-webhook] GAS searchAvailability OK botId=%s start=%s end=%s len=%s', (botId || '').slice(-8), startDate, endDate, out.length);
+      return { text: out, debug: null };
     }
-    return null;
+    const debug = !res.ok
+      ? `GAS_HTTP${res.status}`
+      : json.status !== 'success'
+        ? `GAS_status=${json.status || 'n/a'}`
+        : 'GAS_text空';
+    console.warn('[store-line-webhook] GAS searchAvailability 無可用空位或失敗 botId=%s start=%s end=%s %s resOk=%s body=%s', (botId || '').slice(-8), startDate, endDate, debug, res.ok, (text || '').slice(0, 200));
+    return { text: null, debug };
   } catch (err) {
     console.warn('[store-line-webhook] fetchSlotsFromGasSearchAvailability 失敗 botId=%s', (botId || '').slice(-8), err?.message || err);
-    return null;
+    return { text: null, debug: `GAS_錯誤:${(err?.message || String(err)).slice(0, 50)}` };
   }
 }
 
-/** 四天內有空位就回傳；若四天內都沒有，往後查至多 MAX_DAYS_AHEAD 天，取「至少 MIN_DAYS_WITH_SLOTS 天」有空位的時段。優先使用與客服小幫手同一支 GAS searchAvailability。 */
+/** 四天內有空位就回傳；若四天內都沒有，往後查至多 MAX_DAYS_AHEAD 天，取「至少 MIN_DAYS_WITH_SLOTS 天」有空位的時段。優先使用與客服小幫手同一支 GAS searchAvailability。回傳 { slotsStr, debug }，無空位時 debug 供除錯或顯示在訊息。 */
 const FIRST_RANGE_DAYS = 4;
 const MIN_DAYS_WITH_SLOTS = 3;
 const MAX_DAYS_AHEAD = 30;
+const SLOTS_DEBUG = (process.env.SLOTS_DEBUG || '').trim().toLowerCase() === '1' || (process.env.SLOTS_DEBUG || '').trim().toLowerCase() === 'true';
 
 async function getUpcomingSlotsText(auth, sayId, store = null) {
-  if (!sayId || !auth) return null;
+  if (!sayId || !auth) return { slotsStr: null, debug: 'sayId或auth空' };
   const today = new Date();
   const toYmd = (d) => d.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
   const startDate = toYmd(today);
@@ -163,12 +175,16 @@ async function getUpcomingSlotsText(auth, sayId, store = null) {
   const endDateFirst = toYmd(endFirst);
 
   if (LEGACY_GAS_STORES_API_URL && store?.botId) {
-    const gasText = await fetchSlotsFromGasSearchAvailability(store.botId, startDate, endDateFirst);
-    if (gasText) return gasText;
+    console.log('[store-line-webhook] getUpcomingSlotsText 使用 GAS searchAvailability botId=%s sayId=%s start=%s end=%s', (store.botId || '').slice(-8), sayId, startDate, endDateFirst);
+    let gas = await fetchSlotsFromGasSearchAvailability(store.botId, startDate, endDateFirst);
+    if (gas.text) return { slotsStr: gas.text, debug: null };
     const endExtended = new Date(today);
     endExtended.setDate(endExtended.getDate() + MAX_DAYS_AHEAD);
-    const gasTextExtended = await fetchSlotsFromGasSearchAvailability(store.botId, startDate, toYmd(endExtended));
-    if (gasTextExtended) return gasTextExtended;
+    gas = await fetchSlotsFromGasSearchAvailability(store.botId, startDate, toYmd(endExtended));
+    if (gas.text) return { slotsStr: gas.text, debug: null };
+    console.warn('[store-line-webhook] getUpcomingSlotsText GAS 兩次皆無空位 改走 GCP sayId=%s debug=%s', sayId, gas.debug);
+  } else {
+    console.log('[store-line-webhook] getUpcomingSlotsText 使用 GCP findAvailableSlotsAction（GAS_URL=%s botId=%s）sayId=%s', LEGACY_GAS_STORES_API_URL ? '已設定' : '未設定', store?.botId ? '有' : '無', sayId);
   }
 
   try {
@@ -180,12 +196,12 @@ async function getUpcomingSlotsText(auth, sayId, store = null) {
       durationMin: 90,
     });
     if (!result?.status || !Array.isArray(result.data)) {
-      console.warn('[store-line-webhook] getUpcomingSlotsText API 無資料 sayId=%s', sayId);
-      return null;
+      console.warn('[store-line-webhook] getUpcomingSlotsText GCP API 無資料 sayId=%s', sayId);
+      return { slotsStr: null, debug: 'GCP_無資料' };
     }
     const daysWithSlots = (result.data || []).filter((d) => d?.times && (Array.isArray(d.times) ? d.times.length : 1));
     if (daysWithSlots.length > 0) {
-      return formatSlotsLines(result.data);
+      return { slotsStr: formatSlotsLines(result.data), debug: null };
     }
     const endExtended = new Date(today);
     endExtended.setDate(endExtended.getDate() + MAX_DAYS_AHEAD);
@@ -197,30 +213,40 @@ async function getUpcomingSlotsText(auth, sayId, store = null) {
       needPeople: 1,
       durationMin: 90,
     });
-    if (!result?.status || !Array.isArray(result.data)) return null;
+    if (!result?.status || !Array.isArray(result.data)) {
+      return { slotsStr: null, debug: 'GCP_延伸無資料' };
+    }
     const extendedWithSlots = (result.data || []).filter((d) => d?.times && (Array.isArray(d.times) ? d.times.length : 1));
     const take = Math.min(MIN_DAYS_WITH_SLOTS, extendedWithSlots.length);
     if (take === 0) {
-      console.warn('[store-line-webhook] getUpcomingSlotsText 延伸查詢仍無空位 sayId=%s start=%s end=%s', sayId, startDate, endDateExtended);
-      return null;
+      console.warn('[store-line-webhook] getUpcomingSlotsText GCP 延伸查詢仍無空位 sayId=%s start=%s end=%s', sayId, startDate, endDateExtended);
+      return { slotsStr: null, debug: 'GCP_延伸無空位' };
     }
-    return formatSlotsLines(extendedWithSlots.slice(0, take));
+    return { slotsStr: formatSlotsLines(extendedWithSlots.slice(0, take)), debug: null };
   } catch (err) {
     console.error('[store-line-webhook] getUpcomingSlotsText 查空位失敗 sayId=%s', sayId, err);
-    return null;
+    return { slotsStr: null, debug: `GCP_錯誤:${(err?.message || String(err)).slice(0, 50)}` };
   }
 }
 
-/** 僅「線上預約」時：查空位、組文案、回傳訊息給客人。回傳 { finalContent, replied } 供寫入準客挽留清單。拉不到 token 或 token 失效時不傳訊息給客戶。 */
+/** 僅「線上預約」時：查空位、組文案、回傳訊息給客人。回傳 { finalContent, replied } 供寫入準客挽留清單。拉不到 token 或 token 失效時不傳訊息給客戶。SLOTS_DEBUG=1 時「都滿了」訊息會多一行除錯資訊可貼給管理員。 */
 async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, accessToken }) {
   let name = (displayName && String(displayName).trim()) ? String(displayName).trim() : ' ';
   if (['未知用戶', '未知(未加好友)', '未知用户'].includes(name) || name.startsWith('未知/ID:')) name = ' ';
   let slotsStr = '';
-  if (store?.sayId) slotsStr = (await getUpcomingSlotsText(auth, store.sayId, store)) || '';
+  let slotsDebug = '';
+  if (store?.sayId) {
+    const out = await getUpcomingSlotsText(auth, store.sayId, store);
+    slotsStr = (out?.slotsStr && String(out.slotsStr).trim()) || '';
+    slotsDebug = out?.debug || '';
+  }
   const template = 'Hi ${name}，想預約嗎？系統查到最近還有空位：\n${slots}\n\n有哪一個時段對妳來說比較方便嗎？\n如果想預約的話，再麻煩留下你的【姓名、電話】，稍後為妳登記保留喔。';
-  const finalContent = !slotsStr.trim()
-    ? `Hi ${name}，近幾天都滿了，可以呼叫貓小編協助看預約時間唷～`
-    : template.replace(/\$\{name\}/g, name).replace(/\$\{slots\}/g, slotsStr.trim());
+  let finalContent = slotsStr
+    ? template.replace(/\$\{name\}/g, name).replace(/\$\{slots\}/g, slotsStr.trim())
+    : `Hi ${name}，近幾天都滿了，可以呼叫貓小編協助看預約時間唷～`;
+  if (!slotsStr && slotsDebug && SLOTS_DEBUG) {
+    finalContent += `\n（除錯：${slotsDebug}；請將此訊息貼給管理員或看 Cloud Run Logs）`;
+  }
   const token = (accessToken && String(accessToken).trim()) ? String(accessToken).trim() : '';
   let replied = false;
   if (token && replyToken && store?.isReply !== false) {
