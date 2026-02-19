@@ -30,11 +30,11 @@ function debugSystemStatus() {
     
     // 3. 測試查空位
     Logger.log("⏳ 正在測試查空位...");
-    const slots = getUpcomingSlots(storeInfo.sayId, storeInfo.token);
-    if (slots) {
-      Logger.log(`🎉 查空位成功！結果: ${slots}`);
+    const slotsResult = getUpcomingSlots(storeInfo.sayId);
+    if (slotsResult && slotsResult.text) {
+      Logger.log("🎉 查空位成功！結果: " + slotsResult.text);
     } else {
-      Logger.log("⚠️ 查無空位 (或 API 失敗)，請確認 SayDou 後台是否真的有空位。");
+      Logger.log("⚠️ 查無空位 (或 API 失敗)，請確認 SayDou 後台是否真的有空位。" + (slotsResult && slotsResult.debug ? " 除錯: " + slotsResult.debug : ""));
     }
   }
 
@@ -369,9 +369,12 @@ function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToke
 
   if (context.type !== "IGNORE") {
     // 1. 查詢空位照常執行（不因 isReply 關閉）；I 欄 isReply 只控制是否用 reply token 傳給客人
-    let slotsStr = "";
+    var slotsStr = "";
+    var slotsDebug = "";
     if (context.type === "BOOKING" && sayId) {
-      slotsStr = getUpcomingSlots(sayId, token);
+      var slotsResult = getUpcomingSlots(sayId);
+      slotsStr = (slotsResult && slotsResult.text) ? slotsResult.text : "";
+      slotsDebug = (slotsResult && slotsResult.debug) ? slotsResult.debug : "";
     }
 
     // 2. 判斷要用 AI 還是 模板
@@ -385,6 +388,9 @@ function addToRetentionList(userId, triggerMsg, token, context, sayId, replyToke
       if (context.template) {
         if (context.desc === "查詢空位" && (!slotsStr || !slotsStr.trim())) {
           finalContent = "Hi " + displayName + "，近幾天都滿了，可以呼叫貓小編協助看預約時間唷～";
+          if (slotsDebug) {
+            finalContent += "\n（除錯：" + slotsDebug + "；請將此整則訊息貼給管理員）";
+          }
         } else {
           finalContent = context.template
             .replace("${name}", displayName)
@@ -656,8 +662,15 @@ function formatSlotsLinesFromData(data) {
   return lines.length > 0 ? "近期空位:\n" + lines.join(",\n") : null;
 }
 
+/**
+ * 查詢近期空位（先 4 天，無則延伸至 30 天、至少 3 天有空位）。
+ * @param {string} sayId - SayDou bot sayId
+ * @returns {{ text: string|null, debug: string }} text 為空位文案，無空位為 null；debug 為除錯用字串（無空位或錯誤時有值，目前走 GAS）
+ */
 function getUpcomingSlots(sayId) {
-  if (!sayId) return null;
+  var empty = { text: null, debug: "GAS_sayId空" };
+  if (!sayId) return empty;
+  var noSlotsDebug = "GAS_延伸無空位";
   const timeZone = Session.getScriptTimeZone() || "Asia/Taipei";
   const today = new Date();
   const endFirst = new Date(today);
@@ -671,7 +684,7 @@ function getUpcomingSlots(sayId) {
     var daysWithSlots = data.filter(function (d) { return d && d.times && (Array.isArray(d.times) ? d.times.length : 1); });
 
     if (daysWithSlots.length > 0) {
-      return formatSlotsLinesFromData(data);
+      return { text: formatSlotsLinesFromData(data), debug: "" };
     }
 
     var endExtended = new Date(today);
@@ -681,11 +694,11 @@ function getUpcomingSlots(sayId) {
     data = (findSlots && findSlots.data) ? findSlots.data : [];
     daysWithSlots = data.filter(function (d) { return d && d.times && (Array.isArray(d.times) ? d.times.length : 1); });
     var take = Math.min(MIN_DAYS_WITH_SLOTS, daysWithSlots.length);
-    if (take === 0) return null;
-    return formatSlotsLinesFromData(daysWithSlots.slice(0, take));
+    if (take === 0) return { text: null, debug: noSlotsDebug };
+    return { text: formatSlotsLinesFromData(daysWithSlots.slice(0, take)), debug: "" };
   } catch (e) {
     Logger.log("查空位發生錯誤: " + e.toString());
-    return null;
+    return { text: null, debug: "GAS_錯誤:" + e.toString() };
   }
 }
 // ------------------------------------------
