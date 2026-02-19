@@ -186,7 +186,8 @@ node index.js serve
 
 1. 部署 GCP 服務（`node index.js serve`）到 Cloud Run，並設定上述環境變數。
 2. 到 **LINE Developers Console** → 你的頻道 → **Messaging API** → **Webhook URL**，改為：  
-   `https://你的Cloud Run網址/line-webhook`
+   - **員工打卡**：`https://你的Cloud Run網址/line-webhook`  
+   - **各店（客人 LINE／訊息一覽表）**：`https://你的Cloud Run網址/store-line-webhook`（已統一使用 GCP 入口，不再使用 GAS Web App 收 Webhook）
 3. 儲存後，所有 LINE 訊息會打到 GCP：  
    - **已搬遷指令**：由 GCP 直接回覆  
    - **未搬遷指令**：若 `FORWARD_UNKNOWN_TO_GAS=1` 且有 `GAS_WEBHOOK_URL`，會轉發到 GAS 主 webhook

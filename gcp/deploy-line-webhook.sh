@@ -126,4 +126,5 @@ URL=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" --format='
 echo ""
 echo "=== 完成 ==="
 echo "服務網址: $URL"
-echo "LINE Webhook URL 請設為: ${URL}/line-webhook"
+echo "員工打卡 LINE Webhook: ${URL}/line-webhook"
+echo "各店訊息一覽表 LINE Webhook: ${URL}/store-line-webhook"
