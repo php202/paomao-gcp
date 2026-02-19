@@ -244,8 +244,8 @@ async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, ac
   let finalContent = slotsStr
     ? template.replace(/\$\{name\}/g, name).replace(/\$\{slots\}/g, slotsStr.trim())
     : `Hi ${name}，近幾天都滿了，可以呼叫貓小編協助看預約時間唷～`;
-  if (!slotsStr && slotsDebug && SLOTS_DEBUG) {
-    finalContent += `\n（除錯：${slotsDebug}；請將此訊息貼給管理員或看 Cloud Run Logs）`;
+  if (!slotsStr && slotsDebug) {
+    finalContent += `\n（除錯：${slotsDebug}；請將此整則訊息貼給管理員）`;
   }
   const token = (accessToken && String(accessToken).trim()) ? String(accessToken).trim() : '';
   let replied = false;
