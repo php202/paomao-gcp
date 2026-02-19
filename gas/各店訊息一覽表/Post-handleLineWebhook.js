@@ -636,12 +636,13 @@ function generateContextualAI(name, context, extraInfo) {
 }
 
 // [修正] 查空位函式 (使用台灣時區)，同一間店 10 分鐘內共用同一份空位，減少 SayDou API 呼叫
+// 僅快取「有空位」的結果；空結果不寫入且清除舊快取，避免誤顯示「近幾天都滿了」而客服小幫手查有空的狀況
 var SLOTS_CACHE_TTL_SEC = 600; // 0=關閉快取；要開啟請改為 600（10 分鐘）
 
 function getUpcomingSlots(sayId) {
   if (!sayId) return null;
+  var cacheKey = "slots_" + String(sayId);
   if (SLOTS_CACHE_TTL_SEC > 0) {
-    var cacheKey = "slots_" + String(sayId);
     var cache = CacheService.getScriptCache();
     var cached = cache.get(cacheKey);
     if (cached != null && cached !== "") return cached;
@@ -669,10 +670,18 @@ function getUpcomingSlots(sayId) {
       lines.push(datePart + (weekPart ? " (" + weekPart + ")" : "") + "：" + slotsStr);
     }
     var result = (lines.length > 0) ? "近期空位:\n" + lines.join(",\n") : null;
-    if (result && SLOTS_CACHE_TTL_SEC > 0) CacheService.getScriptCache().put("slots_" + String(sayId), result, SLOTS_CACHE_TTL_SEC);
+    if (SLOTS_CACHE_TTL_SEC > 0) {
+      var scriptCache = CacheService.getScriptCache();
+      if (result) {
+        scriptCache.put(cacheKey, result, SLOTS_CACHE_TTL_SEC);
+      } else {
+        scriptCache.remove(cacheKey);
+      }
+    }
     return result;
   } catch (e) {
     Logger.log("查空位發生錯誤: " + e.toString());
+    if (SLOTS_CACHE_TTL_SEC > 0) CacheService.getScriptCache().remove(cacheKey);
     return null;
   }
 }
