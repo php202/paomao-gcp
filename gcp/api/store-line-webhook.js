@@ -11,6 +11,14 @@ const RETENTION_SHEET_NAME = '準客挽留清單';
 /** 與客服小幫手同一來源：各店訊息一覽表 GAS searchAvailability。設為空則用 GCP findAvailableSlotsAction。 */
 const LEGACY_GAS_STORES_API_URL = (process.env.LEGACY_GAS_STORES_API_URL || '').trim();
 
+/** 空位結果快取：同店短期內不重複 call API。key = sayId, value = { slotsStr, debug, expiresAt } */
+const slotsCache = new Map();
+const SLOTS_CACHE_TTL_MS = Number(process.env.SLOTS_CACHE_TTL_MS) || 90 * 1000; // 90 秒
+
+/** 同一使用者同店限送一次完整空位回覆，避免快速連打「線上預約」重複發送。key = userId:destinationId */
+const replySentMap = new Map();
+const REPLY_THROTTLE_MS = Number(process.env.REPLY_THROTTLE_MS) || 180 * 1000; // 3 分鐘（可用環境變數調整）
+
 /** 從訊息文字擷取台灣手機號碼（09 開頭），正規化 10 碼；無則 null（與 GAS extractPhoneFromText 一致） */
 function extractPhoneFromText(text) {
   if (text == null || String(text).trim() === '') return null;
@@ -106,13 +114,25 @@ async function fetchDisplayName(userId, token) {
   }
 }
 
-/** 將 findAvailableSlotsAction 回傳的 data 轉成「近期空位:\nMM-DD (週x)：時段」字串；days 可為部分篩選後的陣列。 */
+/** 每日最多顯示的時段數，超過則顯示前一半 + … + 後一半，避免單日時段過多。 */
+const MAX_SLOTS_DISPLAY_PER_DAY = 8;
+
+/** 將 findAvailableSlotsAction 回傳的 data 轉成「近期空位:\nMM-DD (週x)：時段」字串；單日時段過多時篩選為前/後各半。 */
 function formatSlotsLines(data) {
   if (!Array.isArray(data) || data.length === 0) return null;
   const lines = data.map((day) => {
     const datePart = (day.date && String(day.date).length >= 10) ? String(day.date).slice(5, 10) : (day.date || '');
     const weekPart = day.week || '';
-    const slotsStr = Array.isArray(day.times) ? day.times.join('、') : String(day.times || '');
+    const times = Array.isArray(day.times) ? day.times : [];
+    let slotsStr;
+    if (times.length <= MAX_SLOTS_DISPLAY_PER_DAY) {
+      slotsStr = times.join('、');
+    } else {
+      const half = Math.floor(MAX_SLOTS_DISPLAY_PER_DAY / 2);
+      const first = times.slice(0, half);
+      const last = times.slice(-half);
+      slotsStr = first.join('、') + '、…、' + last.join('、');
+    }
     return datePart + (weekPart ? ` (${weekPart})` : '') + '：' + slotsStr;
   });
   return lines.length > 0 ? '近期空位:\n' + lines.join(',\n') : null;
@@ -159,33 +179,25 @@ async function fetchSlotsFromGasSearchAvailability(botId, startDate, endDate) {
   }
 }
 
-/** 四天內有空位就回傳；若四天內都沒有，往後查至多 MAX_DAYS_AHEAD 天，取「至少 MIN_DAYS_WITH_SLOTS 天」有空位的時段。優先使用與客服小幫手同一支 GAS searchAvailability。回傳 { slotsStr, debug }，無空位時 debug 供除錯或顯示在訊息。 */
+/** 四天內有空位就回傳；若四天內都沒有，往後查至多 MAX_DAYS_AHEAD 天，取「至少 MIN_DAYS_WITH_SLOTS 天」有空位的時段。一律使用 GCP findAvailableSlotsAction（11:00~21:00），不再呼叫 GAS。回傳 { slotsStr, debug }。 */
 const FIRST_RANGE_DAYS = 4;
 const MIN_DAYS_WITH_SLOTS = 3;
 const MAX_DAYS_AHEAD = 30;
-const SLOTS_DEBUG = (process.env.SLOTS_DEBUG || '').trim().toLowerCase() === '1' || (process.env.SLOTS_DEBUG || '').trim().toLowerCase() === 'true';
 
 async function getUpcomingSlotsText(auth, sayId, store = null) {
   if (!sayId || !auth) return { slotsStr: null, debug: 'sayId或auth空' };
+  const cacheKey = String(sayId);
+  const cached = slotsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { slotsStr: cached.slotsStr, debug: cached.debug ?? '' };
+  }
+
   const today = new Date();
   const toYmd = (d) => d.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
   const startDate = toYmd(today);
   const endFirst = new Date(today);
   endFirst.setDate(endFirst.getDate() + FIRST_RANGE_DAYS - 1);
   const endDateFirst = toYmd(endFirst);
-
-  if (LEGACY_GAS_STORES_API_URL && store?.botId) {
-    console.log('[store-line-webhook] getUpcomingSlotsText 使用 GAS searchAvailability botId=%s sayId=%s start=%s end=%s', (store.botId || '').slice(-8), sayId, startDate, endDateFirst);
-    let gas = await fetchSlotsFromGasSearchAvailability(store.botId, startDate, endDateFirst);
-    if (gas.text) return { slotsStr: gas.text, debug: null };
-    const endExtended = new Date(today);
-    endExtended.setDate(endExtended.getDate() + MAX_DAYS_AHEAD);
-    gas = await fetchSlotsFromGasSearchAvailability(store.botId, startDate, toYmd(endExtended));
-    if (gas.text) return { slotsStr: gas.text, debug: null };
-    console.warn('[store-line-webhook] getUpcomingSlotsText GAS 兩次皆無空位 改走 GCP sayId=%s debug=%s', sayId, gas.debug);
-  } else {
-    console.log('[store-line-webhook] getUpcomingSlotsText 使用 GCP findAvailableSlotsAction（GAS_URL=%s botId=%s）sayId=%s', LEGACY_GAS_STORES_API_URL ? '已設定' : '未設定', store?.botId ? '有' : '無', sayId);
-  }
 
   try {
     let result = await findAvailableSlotsAction(auth, {
@@ -197,11 +209,15 @@ async function getUpcomingSlotsText(auth, sayId, store = null) {
     });
     if (!result?.status || !Array.isArray(result.data)) {
       console.warn('[store-line-webhook] getUpcomingSlotsText GCP API 無資料 sayId=%s', sayId);
-      return { slotsStr: null, debug: 'GCP_無資料' };
+      const out = { slotsStr: null, debug: 'GCP_無資料' };
+      slotsCache.set(cacheKey, { ...out, expiresAt: Date.now() + SLOTS_CACHE_TTL_MS });
+      return out;
     }
     const daysWithSlots = (result.data || []).filter((d) => d?.times && (Array.isArray(d.times) ? d.times.length : 1));
     if (daysWithSlots.length > 0) {
-      return { slotsStr: formatSlotsLines(result.data), debug: null };
+      const out = { slotsStr: formatSlotsLines(result.data), debug: null };
+      slotsCache.set(cacheKey, { ...out, expiresAt: Date.now() + SLOTS_CACHE_TTL_MS });
+      return out;
     }
     const endExtended = new Date(today);
     endExtended.setDate(endExtended.getDate() + MAX_DAYS_AHEAD);
@@ -214,25 +230,41 @@ async function getUpcomingSlotsText(auth, sayId, store = null) {
       durationMin: 90,
     });
     if (!result?.status || !Array.isArray(result.data)) {
-      return { slotsStr: null, debug: 'GCP_延伸無資料' };
+      const out = { slotsStr: null, debug: 'GCP_延伸無資料' };
+      slotsCache.set(cacheKey, { ...out, expiresAt: Date.now() + SLOTS_CACHE_TTL_MS });
+      return out;
     }
     const extendedWithSlots = (result.data || []).filter((d) => d?.times && (Array.isArray(d.times) ? d.times.length : 1));
     const take = Math.min(MIN_DAYS_WITH_SLOTS, extendedWithSlots.length);
     if (take === 0) {
       console.warn('[store-line-webhook] getUpcomingSlotsText GCP 延伸查詢仍無空位 sayId=%s start=%s end=%s', sayId, startDate, endDateExtended);
-      return { slotsStr: null, debug: 'GCP_延伸無空位' };
+      const out = { slotsStr: null, debug: 'GCP_延伸無空位' };
+      slotsCache.set(cacheKey, { ...out, expiresAt: Date.now() + SLOTS_CACHE_TTL_MS });
+      return out;
     }
-    return { slotsStr: formatSlotsLines(extendedWithSlots.slice(0, take)), debug: null };
+    const out = { slotsStr: formatSlotsLines(extendedWithSlots.slice(0, take)), debug: null };
+    slotsCache.set(cacheKey, { ...out, expiresAt: Date.now() + SLOTS_CACHE_TTL_MS });
+    return out;
   } catch (err) {
     console.error('[store-line-webhook] getUpcomingSlotsText 查空位失敗 sayId=%s', sayId, err);
     return { slotsStr: null, debug: `GCP_錯誤:${(err?.message || String(err)).slice(0, 50)}` };
   }
 }
 
-/** 僅「線上預約」時：查空位、組文案、回傳訊息給客人。回傳 { finalContent, replied } 供寫入準客挽留清單。拉不到 token 或 token 失效時不傳訊息給客戶。SLOTS_DEBUG=1 時「都滿了」訊息會多一行除錯資訊可貼給管理員。 */
-async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, accessToken }) {
+/** 僅「線上預約」時：查空位、組文案、回傳訊息給客人。同一使用者同店短時間內只送一次完整回覆（throttle），空位結果短期快取減少 API。回傳 { finalContent, replied }。 */
+async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, accessToken, userId, destinationId }) {
   let name = (displayName && String(displayName).trim()) ? String(displayName).trim() : ' ';
   if (['未知用戶', '未知(未加好友)', '未知用户'].includes(name) || name.startsWith('未知/ID:')) name = ' ';
+  const isTestUser = name.toLowerCase() === 'robby yu';
+
+  const throttleKey = userId && destinationId ? `${userId}:${destinationId}` : '';
+  if (throttleKey && !isTestUser) {
+    const lastSent = replySentMap.get(throttleKey);
+    if (lastSent != null && Date.now() - lastSent < REPLY_THROTTLE_MS) {
+      return { finalContent: '（已於稍早回覆可預約時段，請參考上方訊息）', replied: false };
+    }
+  }
+
   let slotsStr = '';
   let slotsDebug = '';
   if (store?.sayId) {
@@ -258,6 +290,7 @@ async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, ac
         signal: AbortSignal.timeout(10000),
       });
       replied = res.ok;
+      if (replied && throttleKey) replySentMap.set(throttleKey, Date.now());
       if (!res.ok && res.status === 401) {
         console.warn('[store-line-webhook] LINE reply 401 token 可能失效，未傳訊息給客戶');
       }
@@ -352,6 +385,8 @@ export async function handleStoreLineWebhook(req, res, { authClient, rawBody }) 
           replyToken,
           store,
           accessToken,
+          userId,
+          destinationId,
         });
         finalContent = result?.finalContent ?? '';
         rowStatus = result?.replied ? 'Replied' : 'Pending';
