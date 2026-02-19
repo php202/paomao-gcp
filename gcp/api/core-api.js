@@ -146,7 +146,12 @@ async function fetchReservationsAndDutyoffs(auth, sayId, startDate, endDate, tok
 
 function buildValidStaffSet(baseData, sayId) {
   const valid = new Set();
-  const staffs = baseData?.staffs?.[0] || [];
+  const rawStaffs = baseData?.staffs;
+  const staffs = Array.isArray(rawStaffs?.[0])
+    ? rawStaffs[0]
+    : Array.isArray(rawStaffs)
+      ? rawStaffs
+      : [];
   for (const s of staffs) {
     if (String(s?.storid || '') !== String(sayId)) continue;
     if (isCounterStaffName(s?.usrcod, s?.usrnam)) continue;
