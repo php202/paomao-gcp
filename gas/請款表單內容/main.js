@@ -187,20 +187,41 @@ function cleanupTempSheets() {
   Core.cleanupTempSheets('17hX7CjeDj2xdKBIt9TKG6iJF5lB38uXwj2kdhb4oIQE', '銀行匯款格式_')
 }
 
+/** GCP /core 預設網址（僅在未設 GCP_CORE_API_URL 且 PAO_CAT_CORE_API_URL 為 GAS 時使用，與 gcp/set-env.sh GCP_CORE_PUBLIC_URL 一致） */
+var GCP_CORE_API_URL_FALLBACK = 'https://pao-checkin-api-vkffbzouva-de.a.run.app/core';
+
 /**
- * 開發票與 getOdooInvoice 優先使用 GCP /core（GCP_CORE_API_URL + GCP_CORE_SECRET_KEY），
- * 未設則用 GAS Core（PAO_CAT_CORE_API_URL + PAO_CAT_SECRET_KEY，結尾 /exec）。
+ * 開發票與 getOdooInvoice：優先 GCP_CORE_API_URL + GCP_CORE_SECRET_KEY；
+ * 未設則用 PAO_CAT_CORE_API_URL + PAO_CAT_SECRET_KEY。若 PAO_CAT 指到 GAS（script.google.com），
+ * 自動改打 GCP_CORE_API_URL_FALLBACK（直連 GCP），金鑰仍用 PAO_CAT_SECRET_KEY，無需再設 GCP 網址。
  */
 function getCoreApiParams() {
   const p = PropertiesService.getScriptProperties();
   const gcpUrl = (p.getProperty('GCP_CORE_API_URL') || '').trim();
   const gcpKey = (p.getProperty('GCP_CORE_SECRET_KEY') || '').trim();
+  const paoUrl = (p.getProperty('PAO_CAT_CORE_API_URL') || '').trim();
+  const paoKey = (p.getProperty('PAO_CAT_SECRET_KEY') || '').trim();
+  console.log('[getCoreApiParams] GCP_CORE_API_URL=%s GCP_CORE_SECRET_KEY=%s PAO_CAT_CORE_API_URL=%s PAO_CAT_SECRET_KEY=%s',
+    gcpUrl ? 'set(' + gcpUrl.length + ')' : 'empty',
+    gcpKey ? 'set' : 'empty',
+    paoUrl ? 'set(' + paoUrl.length + ')' : 'empty',
+    paoKey ? 'set' : 'empty');
   if (gcpUrl.length > 0 && gcpKey.length > 0) {
+    console.log('[getCoreApiParams] 使用 source=gcp_core_api_url url=%s', gcpUrl.replace(/key=.*/i, '').substring(0, 60) + (gcpUrl.length > 60 ? '...' : ''));
     return { url: gcpUrl, key: gcpKey, useApi: true };
   }
-  const url = (p.getProperty('PAO_CAT_CORE_API_URL') || '').trim();
-  const key = (p.getProperty('PAO_CAT_SECRET_KEY') || '').trim();
-  return { url, key, useApi: url.length > 0 && key.length > 0 };
+  if (paoUrl.length > 0 && paoKey.length > 0) {
+    var isGas = paoUrl.indexOf('script.google.com') !== -1;
+    var fallbackDefined = typeof GCP_CORE_API_URL_FALLBACK !== 'undefined' && GCP_CORE_API_URL_FALLBACK;
+    var finalUrl = isGas && fallbackDefined ? GCP_CORE_API_URL_FALLBACK : paoUrl;
+    console.log('[getCoreApiParams] PAO_CAT_isGAS=%s FALLBACK_defined=%s 使用 source=%s finalUrlHost=%s',
+      isGas, !!fallbackDefined,
+      isGas ? (fallbackDefined ? 'fallback_to_gcp' : 'pao_cat_gas_no_fallback') : 'pao_cat_direct',
+      finalUrl ? finalUrl.replace(/^https?:\/\//, '').split('/')[0] : 'empty');
+    return { url: finalUrl, key: paoKey, useApi: true };
+  }
+  console.log('[getCoreApiParams] 使用 source=none useApi=false');
+  return { url: '', key: '', useApi: false };
 }
 
 /**
@@ -265,11 +286,13 @@ function checkOdooNumberAndCoreApi() {
 /** 透過 Core API 開立發票（需已設 GCP_CORE_* 或 PAO_CAT_*） */
 function issueInvoiceViaCoreApi(storeInfo, odooNumber, buyType, items) {
   const { url, key, useApi } = getCoreApiParams();
+  var urlHost = url ? url.replace(/^https?:\/\//, '').split('/')[0] : '';
+  console.log('[issueInvoiceViaCoreApi] useApi=%s requestHost=%s urlLength=%s', useApi, urlHost || 'none', url ? url.length : 0);
   if (!useApi) return null;
   const odoo = String(odooNumber || '');
   const company = (storeInfo && storeInfo.companyName) ? String(storeInfo.companyName) : '';
   const itemCount = Array.isArray(items) ? items.length : 0;
-  console.log('[issueInvoiceViaCoreApi] 請求 odooNumber=%s buyType=%s company=%s items=%s', odoo, String(buyType || '請款'), company, itemCount);
+  console.log('[issueInvoiceViaCoreApi] 請求 odooNumber=%s buyType=%s company=%s items=%s requestHost=%s', odoo, String(buyType || '請款'), company, itemCount, urlHost);
   const payload = JSON.stringify({
     key: key,
     action: 'issueInvoice',
@@ -278,9 +301,11 @@ function issueInvoiceViaCoreApi(storeInfo, odooNumber, buyType, items) {
     buyType: String(buyType || '請款'),
     items: items
   });
+  console.log('[issueInvoiceViaCoreApi] POST url=%s (host=%s)', url ? url.split('?')[0] : 'null', urlHost);
   const res = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: payload, muteHttpExceptions: true });
   const responseCode = res.getResponseCode();
   const responseText = res.getContentText();
+  console.log('[issueInvoiceViaCoreApi] 回應 HTTP=%s bodyLen=%s bodyPreview=%s', responseCode, responseText ? responseText.length : 0, responseText ? responseText.slice(0, 200) : '');
   if (responseCode !== 200) {
     console.error('[issueInvoiceViaCoreApi] HTTP %s odooNumber=%s body=%s', responseCode, odoo, responseText ? responseText.slice(0, 600) : '');
   }

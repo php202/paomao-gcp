@@ -259,11 +259,22 @@ export async function handleGivemeInvoiceCheck(req, res) {
   res.end(JSON.stringify({ configured }));
 }
 
+/** 將 AbortSignal/網路錯誤轉成給前端的友善說明 */
+function toUserFriendlyMsg(err) {
+  const m = String(err?.message || err || '');
+  if (/aborted|timeout|ETIMEDOUT|ECONNRESET/i.test(m)) {
+    return 'Giveme 回應逾時，請稍後再試或至 Giveme 查詢發票。';
+  }
+  return m || 'Giveme 請求失敗';
+}
+
 export async function handleGivemeInvoice(req, res, { rawBody }) {
+  const reqId = `inv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   let body;
   try {
     body = JSON.parse(rawBody.toString('utf8'));
   } catch {
+    console.warn('[giveme-invoice]', reqId, 'Invalid JSON body');
     send(res, 400, { success: false, msg: 'Invalid JSON body' });
     return;
   }
@@ -271,8 +282,12 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
   const order = body?.order ?? body;
   const options = body?.options ?? {};
   const type = String(options.type ?? 'B2C').toUpperCase();
-
+  const storid = order?.storid != null ? String(order.storid).trim() : '';
   const totalFee = getTotalFromOrder(order);
+  const ordrsn = order?.ordrsn || order?.ordcid || '';
+
+  console.log('[giveme-invoice]', reqId, 'start', { storid, type, totalFee, ordrsn: String(ordrsn).slice(0, 30) });
+
   if (totalFee < 1) {
     send(res, 400, { success: false, msg: '總金額需大於 0' });
     return;
@@ -293,35 +308,45 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
   }
 
   let cred = null;
-  const storid = order?.storid != null ? String(order.storid).trim() : '';
   if (LINE_STORE_SS_ID && storid) {
     try {
       const auth = await getAuth();
       cred = await getCredentialByStorid(auth, storid);
     } catch (e) {
-      console.warn('[giveme-invoice] getCredentialByStorid failed:', e?.message || e);
+      console.warn('[giveme-invoice]', reqId, 'getCredentialByStorid failed:', e?.message || e);
     }
   }
   if (!cred && GIVEME_UNCODE && GIVEME_IDNO && GIVEME_PASSWORD) {
     cred = { uncode: GIVEME_UNCODE, idno: GIVEME_IDNO, password: GIVEME_PASSWORD };
   }
   if (!cred) {
+    console.warn('[giveme-invoice]', reqId, 'no cred');
     send(res, 503, { success: false, msg: 'Giveme 設定未完成（試算表 M/N 欄或環境變數 GIVEME_UNCODE/IDNO/PASSWORD）' });
     return;
   }
 
+  const OPEN_TIMEOUT_MS = 25000;
+  const PICTURE_TIMEOUT_MS = 10000;
+
   const postToGiveme = async (url, payload) => {
-    const resG = await fetch(url, {
-      method: 'post',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(20000),
-    });
-    const text = await resG.text();
+    const t0 = Date.now();
     try {
-      return JSON.parse(text);
-    } catch {
-      return { success: false, msg: text.slice(0, 300) };
+      const resG = await fetch(url, {
+        method: 'post',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(OPEN_TIMEOUT_MS),
+      });
+      const text = await resG.text();
+      console.log('[giveme-invoice]', reqId, 'postToGiveme', resG.status, `${Date.now() - t0}ms`);
+      try {
+        return JSON.parse(text);
+      } catch {
+        return { success: false, msg: text.slice(0, 300) };
+      }
+    } catch (e) {
+      console.warn('[giveme-invoice]', reqId, 'postToGiveme error', e?.message || e, `${Date.now() - t0}ms`);
+      throw e;
     }
   };
 
@@ -353,13 +378,14 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
               json.printImageBase64 = pic.base64;
               json.printImageContentType = pic.contentType;
             } else {
-              console.warn('[giveme-invoice] fetchInvoicePicture 失敗:', pic.reason);
+              console.warn('[giveme-invoice]', reqId, 'fetchInvoicePicture 失敗:', pic.reason);
             }
           } catch (e) {
-            console.warn('[giveme-invoice] fetchInvoicePicture:', e?.message || e);
+            console.warn('[giveme-invoice]', reqId, 'fetchInvoicePicture:', e?.message || e);
           }
         }
       }
+      console.log('[giveme-invoice]', reqId, 'done B2B', { ok: !!ok, code: json?.code });
       send(res, 200, json);
       return;
     }
@@ -379,17 +405,20 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
             json.printImageBase64 = pic.base64;
             json.printImageContentType = pic.contentType;
           } else {
-            console.warn('[giveme-invoice] fetchInvoicePicture 失敗:', pic.reason);
+            console.warn('[giveme-invoice]', reqId, 'fetchInvoicePicture 失敗:', pic.reason);
           }
         } catch (e) {
-          console.warn('[giveme-invoice] fetchInvoicePicture:', e?.message || e);
+          console.warn('[giveme-invoice]', reqId, 'fetchInvoicePicture:', e?.message || e);
         }
       }
     }
+    console.log('[giveme-invoice]', reqId, 'done B2C', { ok: !!ok, code: json?.code });
     send(res, 200, json);
   } catch (e) {
-    console.error('[giveme-invoice]', e?.message || e);
-    send(res, 500, { success: false, msg: e?.message || 'Giveme 請求失敗' });
+    const rawMsg = e?.message || String(e);
+    const userMsg = toUserFriendlyMsg(e);
+    console.error('[giveme-invoice]', reqId, 'error', rawMsg);
+    send(res, 500, { success: false, msg: userMsg });
   }
 }
 
@@ -417,10 +446,14 @@ async function fetchInvoicePicture(cred, code, typeNum = '1') {
       method: 'post',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(10000),
     });
   } catch (e) {
-    return { ok: false, reason: e?.message || '連線 Giveme 失敗' };
+    const reason = e?.message || '連線 Giveme 失敗';
+    if (/aborted|timeout/i.test(reason)) {
+      console.warn('[giveme-invoice] fetchInvoicePicture timeout/aborted', code, reason);
+    }
+    return { ok: false, reason };
   }
   const rawContentType = (response.headers.get('content-type') || '').toLowerCase();
   const buf = await response.arrayBuffer();
