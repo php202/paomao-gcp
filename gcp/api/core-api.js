@@ -147,6 +147,13 @@ function formatYmdTz(date) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 }
 
+/** 從 YYYY-MM-DD 取得星期幾（0=日…6=六），與伺服器時區無關。 */
+function dayOfWeekFromYmd(dateStr) {
+  const [y, m, d] = String(dateStr || '').split('-').map((n) => parseInt(n, 10));
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return 0;
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
 async function fetchReservationsAndDutyoffs(auth, sayId, startDate, endDate, token) {
   const base =
     'https://saywebdatafeed.saydou.com/api/management/calendar/events/full' +
@@ -200,8 +207,9 @@ export async function findAvailableSlotsAction(auth, params) {
     return Array.isArray(parsed) ? parsed.map((n) => Number(n)) : [0, 1, 2, 3, 4, 5, 6];
   })();
 
-  const start = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
+  // 以台灣時區解讀日期，避免 Cloud Run (UTC) 等環境造成「今天」或星期錯一天
+  const start = new Date(`${startDate}T00:00:00+08:00`);
+  const end = new Date(`${endDate}T00:00:00+08:00`);
   const openMin = hhmmToMinutes(timeStart);
   const closeMin = hhmmToMinutes(timeEnd);
   const lastStartMin = closeMin - durationMin;
@@ -219,11 +227,12 @@ export async function findAvailableSlotsAction(auth, params) {
     (byDateDutyoffs[ds] ||= []).push(d);
   }
 
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const data = [];
-  for (let cur = new Date(start.getTime()); cur.getTime() <= end.getTime(); cur = addDays(cur, 1)) {
-    const dayOfWeek = cur.getDay();
-    if (!weekDays.includes(dayOfWeek)) continue;
+  for (let cur = new Date(start.getTime()); cur.getTime() <= end.getTime(); cur = new Date(cur.getTime() + ONE_DAY_MS)) {
     const dateStr = formatYmdTz(cur);
+    const dayOfWeek = dayOfWeekFromYmd(dateStr);
+    if (!weekDays.includes(dayOfWeek)) continue;
     const dayRes = byDateReservations[dateStr] || [];
     const dayOff = byDateDutyoffs[dateStr] || [];
     const times = [];

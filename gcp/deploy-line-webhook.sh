@@ -69,6 +69,16 @@ append_env() {
     fi
   fi
 }
+# 允許空值，用於必須「清掉舊值」的變數（如 GIVEME_PROXY_URL 改直連時）
+append_env_or_clear() {
+  local k="$1"
+  local v="${2:-}"
+  if [ -z "${ENV_VARS:-}" ]; then
+    ENV_VARS="${k}=${v}"
+  else
+    ENV_VARS="${ENV_VARS},${k}=${v}"
+  fi
+}
 
 # required
 ENV_VARS=""
@@ -101,8 +111,9 @@ append_env "ADMIN_LINE_USER_ID" "$ADMIN_LINE_USER_ID"
 append_env "ADMIN_EMAIL" "$ADMIN_EMAIL"
 append_env "GMAIL_USER" "$GMAIL_USER"
 append_env "GMAIL_APP_PASSWORD" "$GMAIL_APP_PASSWORD"
-append_env "GIVEME_PROXY_URL" "$GIVEME_PROXY_URL"
-append_env "GIVEME_PICTURE_PROXY_URL" "$GIVEME_PICTURE_PROXY_URL"
+# 直連 Giveme 時必須傳空值覆蓋舊 VM proxy，否則會出現「IP 不在白名單 136.115.207.151」
+append_env_or_clear "GIVEME_PROXY_URL" "${GIVEME_PROXY_URL:-}"
+append_env_or_clear "GIVEME_PICTURE_PROXY_URL" "${GIVEME_PICTURE_PROXY_URL:-}"
 append_env "GIVEME_UNCODE" "$GIVEME_UNCODE"
 append_env "GIVEME_IDNO" "$GIVEME_IDNO"
 append_env "GIVEME_PASSWORD" "$GIVEME_PASSWORD"
