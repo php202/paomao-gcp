@@ -186,6 +186,20 @@
             btn.disabled = true;
             btn.textContent = '開單中...';
 
+            let responded = false;
+            function resetButton() {
+                if (responded) return;
+                responded = true;
+                btn.disabled = false;
+                btn.textContent = '確認開單';
+            }
+            const SAFETY_MS = 35000;
+            const safetyTimer = setTimeout(function() {
+                if (responded) return;
+                resetButton();
+                alert('請求逾時，請稍後再試或手動至 Giveme 查詢發票。');
+            }, SAFETY_MS);
+
             GM_xmlhttpRequest({
                 method: 'POST',
                 url: GCP_BASE + '/giveme-invoice',
@@ -193,6 +207,9 @@
                 data: JSON.stringify({ order, options }),
                 timeout: 30000,
                 onload: function(r) {
+                    clearTimeout(safetyTimer);
+                    if (responded) return;
+                    responded = true;
                     overlay.remove();
                     try {
                         const j = JSON.parse(r.responseText);
@@ -213,13 +230,19 @@
                             alert('開單失敗：' + (j.msg || r.responseText?.slice(0, 100) || ''));
                         }
                     } catch {
+                        resetButton();
                         alert('開單失敗：' + (r.responseText?.slice(0, 150) || '網路錯誤'));
                     }
                 },
                 onerror: function() {
-                    btn.disabled = false;
-                    btn.textContent = '確認開單';
+                    clearTimeout(safetyTimer);
+                    resetButton();
                     alert('連線失敗，請檢查 GCP 網址與網路');
+                },
+                ontimeout: function() {
+                    clearTimeout(safetyTimer);
+                    resetButton();
+                    alert('請求逾時（超過 30 秒），請稍後再試或至 Giveme 查詢發票。');
                 }
             });
         });

@@ -315,7 +315,7 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
       method: 'post',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(20000),
     });
     const text = await resG.text();
     try {
@@ -417,7 +417,7 @@ async function fetchInvoicePicture(cred, code, typeNum = '1') {
       method: 'post',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(8000),
     });
   } catch (e) {
     return { ok: false, reason: e?.message || '連線 Giveme 失敗' };
