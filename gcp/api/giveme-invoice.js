@@ -155,6 +155,21 @@ async function getCredentialByUncode(auth, uncode) {
 }
 
 /**
+ * 發票備註（總備註）：避開「測試」等無意義字樣，優先用品項名稱或訂單編號
+ */
+function getInvoiceContent(order) {
+  const remark = (order?.remark && String(order.remark).trim()) || '';
+  const skipRemark = /^(測試|test)$/i.test(remark);
+  if (remark && !skipRemark) return remark.slice(0, 200);
+  const ordds = Array.isArray(order?.ordds) ? order.ordds : [];
+  const firstName = ordds[0] && (ordds[0].godnam || ordds[0].name);
+  if (firstName && String(firstName).trim()) return sanitizeName(firstName).slice(0, 200);
+  const ordNo = String(order?.ordrsn || order?.ordcid || '').trim();
+  if (ordNo) return `Saydou ${ordNo}`.slice(0, 200);
+  return 'Saydou 結帳';
+}
+
+/**
  * 組 B2C 請求 body（不列印時需 phone 或 orderCode 其一）；cred = { uncode, idno, password }
  */
 function buildB2CBody(order, options, cred) {
@@ -163,7 +178,7 @@ function buildB2CBody(order, options, cred) {
   const items = buildItemsFromOrder(order);
   const totalFee = getTotalFromOrder(order);
   const datetime = getInvoiceDate(order);
-  const content = (order?.remark && String(order.remark).trim()) || `Saydou ${order?.ordrsn || order?.ordcid || ''}`.trim();
+  const content = getInvoiceContent(order);
 
   const payload = {
     timeStamp,
@@ -174,7 +189,7 @@ function buildB2CBody(order, options, cred) {
     datetime,
     state: '0',
     totalFee: String(totalFee),
-    content: content.slice(0, 200),
+    content,
     items: JSON.stringify(items),
   };
 
@@ -197,7 +212,7 @@ function buildB2BBody(order, options, cred) {
   const sales = Math.round(totalAmount / 1.05);
   const taxAmount = totalAmount - sales;
   const datetime = getInvoiceDate(order);
-  const content = (order?.remark && String(order.remark).trim()) || `Saydou ${order?.ordrsn || order?.ordcid || ''}`.trim();
+  const content = getInvoiceContent(order);
   const phone = String(options?.companyTaxId ?? options?.phone ?? '').trim();
 
   return {
@@ -212,7 +227,7 @@ function buildB2BBody(order, options, cred) {
     totalFee: String(totalAmount),
     amount: String(taxAmount),
     sales: String(sales),
-    content: content.slice(0, 200),
+    content,
     items: JSON.stringify(items),
   };
 }
@@ -380,8 +395,8 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
  */
 async function fetchInvoicePicture(cred, code, typeNum = '1') {
   const timeStamp = String(Date.now());
-  const signStr = timeStamp + cred.uncode + cred.idno + cred.password + code + typeNum;
-  const sign = md5Upper(signStr);
+  // 與開單 API 一致：簽名 = timeStamp + idno + password（Giveme 發票圖 API 驗證同此規則）
+  const sign = md5Upper(timeStamp + cred.idno + cred.password);
   const body = {
     timeStamp,
     uncode: cred.uncode,

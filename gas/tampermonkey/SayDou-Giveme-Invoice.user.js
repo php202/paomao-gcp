@@ -14,8 +14,8 @@
 (function() {
     'use strict';
 
-    // 請改成你的 GCP Cloud Run 網址（與 SayDou Token Sync 同服務）
-    const GCP_BASE = "https://pao-checkin-api-254258679209.asia-east1.run.app";
+    // 請改成你的 GCP Cloud Run 網址（與 set-env.sh REPORT_API_BASE 同服務、不含路徑）
+    const GCP_BASE = "https://pao-checkin-api-vkffbzouva-de.a.run.app";
 
     function tryOpenInvoiceFromResponse(text) {
         try {
