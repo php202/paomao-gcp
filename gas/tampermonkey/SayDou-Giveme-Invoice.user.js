@@ -20,9 +20,23 @@
     function tryOpenInvoiceFromResponse(text) {
         try {
             const json = JSON.parse(text);
-            if (json && json.status === true && json.order) {
-                setTimeout(() => openInvoiceModal(json.order), 100);
-            }
+            if (!json || json.status !== true || !json.order) return;
+            const order = json.order;
+            const storid = order.storid != null ? String(order.storid).trim() : '';
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: GCP_BASE + '/giveme-invoice/check?storid=' + encodeURIComponent(storid),
+                timeout: 8000,
+                onload: function(r) {
+                    try {
+                        const j = JSON.parse(r.responseText);
+                        if (j && j.configured === true) {
+                            setTimeout(() => openInvoiceModal(order), 100);
+                        }
+                    } catch (_) {}
+                },
+                onerror: function() {}
+            });
         } catch (_) {}
     }
 

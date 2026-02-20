@@ -215,6 +215,33 @@ function buildB2BBody(order, options, cred) {
   };
 }
 
+/**
+ * GET /giveme-invoice/check?storid=門市代號
+ * 回傳 { configured: true|false }，供前端決定是否顯示開立發票視窗。
+ */
+export async function handleGivemeInvoiceCheck(req, res) {
+  const u = new URL(req.url || '', 'http://localhost');
+  const storid = (u.searchParams.get('storid') || '').trim();
+  let configured = false;
+  if (LINE_STORE_SS_ID && storid) {
+    try {
+      const auth = await getAuth();
+      const cred = await getCredentialByStorid(auth, storid);
+      if (cred) configured = true;
+    } catch {
+      // configured 維持 false
+    }
+  }
+  if (!configured && GIVEME_UNCODE && GIVEME_IDNO && GIVEME_PASSWORD) {
+    configured = true;
+  }
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.end(JSON.stringify({ configured }));
+}
+
 export async function handleGivemeInvoice(req, res, { rawBody }) {
   let body;
   try {
