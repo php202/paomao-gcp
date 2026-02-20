@@ -259,6 +259,13 @@ export async function findAvailableSlotsAction(auth, params) {
     (byDateDutyoffs[ds] ||= []).push(d);
   }
 
+  // 與 GAS 一致：今天只顯示「現在 + 30 分鐘」之後的時段，已過時間不列出
+  const nowDate = new Date();
+  const todayStrTaiwan = formatYmdTz(nowDate);
+  const taiwanTimeStr = nowDate.toLocaleTimeString('en-GB', { timeZone: 'Asia/Taipei', hour12: false, hour: '2-digit', minute: '2-digit' });
+  const nowMinTaiwan = hhmmToMinutes(taiwanTimeStr);
+  const minStartTaiwan = nowMinTaiwan + 30;
+
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const data = [];
   for (let cur = new Date(start.getTime()); cur.getTime() <= end.getTime(); cur = new Date(cur.getTime() + ONE_DAY_MS)) {
@@ -303,6 +310,8 @@ export async function findAvailableSlotsAction(auth, params) {
         available = 4 - busy.size;
       }
       if (available >= needPeople) {
+        // 今天：只列出「現在 + 30 分鐘」之後的時段，已過時間不顯示
+        if (dateStr === todayStrTaiwan && checkStart < minStartTaiwan) continue;
         const hh = String(Math.floor(checkStart / 60)).padStart(2, '0');
         const mm = String(checkStart % 60).padStart(2, '0');
         times.push(`${hh}:${mm}`);
