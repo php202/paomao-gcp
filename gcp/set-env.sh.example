@@ -26,6 +26,12 @@ export PAO_CAT_SECRET_KEY=
 # GCP Core 對外網址（請款表單開發票用）：部署後從 Cloud Run 服務網址取得，結尾加 /core。PaoMao_Core 指令碼屬性 GCP_CORE_API_URL 設為此值、GCP_CORE_SECRET_KEY 與 PAO_CAT_SECRET_KEY 相同
 # export GCP_CORE_PUBLIC_URL=https://YOUR-SERVICE-xxxx.run.app/core
 
+# ----- Odoo（/core getOdooInvoice、請款表單開發票取明細）- 必填才會取得 Odoo 明細 -----
+# export ODOO_URL=https://your-company.odoo.com
+# export ODOO_DB=your-db
+# export ODOO_USERNAME=your-odoo-user
+# export ODOO_PASSWORD=your-odoo-password
+
 # Token 異常／查空位除錯時 LINE Push 通知管理員（check-token、store-line-webhook；使用員工打卡 bot 推播）
 # export ADMIN_LINE_USER_ID=Ud77845386e2e6b3ceb79331978289809   # 管理員 LINE User ID（須已加員工打卡 bot 為好友）
 # 選填：若仍要寄信可設

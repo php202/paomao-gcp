@@ -117,6 +117,10 @@ append_env_or_clear "GIVEME_PICTURE_PROXY_URL" "${GIVEME_PICTURE_PROXY_URL:-}"
 append_env "GIVEME_UNCODE" "$GIVEME_UNCODE"
 append_env "GIVEME_IDNO" "$GIVEME_IDNO"
 append_env "GIVEME_PASSWORD" "$GIVEME_PASSWORD"
+append_env "ODOO_URL" "$ODOO_URL"
+append_env "ODOO_DB" "$ODOO_DB"
+append_env "ODOO_USERNAME" "$ODOO_USERNAME"
+append_env "ODOO_PASSWORD" "$ODOO_PASSWORD"
 
 if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
   append_env "GOOGLE_APPLICATION_CREDENTIALS" "/secrets/sa-key.json"

@@ -7,8 +7,6 @@
 // @match        *://m.saydou.com/*
 // @match        *://saywebdatafeed.saydou.com/*
 // @grant        GM_xmlhttpRequest
-// @grant        GM_setValue
-// @grant        GM_getValue
 // ==/UserScript==
 
 (function() {

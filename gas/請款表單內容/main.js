@@ -308,6 +308,10 @@ function issueInvoiceViaCoreApi(storeInfo, odooNumber, buyType, items) {
   console.log('[issueInvoiceViaCoreApi] 回應 HTTP=%s bodyLen=%s bodyPreview=%s', responseCode, responseText ? responseText.length : 0, responseText ? responseText.slice(0, 200) : '');
   if (responseCode !== 200) {
     console.error('[issueInvoiceViaCoreApi] HTTP %s odooNumber=%s body=%s', responseCode, odoo, responseText ? responseText.slice(0, 600) : '');
+    if (responseCode === 504 || responseCode === 502 || responseCode === 503) {
+      var timeoutMsg = (responseText && responseText.indexOf('timeout') !== -1) ? 'Core API 逾時（Giveme 連線過久），請改設 GIVEME_PROXY_URL 或確認白名單' : (responseText || 'Gateway 逾時');
+      return { success: 'false', msg: timeoutMsg };
+    }
   }
   try {
     const parsed = JSON.parse(responseText);
@@ -324,7 +328,7 @@ function issueInvoiceViaCoreApi(storeInfo, odooNumber, buyType, items) {
     return parsed.data || parsed;
   } catch (parseErr) {
     console.error('[issueInvoiceViaCoreApi] JSON 解析失敗 odooNumber=%s error=%s body=%s', odoo, parseErr.message || '', responseText ? responseText.slice(0, 500) : '');
-    throw parseErr;
+    return { success: 'false', msg: 'Core API 回應異常（' + (responseCode === 504 ? '逾時' : responseCode) + '）：' + (responseText ? responseText.slice(0, 100) : parseErr.message || '') };
   }
 }
 

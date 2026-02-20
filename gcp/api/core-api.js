@@ -17,6 +17,7 @@ const ODOO_PASSWORD = (process.env.ODOO_PASSWORD || '').trim();
 
 const GIVEME_PROXY_URL = (process.env.GIVEME_PROXY_URL || '').trim(); // 選填，不設則直連 Giveme（需 Cloud Run 固定出口 IP 並填 Giveme 白名單）
 const GIVEME_B2C_URL = 'https://www.giveme.com.tw/invoice.do?action=addB2C';
+const GIVEME_B2B_URL = 'https://www.giveme.com.tw/invoice.do?action=addB2B'; // 請款表單開發票用
 const GIVEME_UNCODE = (process.env.GIVEME_UNCODE || '').trim();
 const GIVEME_IDNO = (process.env.GIVEME_IDNO || '').trim();
 const GIVEME_PASSWORD = (process.env.GIVEME_PASSWORD || '').trim();
@@ -216,6 +217,10 @@ function augmentValidStaffSetFromEvents(validStaffSet, reservations, dutyoffs, s
   }
 }
 
+/**
+ * 查空位（線上預約用）。邏輯已與 GAS 對齊且實測正常，請勿隨意修改。
+ * 含：台灣時區日期/星期、人力池含海每刻01/02、endtim 空格格式解析、今天只顯示「現在+30分」之後。
+ */
 export async function findAvailableSlotsAction(auth, params) {
   const sayId = String(params.sayId || '').trim();
   const startDate = String(params.startDate || '').trim();
@@ -559,6 +564,10 @@ async function getOdooInvoice(auth, id) {
   };
 }
 
+/**
+ * /core issueInvoice：請款表單開發票用，固定使用環境變數 GIVEME_*（建議填 storid=0001 的 M/N）。
+ * 篡改猴／門市開立發票走 /giveme-invoice，依 order.storid 從試算表拉該門市 M/N。
+ */
 async function issueInvoice({ storeInfo, odooNumber, buyType, items }) {
   const odoo = String(odooNumber ?? '');
   const company = storeInfo?.companyName ?? '';
@@ -594,13 +603,14 @@ async function issueInvoice({ storeInfo, odooNumber, buyType, items }) {
     items: safeItems.length ? JSON.stringify(safeItems) : undefined,
   };
 
-  const targetUrl = GIVEME_PROXY_URL || GIVEME_B2C_URL;
+  const targetUrl = GIVEME_PROXY_URL || GIVEME_B2B_URL;
+  const GIVEME_TIMEOUT_MS = 60000;
   try {
     const res = await fetch(targetUrl, {
       method: 'post',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(GIVEME_TIMEOUT_MS),
     });
     const text = await res.text();
     if (res.status !== 200) {
@@ -615,8 +625,12 @@ async function issueInvoice({ storeInfo, odooNumber, buyType, items }) {
     return { status: 'ok', data: json };
   } catch (e) {
     const errMsg = (e && e.message) ? e.message : String(e);
-    console.error('[issueInvoice] Giveme 請求異常 odooNumber=%s error=%s', odoo, errMsg);
-    return { status: 'ok', data: { success: 'false', msg: 'Giveme 連線異常: ' + errMsg } };
+    const isAborted = /aborted|timeout|ETIMEDOUT/i.test(errMsg);
+    console.error('[issueInvoice] Giveme 請求異常 odooNumber=%s error=%s target=%s', odoo, errMsg, targetUrl.replace(/key=.*/i, ''));
+    const userMsg = isAborted
+      ? 'Giveme 連線逾時或中斷（請確認 Giveme 白名單已加入 Cloud Run 固定出口 IP，或稍後再試）'
+      : 'Giveme 連線異常: ' + errMsg;
+    return { status: 'ok', data: { success: 'false', msg: userMsg } };
   }
 }
 

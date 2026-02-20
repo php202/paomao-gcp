@@ -29,6 +29,53 @@ const GIVEME_B2C_URL = 'https://www.giveme.com.tw/invoice.do?action=addB2C';
 const GIVEME_B2B_URL = 'https://www.giveme.com.tw/invoice.do?action=addB2B';
 const GIVEME_PICTURE_URL = 'https://www.giveme.com.tw/invoice.do?action=picture';
 
+/**
+ * 用 https.request + IPv4 agent 打 Giveme（不經 node-fetch，確保強制 IPv4）
+ * @returns {{ statusCode: number, json: object }}
+ */
+function postToGivemeHttps(url, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
+    let timer;
+    const req = https.request(
+      {
+        hostname: u.hostname,
+        port: u.port || 443,
+        path: u.pathname + u.search,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr, 'utf8') },
+        agent: GIVEME_HTTPS_AGENT,
+      },
+      (res) => {
+        clearTimeout(timer);
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let json;
+          try {
+            json = JSON.parse(text);
+          } catch {
+            json = { success: false, msg: text.slice(0, 300) };
+          }
+          resolve({ statusCode: res.statusCode || 200, json });
+        });
+      }
+    );
+    timer = setTimeout(() => {
+      req.destroy();
+      reject(new Error('The operation was aborted.'));
+    }, timeoutMs);
+    req.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    req.write(bodyStr, 'utf8');
+    req.end();
+  });
+}
+
 function md5Upper(text) {
   return crypto.createHash('md5').update(String(text), 'utf8').digest('hex').toUpperCase();
 }
@@ -292,6 +339,15 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
 
   console.log('[giveme-invoice]', reqId, 'start', { storid, type, totalFee, ordrsn: String(ordrsn).slice(0, 30) });
 
+  // 驗證 Cloud Run 出站 IP（VPC egress 須為「將所有流量路由至 VPC」+ Cloud NAT 固定 IP）
+  try {
+    const ipRes = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(3000) });
+    const ipData = await ipRes.json();
+    console.warn('[giveme-invoice]', reqId, '出站 IP (ipify):', ipData?.ip ?? ipRes.status);
+  } catch (e) {
+    console.warn('[giveme-invoice]', reqId, '出站 IP 查詢失敗:', e?.message ?? e);
+  }
+
   if (totalFee < 1) {
     send(res, 400, { success: false, msg: '總金額需大於 0' });
     return;
@@ -335,22 +391,29 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
   const postToGiveme = async (url, payload) => {
     const t0 = Date.now();
     const useIPv4 = url && String(url).includes('giveme.com.tw');
-    if (useIPv4) console.log('[giveme-invoice]', reqId, 'postToGiveme 使用 IPv4 連線');
+    if (useIPv4) console.warn('[giveme-invoice]', reqId, 'postToGiveme 使用 IPv4（https.request）');
     try {
-      const resG = await fetch(url, {
-        method: 'post',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(OPEN_TIMEOUT_MS),
-        ...(useIPv4 && { agent: GIVEME_HTTPS_AGENT }),
-      });
-      const text = await resG.text();
-      console.log('[giveme-invoice]', reqId, 'postToGiveme', resG.status, `${Date.now() - t0}ms`);
-      try {
-        return JSON.parse(text);
-      } catch {
-        return { success: false, msg: text.slice(0, 300) };
+      let json;
+      if (useIPv4) {
+        const { statusCode, json: j } = await postToGivemeHttps(url, payload, OPEN_TIMEOUT_MS);
+        json = j;
+        console.log('[giveme-invoice]', reqId, 'postToGiveme', statusCode, `${Date.now() - t0}ms`);
+      } else {
+        const resG = await fetch(url, {
+          method: 'post',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(OPEN_TIMEOUT_MS),
+        });
+        const text = await resG.text();
+        console.log('[giveme-invoice]', reqId, 'postToGiveme', resG.status, `${Date.now() - t0}ms`);
+        try {
+          json = JSON.parse(text);
+        } catch {
+          json = { success: false, msg: text.slice(0, 300) };
+        }
       }
+      return json;
     } catch (e) {
       console.warn('[giveme-invoice]', reqId, 'postToGiveme error', e?.message || e, `${Date.now() - t0}ms`);
       throw e;
@@ -435,8 +498,8 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
  */
 async function fetchInvoicePicture(cred, code, typeNum = '1') {
   const timeStamp = String(Date.now());
-  // 發票圖 API 簽名需含資源：timeStamp + idno + password + code + type（依 Giveme 驗證規則）
-  const signStr = timeStamp + cred.idno + cred.password + String(code) + String(typeNum);
+  // 發票圖 API 簽名：與開單一致 timeStamp + idno + password（若仍簽名失敗請依 Giveme 文件調整）
+  const signStr = timeStamp + cred.idno + cred.password;
   const sign = md5Upper(signStr);
   const body = {
     timeStamp,
