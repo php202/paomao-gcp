@@ -8,6 +8,7 @@ function onOpen() {
       .addItem('🚀 開發票（改由 GCP 執行）', 'gcp_issueInvoice')
       .addItem('🚀 產出勞報單（改由 GCP 執行）', 'gcp_createLaborReceipts')
       .addSeparator()
+      .addItem('🔍 檢查 Odoo 單號與開票連線', 'checkOdooNumberAndCoreApi')
       .addItem('🗑️ 刪除暫存工作表（改由 GCP 執行）', 'gcp_cleanupTempSheets')
       .addToUi();
 }
@@ -187,11 +188,16 @@ function cleanupTempSheets() {
 }
 
 /**
- * 若已設 PAO_CAT_CORE_API_URL、PAO_CAT_SECRET_KEY，則透過 Core API 取資料與開票；
- * 否則使用 Core 程式庫。Core API 網址請填「網路應用程式」部署網址（結尾 /exec）。
+ * 開發票與 getOdooInvoice 優先使用 GCP /core（GCP_CORE_API_URL + GCP_CORE_SECRET_KEY），
+ * 未設則用 GAS Core（PAO_CAT_CORE_API_URL + PAO_CAT_SECRET_KEY，結尾 /exec）。
  */
 function getCoreApiParams() {
   const p = PropertiesService.getScriptProperties();
+  const gcpUrl = (p.getProperty('GCP_CORE_API_URL') || '').trim();
+  const gcpKey = (p.getProperty('GCP_CORE_SECRET_KEY') || '').trim();
+  if (gcpUrl.length > 0 && gcpKey.length > 0) {
+    return { url: gcpUrl, key: gcpKey, useApi: true };
+  }
   const url = (p.getProperty('PAO_CAT_CORE_API_URL') || '').trim();
   const key = (p.getProperty('PAO_CAT_SECRET_KEY') || '').trim();
   return { url, key, useApi: url.length > 0 && key.length > 0 };
@@ -221,7 +227,42 @@ function fetchOdooInvoiceFromCoreApi(odooId) {
   return { data: null, error: msg };
 }
 
-/** 透過 Core API 開立發票（需已設 PAO_CAT_CORE_API_URL、PAO_CAT_SECRET_KEY） */
+/**
+ * 檢查 Odoo 單號與 Core API 連線（選單「🔍 檢查 Odoo 單號與開票連線」）。
+ * 可輸入一筆 Odoo 單號（須為 Odoo account.move 的數字 ID），會呼叫 getOdooInvoice 並顯示結果，用來確認欄位與 API 是否正確。
+ */
+function checkOdooNumberAndCoreApi() {
+  const { useApi } = getCoreApiParams();
+  if (!useApi) {
+    SpreadsheetApp.getUi().alert('請先設定 GCP_CORE_API_URL＋GCP_CORE_SECRET_KEY 或 PAO_CAT_CORE_API_URL＋PAO_CAT_SECRET_KEY。');
+    return;
+  }
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt('檢查 Odoo 單號', '請輸入 Odoo 單號（account.move 的數字 ID，例如 22718）：', ui.ButtonSet.OK_CANCEL);
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  const odooId = String(response.getResponseText() || '').trim();
+  if (!odooId) {
+    ui.alert('未輸入單號。');
+    return;
+  }
+  const result = fetchOdooInvoiceFromCoreApi(odooId);
+  if (result.data != null) {
+    const lines = result.data;
+    const summary = lines.length + ' 筆明細';
+    const detail = lines.slice(0, 5).map(function (l) {
+      return (l.name || '') + ' x' + (l.quantity || 0) + ' = ' + (l.price_subtotal || 0);
+    }).join('\n');
+    const more = lines.length > 5 ? '\n… 共 ' + lines.length + ' 筆' : '';
+    console.log('[checkOdooNumberAndCoreApi] odooId=%s %s', odooId, summary);
+    ui.alert('Odoo 單號 ' + odooId + ' 取得成功\n' + summary + '\n\n' + detail + more);
+  } else {
+    const err = result.error || '未知錯誤';
+    console.warn('[checkOdooNumberAndCoreApi] odooId=%s 失敗: %s', odooId, err);
+    ui.alert('Odoo 單號 ' + odooId + ' 取得失敗：\n' + err);
+  }
+}
+
+/** 透過 Core API 開立發票（需已設 GCP_CORE_* 或 PAO_CAT_*） */
 function issueInvoiceViaCoreApi(storeInfo, odooNumber, buyType, items) {
   const { url, key, useApi } = getCoreApiParams();
   if (!useApi) return null;
@@ -265,7 +306,11 @@ function issueInvoiceViaCoreApi(storeInfo, odooNumber, buyType, items) {
 /**
  * 開發票：由選單「🚀 開發票」呼叫。
  * 掃描「2026/ACH紀錄」：登陸ach＝true、有 Odoo 單號、發票號碼為空 的列。
- * 一律透過 Core API 拿取明細與開票（需設定 PAO_CAT_CORE_API_URL、PAO_CAT_SECRET_KEY）。
+ * 一律透過 Core API 拿取明細與開票（需設定 GCP_CORE_* 或 PAO_CAT_*）。
+ *
+ * 試算表「2026/ACH紀錄」欄位對應（開發票用）：
+ *   D(4)=店家代碼  E(5)=費用種類  K(11)=登陸ach  N(14)=發票號碼  O(15)=Odoo 單號  R(18)=錯誤訊息
+ * Odoo 單號（O 欄）須為 Odoo 的 account.move 的 ID（數字，如 22718），不是單據編號 ref。
  */
 function issueInvoice() {
   const ss = SpreadsheetApp.openById(PAYMENT_SS_ID);
@@ -276,7 +321,7 @@ function issueInvoice() {
   }
   const { useApi } = getCoreApiParams();
   if (!useApi) {
-    SpreadsheetApp.getUi().alert('請在指令碼屬性設定 PAO_CAT_CORE_API_URL 與 PAO_CAT_SECRET_KEY（開發票改由 Core API 執行）。');
+    SpreadsheetApp.getUi().alert('請在指令碼屬性設定 GCP_CORE_API_URL 與 GCP_CORE_SECRET_KEY（直連 GCP 開發票），或 PAO_CAT_CORE_API_URL 與 PAO_CAT_SECRET_KEY（經 GAS Core）。');
     return;
   }
 

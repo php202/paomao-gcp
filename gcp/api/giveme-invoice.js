@@ -352,6 +352,8 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
             if (pic.ok) {
               json.printImageBase64 = pic.base64;
               json.printImageContentType = pic.contentType;
+            } else {
+              console.warn('[giveme-invoice] fetchInvoicePicture 失敗:', pic.reason);
             }
           } catch (e) {
             console.warn('[giveme-invoice] fetchInvoicePicture:', e?.message || e);
@@ -376,6 +378,8 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
           if (pic.ok) {
             json.printImageBase64 = pic.base64;
             json.printImageContentType = pic.contentType;
+          } else {
+            console.warn('[giveme-invoice] fetchInvoicePicture 失敗:', pic.reason);
           }
         } catch (e) {
           console.warn('[giveme-invoice] fetchInvoicePicture:', e?.message || e);
@@ -395,8 +399,9 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
  */
 async function fetchInvoicePicture(cred, code, typeNum = '1') {
   const timeStamp = String(Date.now());
-  // 與開單 API 一致：簽名 = timeStamp + idno + password（Giveme 發票圖 API 驗證同此規則）
-  const sign = md5Upper(timeStamp + cred.idno + cred.password);
+  // 發票圖 API 簽名需含資源：timeStamp + idno + password + code + type（依 Giveme 驗證規則）
+  const signStr = timeStamp + cred.idno + cred.password + String(code) + String(typeNum);
+  const sign = md5Upper(signStr);
   const body = {
     timeStamp,
     uncode: cred.uncode,

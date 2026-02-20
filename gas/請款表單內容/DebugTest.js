@@ -29,13 +29,17 @@ function runDebugTest() {
       results.ok = false;
     }
 
-    // 指令碼屬性（開發票與 getBankInfoMap 需 Core API）
+    // 指令碼屬性：開發票優先用 GCP_CORE_*（直連 GCP），否則 PAO_CAT_*（GAS Core）
     const p = PropertiesService.getScriptProperties();
-    const hasUrl = (p.getProperty('PAO_CAT_CORE_API_URL') || '').trim().length > 0;
-    const hasKey = (p.getProperty('PAO_CAT_SECRET_KEY') || '').trim().length > 0;
-    results.checks.push({ name: 'PAO_CAT_CORE_API_URL 已設定', ok: hasUrl });
-    results.checks.push({ name: 'PAO_CAT_SECRET_KEY 已設定', ok: hasKey });
-    if (!hasUrl || !hasKey) results.ok = false;
+    const gcpUrl = (p.getProperty('GCP_CORE_API_URL') || '').trim().length > 0;
+    const gcpKey = (p.getProperty('GCP_CORE_SECRET_KEY') || '').trim().length > 0;
+    const gasUrl = (p.getProperty('PAO_CAT_CORE_API_URL') || '').trim().length > 0;
+    const gasKey = (p.getProperty('PAO_CAT_SECRET_KEY') || '').trim().length > 0;
+    const coreApiOk = (gcpUrl && gcpKey) || (gasUrl && gasKey);
+    results.checks.push({ name: 'GCP_CORE_API_URL 或 PAO_CAT_CORE_API_URL 已設定', ok: gcpUrl || gasUrl });
+    results.checks.push({ name: 'GCP_CORE_SECRET_KEY 或 PAO_CAT_SECRET_KEY 已設定', ok: gcpKey || gasKey });
+    results.checks.push({ name: 'Core API 可開票（任一一組完整）', ok: coreApiOk });
+    if (!coreApiOk) results.ok = false;
 
     if (typeof getCoreApiParams === 'function') results.checks.push({ name: 'getCoreApiParams', ok: true });
     if (typeof fetchOdooInvoiceFromCoreApi === 'function') results.checks.push({ name: 'fetchOdooInvoiceFromCoreApi', ok: true });
