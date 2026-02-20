@@ -24,13 +24,20 @@ export DAILY_REPORT_CRON="10 0 * * *"
 export PAO_CAT_CORE_API_URL=
 export PAO_CAT_SECRET_KEY=
 
-# 查空位除錯時寄信給管理員（store-line-webhook；選填，有設才會寄信）
+# Token 異常／查空位除錯時 LINE Push 通知管理員（check-token、store-line-webhook；使用員工打卡 bot 推播）
+# export ADMIN_LINE_USER_ID=Ud77845386e2e6b3ceb79331978289809   # 管理員 LINE User ID（須已加員工打卡 bot 為好友）
+# 選填：若仍要寄信可設
 # export ADMIN_EMAIL=paopaomao.of@gmail.com
 # export GMAIL_USER=paopaomao.of@gmail.com
 # export GMAIL_APP_PASSWORD=xxxx   # Gmail 應用程式密碼（兩步驟驗證後產生）
 
 # 店家本月出勤 403 時可設：Secret Manager 密碼名稱（見 docs/店家本月出勤_改用金鑰建立試算表.md）
 # export SA_KEY_SECRET_NAME=pao-sheets-sa-key
+
+# ----- Giveme 電子發票（/giveme-invoice：Saydou 結帳同步開單，GCP 直連、IP 白名單開在 GCP）-----
+# export GIVEME_UNCODE=   # 貴司統一編號
+# export GIVEME_IDNO=     # API 帳號
+# export GIVEME_PASSWORD= # API 密碼
 
 # ----- 門市預約表單 PAOPAO（/paopao-line-webhook）- 必填才會收訊與回覆 -----
 export PAOPAO_STORE_SS_ID=   # 門市預約表單試算表 ID（與 GAS Config.js 同）

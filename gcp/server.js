@@ -20,6 +20,8 @@ import { handlePaopaoWebhook } from './api/paopao-webhook.js';
 import { handleAdmin } from './api/admin-api.js';
 import { handleReportApi } from './api/report-api.js';
 import { handleCustomerApi } from './api/customer-api.js';
+import { handleSaydouTokenSync } from './api/saydou-token-sync.js';
+import { handleGivemeInvoice } from './api/giveme-invoice.js';
 import { appendWebhookError } from './lib/webhook-error-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -330,6 +332,45 @@ export function startServer() {
         })();
       }
       await handleStores(req, res, { authClient, url: fullUrl, bodyJson });
+      return;
+    }
+
+    if (method === 'GET' && url === '/saydou-token') {
+      send(res, 200, { status: 'ok', message: 'SayDou Token Sync endpoint. Use POST with JSON body { token }.' });
+      return;
+    }
+    if (method === 'POST' && url === '/saydou-token') {
+      const rawBody = await parseBody(req);
+      await handleSaydouTokenSync(req, res, { rawBody });
+      return;
+    }
+
+    if (url === '/giveme-invoice') {
+      if (method === 'OPTIONS') {
+        res.writeHead(204, {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Max-Age': '86400',
+        });
+        res.end();
+        return;
+      }
+      if (method === 'GET') {
+        send(res, 200, {
+          usage: 'POST JSON: { order, options }',
+          order: 'Saydou order 或含 ordds[], price_/rprice, date, ordrsn, memnam, remark',
+          options: { type: 'B2C|B2B', phone: '手機條碼(例/1234567)', orderCode: '編號載具', companyTaxId: 'B2B買方統編' },
+          example: { order: { ordds: [{ godnam: '測試', rprice: 10, amount: 1 }], rprice: 10, date: '2026-02-20', ordrsn: 'TEST001' }, options: { type: 'B2C' } },
+        });
+        return;
+      }
+      if (method === 'POST') {
+        const rawBody = await parseBody(req);
+        await handleGivemeInvoice(req, res, { rawBody });
+        return;
+      }
+      send(res, 405, { success: false, msg: 'Method not allowed' });
       return;
     }
 

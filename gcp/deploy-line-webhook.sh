@@ -34,7 +34,9 @@ cd "$(dirname "$0")"
 : "${GAS_WEBHOOK_URL:=}"
 : "${FORWARD_UNKNOWN_TO_GAS:=0}"
 : "${WEBHOOK_LOG_VERBOSE:=1}"
-# 查空位除錯時寄信給管理員（需 GMAIL_USER、GMAIL_APP_PASSWORD）
+# Token 異常／查空位除錯時 LINE Push 通知管理員（需 ADMIN_LINE_USER_ID；使用 LINE_TOKEN_PAOSTAFF 推播）
+: "${ADMIN_LINE_USER_ID:=}"
+# 選填：若仍要寄信可設 GMAIL_*
 : "${ADMIN_EMAIL:=}"
 : "${GMAIL_USER:=}"
 : "${GMAIL_APP_PASSWORD:=}"
@@ -95,9 +97,13 @@ append_env "CUSTOMER_TOKEN_SECRET" "$CUSTOMER_TOKEN_SECRET"
 append_env "GAS_WEBHOOK_URL" "$GAS_WEBHOOK_URL"
 append_env "FORWARD_UNKNOWN_TO_GAS" "$FORWARD_UNKNOWN_TO_GAS"
 append_env "WEBHOOK_LOG_VERBOSE" "$WEBHOOK_LOG_VERBOSE"
+append_env "ADMIN_LINE_USER_ID" "$ADMIN_LINE_USER_ID"
 append_env "ADMIN_EMAIL" "$ADMIN_EMAIL"
 append_env "GMAIL_USER" "$GMAIL_USER"
 append_env "GMAIL_APP_PASSWORD" "$GMAIL_APP_PASSWORD"
+append_env "GIVEME_UNCODE" "$GIVEME_UNCODE"
+append_env "GIVEME_IDNO" "$GIVEME_IDNO"
+append_env "GIVEME_PASSWORD" "$GIVEME_PASSWORD"
 
 if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
   append_env "GOOGLE_APPLICATION_CREDENTIALS" "/secrets/sa-key.json"
