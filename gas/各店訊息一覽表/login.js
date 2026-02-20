@@ -68,13 +68,17 @@ function doGet(e) {
       case 'replyMessage':
         return replyMessage(e);
       case 'getSlots':
-        return getSlots(e);
+        // 查詢空位已改由 GCP 提供（LINE 線上預約、stores-api 皆走 GCP），GAS 入口停用
+        // return getSlots(e);
+        return Core.jsonResponse({ status: 'moved', message: '查詢空位已改由 GCP 提供，請使用各店 LINE 或 GCP API。' });
       case 'checkMember':
         return checkMember(e);
       case 'createBooking':
         return createBooking(e);
       case 'searchAvailability':
-        return searchAvailability(e);
+        // 查詢空位已改由 GCP 提供，GAS 入口停用
+        // return searchAvailability(e);
+        return Core.jsonResponse({ status: 'moved', message: '查詢空位已改由 GCP 提供，請使用各店 LINE 或 GCP API。' });
       case 'getTomorrowBriefing':
         return getTomorrowBriefingAction(e);
       case 'getTomorrowReservationList':

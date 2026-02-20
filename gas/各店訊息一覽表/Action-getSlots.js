@@ -1,9 +1,15 @@
-/** doGet action=searchAvailability 與 getSlots 行為相同（查空位），委派給 getSlots */
+/** doGet action=searchAvailability 與 getSlots 行為相同（查空位），委派給 getSlots。
+ * 【已停用】查詢空位已改由 GCP 提供（store-line-webhook / stores-api），此 GAS 入口不再使用。
+ */
 function searchAvailability(e) {
-  return getSlots(e);
+  return Core.jsonResponse({ status: 'moved', message: '查詢空位已改由 GCP 提供，請使用各店 LINE 或 GCP API。' });
+  // return getSlots(e);
 }
 
+/** 【已停用】查詢空位已改由 GCP 提供。保留 getSlots 本體供內部 cleanData 等邏輯參考，doGet 入口已改回傳 moved。 */
 function getSlots(e) {
+  return Core.jsonResponse({ status: 'moved', message: '查詢空位已改由 GCP 提供，請使用各店 LINE 或 GCP API。' });
+  // --- 以下為原查空位邏輯（已不由 doGet 呼叫）---
   var props = PropertiesService.getScriptProperties();
   var ssId = props.getProperty('GETSLOTS_SS_ID') || props.getProperty('ERROR_LOG_SS_ID')
     || (typeof CONFIG !== 'undefined' && CONFIG.INTEGRATED_SHEET_SS_ID)
