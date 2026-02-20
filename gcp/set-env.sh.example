@@ -37,6 +37,8 @@ export PAO_CAT_SECRET_KEY=
 # ----- Giveme 電子發票（/giveme-invoice：Saydou 結帳同步開單）-----
 # 若使用 VM 中繼站（白名單用中繼站 IP），設 GIVEME_PROXY_URL 後開單會改打中繼站
 # export GIVEME_PROXY_URL=http://136.115.207.151:8080/invoice
+# 發票圖片（列印）API 若被 Giveme 擋 IP，可設 GIVEME_PICTURE_PROXY_URL 經 VM 轉發（VM 需有轉 action=picture 的端點）
+# export GIVEME_PICTURE_PROXY_URL=http://136.115.207.151:8080/invoice-picture
 # export GIVEME_UNCODE=   # 貴司統一編號（fallback，各店以試算表 M/N 為主）
 # export GIVEME_IDNO=     # API 帳號
 # export GIVEME_PASSWORD= # API 密碼

@@ -3,6 +3,7 @@
  * 供 Tampermonkey（Saydou 結帳同步）或測試端 POST 呼叫。
  * 依 order.storid 從試算表「店家基本資料」M 欄（帳號密碼）、N 欄（統一編號）讀取憑證；找不到則用環境變數。
  * 若設 GIVEME_PROXY_URL（VM 中繼站），則改打中繼站，由中繼站轉 Giveme（白名單用中繼站 IP）。
+ * 發票圖片（列印）若被 Giveme 擋 IP，可設 GIVEME_PICTURE_PROXY_URL 經 VM 轉發。
  */
 
 import crypto from 'crypto';
@@ -12,6 +13,7 @@ import { readSheet } from '../lib/sheets.js';
 
 const LINE_STORE_SS_ID = (process.env.LINE_STORE_SS_ID || process.env.INTEGRATED_SHEET_SS_ID || '').trim();
 const GIVEME_PROXY_URL = (process.env.GIVEME_PROXY_URL || '').trim();
+const GIVEME_PICTURE_PROXY_URL = (process.env.GIVEME_PICTURE_PROXY_URL || '').trim();
 const GIVEME_UNCODE = (process.env.GIVEME_UNCODE || '').trim();
 const GIVEME_IDNO = (process.env.GIVEME_IDNO || '').trim();
 const GIVEME_PASSWORD = (process.env.GIVEME_PASSWORD || '').trim();
@@ -388,9 +390,10 @@ async function fetchInvoicePicture(cred, code, typeNum = '1') {
     code,
     type: typeNum,
   };
+  const pictureUrl = GIVEME_PICTURE_PROXY_URL || GIVEME_PICTURE_URL;
   let response;
   try {
-    response = await fetch(GIVEME_PICTURE_URL, {
+    response = await fetch(pictureUrl, {
       method: 'post',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
