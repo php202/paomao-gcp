@@ -1,15 +1,19 @@
 /**
  * Giveme 電子發票開單 API（篡改猴／門市開立發票用）
  * 供 Tampermonkey（Saydou 結帳同步）或測試端 POST 呼叫。
- * 依 order.storid（訂單門市 id）從試算表「店家基本資料」拉該門市的 M 欄（帳號密碼）、N 欄（統一編號）；找不到則 fallback 環境變數。
- * 僅 /core issueInvoice（請款表單開發票）固定用 storid=0001 的 env GIVEME_*，本 API 一律用訂單的 storid。
- * 若設 GIVEME_PROXY_URL（VM 中繼站），則改打中繼站；發票圖片可設 GIVEME_PICTURE_PROXY_URL。
+ * 依 order.storid 從試算表「店家基本資料」M/N 欄取憑證；找不到則 fallback 環境變數。
+ * 架構：直連 Giveme 時強制 IPv4（與 VM 中繼一致），避免 Cloud Run 走 IPv6 導致連線慢／逾時。
+ * 若仍逾時可改設 GIVEME_PROXY_URL 指向 VM 中繼（見 invoice-proxy/）。
  */
 
 import crypto from 'crypto';
+import https from 'node:https';
 import fetch from 'node-fetch';
 import { getAuth } from '../lib/auth.js';
 import { readSheet } from '../lib/sheets.js';
+
+// 與 VM 中繼一致：強制 IPv4 連線，避免 Cloud Run 走 IPv6 導致 Giveme 連線慢或逾時
+const GIVEME_HTTPS_AGENT = new https.Agent({ family: 4 });
 
 const LINE_STORE_SS_ID = (process.env.LINE_STORE_SS_ID || process.env.INTEGRATED_SHEET_SS_ID || '').trim();
 const GIVEME_PROXY_URL = (process.env.GIVEME_PROXY_URL || '').trim();
@@ -330,12 +334,15 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
 
   const postToGiveme = async (url, payload) => {
     const t0 = Date.now();
+    const useIPv4 = url && String(url).includes('giveme.com.tw');
+    if (useIPv4) console.log('[giveme-invoice]', reqId, 'postToGiveme 使用 IPv4 連線');
     try {
       const resG = await fetch(url, {
         method: 'post',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(OPEN_TIMEOUT_MS),
+        ...(useIPv4 && { agent: GIVEME_HTTPS_AGENT }),
       });
       const text = await resG.text();
       console.log('[giveme-invoice]', reqId, 'postToGiveme', resG.status, `${Date.now() - t0}ms`);
@@ -440,6 +447,7 @@ async function fetchInvoicePicture(cred, code, typeNum = '1') {
     type: typeNum,
   };
   const pictureUrl = GIVEME_PICTURE_PROXY_URL || GIVEME_PICTURE_URL;
+  const useIPv4 = pictureUrl && String(pictureUrl).includes('giveme.com.tw');
   let response;
   try {
     response = await fetch(pictureUrl, {
@@ -447,6 +455,7 @@ async function fetchInvoicePicture(cred, code, typeNum = '1') {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
+      ...(useIPv4 && { agent: GIVEME_HTTPS_AGENT }),
     });
   } catch (e) {
     const reason = e?.message || '連線 Giveme 失敗';
