@@ -34,14 +34,17 @@ export PAO_CAT_SECRET_KEY=
 # 店家本月出勤 403 時可設：Secret Manager 密碼名稱（見 docs/店家本月出勤_改用金鑰建立試算表.md）
 # export SA_KEY_SECRET_NAME=pao-sheets-sa-key
 
-# ----- Giveme 電子發票（/giveme-invoice：Saydou 結帳同步開單）-----
-# 若使用 VM 中繼站（白名單用中繼站 IP），設 GIVEME_PROXY_URL 後開單會改打中繼站
-# export GIVEME_PROXY_URL=http://136.115.207.151:8080/invoice
-# 發票圖片（列印）API 若被 Giveme 擋 IP，可設 GIVEME_PICTURE_PROXY_URL 經 VM 轉發（VM 需有轉 action=picture 的端點）
-# export GIVEME_PICTURE_PROXY_URL=http://136.115.207.151:8080/invoice-picture
-# export GIVEME_UNCODE=   # 貴司統一編號（fallback，各店以試算表 M/N 為主）
-# export GIVEME_IDNO=     # API 帳號
+# ----- Giveme 電子發票（/giveme-invoice、/core issueInvoice、發票圖）-----
+# 建議：用 Cloud Run 固定出口 IP（scripts/setup-static-egress.sh + EGRESS_*），Giveme 白名單只填該 IP，不設 PROXY
+# 若仍用 VM 中繼：設 GIVEME_PROXY_URL、GIVEME_PICTURE_PROXY_URL
+# export GIVEME_PROXY_URL=http://VM_IP:8080/invoice
+# export GIVEME_PICTURE_PROXY_URL=http://VM_IP:8080/invoice-picture
+# export GIVEME_UNCODE=   # 貴司統一編號（fallback；各店以試算表 M/N 為主）
+# export GIVEME_IDNO=     # API 帳號（issueInvoice 必填）
 # export GIVEME_PASSWORD= # API 密碼
+# Cloud Run 固定出口 IP（先執行 scripts/setup-static-egress.sh，再設下方兩項後部署；Giveme 白名單填該腳本輸出的 IP）
+# export EGRESS_NETWORK=default
+# export EGRESS_SUBNET=default
 
 # ----- 門市預約表單 PAOPAO（/paopao-line-webhook）- 必填才會收訊與回覆 -----
 export PAOPAO_STORE_SS_ID=   # 門市預約表單試算表 ID（與 GAS Config.js 同）

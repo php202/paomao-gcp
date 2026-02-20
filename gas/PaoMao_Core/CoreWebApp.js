@@ -664,14 +664,26 @@ function actionIssueInvoice(params) {
   var odooNumber = (params.odooNumber != null) ? String(params.odooNumber) : "";
   var buyType = (params.buyType != null) ? String(params.buyType) : "請款";
   var items = params.items;
+  var company = (storeInfo && storeInfo.companyName) ? String(storeInfo.companyName) : "";
+  var itemCount = Array.isArray(items) ? items.length : 0;
+  console.log("[actionIssueInvoice] odooNumber=%s buyType=%s company=%s items=%s", odooNumber, buyType, company, itemCount);
   if (!storeInfo || !Array.isArray(items)) {
+    console.warn("[actionIssueInvoice] 參數不足 storeInfo=%s items=%s", !!storeInfo, Array.isArray(items) ? items.length : "non-array");
     return jsonOut({ status: "error", message: "請提供 storeInfo 與 items 陣列" });
   }
   try {
     var result = issueInvoice(storeInfo, odooNumber, buyType, items);
+    if (result && result.success === "true") {
+      console.log("[actionIssueInvoice] 成功 odooNumber=%s code=%s", odooNumber, result.code || "");
+    } else {
+      console.warn("[actionIssueInvoice] 回傳非成功 odooNumber=%s success=%s msg=%s", odooNumber, (result && result.success) || "", (result && result.msg) || "");
+    }
     return jsonOut(result || { success: "false", msg: "無回傳" });
   } catch (err) {
-    return jsonOut({ success: "false", msg: (err && err.message) ? err.message : String(err) });
+    var errMsg = (err && err.message) ? err.message : String(err);
+    var errStack = (err && err.stack) ? err.stack.slice(0, 500) : "";
+    console.error("[actionIssueInvoice] 異常 odooNumber=%s error=%s stack=%s", odooNumber, errMsg, errStack);
+    return jsonOut({ success: "false", msg: errMsg });
   }
 }
 

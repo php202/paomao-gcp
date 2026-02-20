@@ -225,16 +225,41 @@ function fetchOdooInvoiceFromCoreApi(odooId) {
 function issueInvoiceViaCoreApi(storeInfo, odooNumber, buyType, items) {
   const { url, key, useApi } = getCoreApiParams();
   if (!useApi) return null;
+  const odoo = String(odooNumber || '');
+  const company = (storeInfo && storeInfo.companyName) ? String(storeInfo.companyName) : '';
+  const itemCount = Array.isArray(items) ? items.length : 0;
+  console.log('[issueInvoiceViaCoreApi] 請求 odooNumber=%s buyType=%s company=%s items=%s', odoo, String(buyType || '請款'), company, itemCount);
   const payload = JSON.stringify({
     key: key,
     action: 'issueInvoice',
     storeInfo: storeInfo,
-    odooNumber: String(odooNumber || ''),
+    odooNumber: odoo,
     buyType: String(buyType || '請款'),
     items: items
   });
   const res = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: payload, muteHttpExceptions: true });
-  return JSON.parse(res.getContentText());
+  const responseCode = res.getResponseCode();
+  const responseText = res.getContentText();
+  if (responseCode !== 200) {
+    console.error('[issueInvoiceViaCoreApi] HTTP %s odooNumber=%s body=%s', responseCode, odoo, responseText ? responseText.slice(0, 600) : '');
+  }
+  try {
+    const parsed = JSON.parse(responseText);
+    if (parsed && parsed.status === 'ok' && parsed.data) {
+      const d = parsed.data;
+      if (d.success === 'true') {
+        console.log('[issueInvoiceViaCoreApi] 成功 odooNumber=%s code=%s', odoo, d.code || '');
+      } else {
+        console.warn('[issueInvoiceViaCoreApi] 回傳非成功 odooNumber=%s success=%s msg=%s', odoo, d.success || '', d.msg || '');
+      }
+      return d;
+    }
+    console.warn('[issueInvoiceViaCoreApi] 回傳格式非常規 odooNumber=%s status=%s raw=%s', odoo, parsed.status || '', responseText.slice(0, 300));
+    return parsed.data || parsed;
+  } catch (parseErr) {
+    console.error('[issueInvoiceViaCoreApi] JSON 解析失敗 odooNumber=%s error=%s body=%s', odoo, parseErr.message || '', responseText ? responseText.slice(0, 500) : '');
+    throw parseErr;
+  }
 }
 
 /**
@@ -304,10 +329,11 @@ function issueInvoice() {
       });
 
     if (items.length === 0) {
-      console.error('無有效品項，跳過開票。');
+      console.error('[issueInvoice] 列 %s 無有效品項，跳過開票 storeCode=%s odooNumber=%s', i + 1, storeCode, odooNumber);
       continue;
     }
 
+    console.log('[issueInvoice] 列 %s 開始開票 storeCode=%s odooNumber=%s buytype=%s items=%s', i + 1, storeCode, odooNumber, buytype, items.length);
     sheet.getRange(i + 1, 14).setValue('B2B開票中...');
     SpreadsheetApp.flush();
 
@@ -316,16 +342,19 @@ function issueInvoice() {
       if (result && result.success === 'true') {
         sheet.getRange(i + 1, 14).setValue(result.code || '');
         sheet.getRange(i + 1, 18).setValue(''); // 成功時清空 R 欄錯誤訊息
-        console.log(`成功開立發票：${result.code}`);
+        console.log('[issueInvoice] 列 %s 成功開立發票 code=%s odooNumber=%s', i + 1, result.code || '', odooNumber);
       } else {
         sheet.getRange(i + 1, 14).setValue('');
         const failMsg = (result && result.msg != null && String(result.msg).trim() !== '') ? String(result.msg) : '開立發票失敗';
         sheet.getRange(i + 1, 18).setValue('失敗：' + failMsg);
+        console.error('[issueInvoice] 列 %s 開票失敗 storeCode=%s odooNumber=%s success=%s msg=%s result=%s',
+          i + 1, storeCode, odooNumber, (result && result.success) || '', (result && result.msg) || '', JSON.stringify(result || {}).slice(0, 400));
       }
     } catch (e) {
       sheet.getRange(i + 1, 14).setValue('');
       sheet.getRange(i + 1, 18).setValue('中繼站連線異常');
-      console.error('issueInvoice 異常：' + e.message);
+      console.error('[issueInvoice] 列 %s 異常 storeCode=%s odooNumber=%s error=%s stack=%s',
+        i + 1, storeCode, odooNumber, e.message || String(e), (e.stack || '').slice(0, 500));
     }
   }
 }

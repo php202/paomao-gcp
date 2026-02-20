@@ -15,7 +15,8 @@ const ODOO_DB = (process.env.ODOO_DB || '').trim();
 const ODOO_USERNAME = (process.env.ODOO_USERNAME || '').trim();
 const ODOO_PASSWORD = (process.env.ODOO_PASSWORD || '').trim();
 
-const GIVEME_PROXY_URL = (process.env.GIVEME_PROXY_URL || '').trim(); // VM proxy URL
+const GIVEME_PROXY_URL = (process.env.GIVEME_PROXY_URL || '').trim(); // 選填，不設則直連 Giveme（需 Cloud Run 固定出口 IP 並填 Giveme 白名單）
+const GIVEME_B2C_URL = 'https://www.giveme.com.tw/invoice.do?action=addB2C';
 const GIVEME_UNCODE = (process.env.GIVEME_UNCODE || '').trim();
 const GIVEME_IDNO = (process.env.GIVEME_IDNO || '').trim();
 const GIVEME_PASSWORD = (process.env.GIVEME_PASSWORD || '').trim();
@@ -509,15 +510,21 @@ async function getOdooInvoice(auth, id) {
 }
 
 async function issueInvoice({ storeInfo, odooNumber, buyType, items }) {
-  if (!GIVEME_PROXY_URL || !GIVEME_IDNO || !GIVEME_PASSWORD || !GIVEME_UNCODE) {
-    return { status: 'error', message: 'Giveme 設定未完成（GIVEME_PROXY_URL/UNCODE/IDNO/PASSWORD）' };
-  }
+  const odoo = String(odooNumber ?? '');
+  const company = storeInfo?.companyName ?? '';
   const safeItems = Array.isArray(items) ? items : [];
+  const itemCount = safeItems.length;
+  console.log('[issueInvoice] 請求 odooNumber=%s buyType=%s company=%s items=%s', odoo, String(buyType || ''), company, itemCount);
+
+  if (!GIVEME_IDNO || !GIVEME_PASSWORD || !GIVEME_UNCODE) {
+    console.error('[issueInvoice] Giveme 設定未完成');
+    return { status: 'error', message: 'Giveme 設定未完成（GIVEME_UNCODE/IDNO/PASSWORD）' };
+  }
   const totalAmount = safeItems.reduce((sum, item) => sum + Number(item.money || 0) * Number(item.number || 0), 0);
   const sales = Math.round(totalAmount / 1.05);
   const taxAmount = totalAmount - sales;
   const timeStamp = Date.now().toString();
-  const finalContent = odooNumber ? `${buyType} (單號:${odooNumber})` : String(buyType || '');
+  const finalContent = odoo ? `${buyType} (單號:${odoo})` : String(buyType || '');
   const sign = md5Upper(timeStamp + GIVEME_IDNO + GIVEME_PASSWORD);
 
   const payload = {
@@ -537,15 +544,30 @@ async function issueInvoice({ storeInfo, odooNumber, buyType, items }) {
     items: safeItems.length ? JSON.stringify(safeItems) : undefined,
   };
 
-  const res = await fetch(GIVEME_PROXY_URL, {
-    method: 'post',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(30000),
-  });
-  const text = await res.text();
-  const json = safeJsonParse(text) || { success: 'false', msg: text.slice(0, 200) };
-  return { status: 'ok', data: json };
+  const targetUrl = GIVEME_PROXY_URL || GIVEME_B2C_URL;
+  try {
+    const res = await fetch(targetUrl, {
+      method: 'post',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30000),
+    });
+    const text = await res.text();
+    if (res.status !== 200) {
+      console.error('[issueInvoice] Giveme HTTP %s odooNumber=%s body=%s', res.status, odoo, text ? text.slice(0, 500) : '');
+    }
+    const json = safeJsonParse(text) || { success: 'false', msg: text.slice(0, 200) };
+    if (json.success === 'true') {
+      console.log('[issueInvoice] 成功 odooNumber=%s code=%s', odoo, json.code || '');
+    } else {
+      console.warn('[issueInvoice] Giveme 回傳非成功 odooNumber=%s success=%s msg=%s', odoo, json.success || '', json.msg || text.slice(0, 300));
+    }
+    return { status: 'ok', data: json };
+  } catch (e) {
+    const errMsg = (e && e.message) ? e.message : String(e);
+    console.error('[issueInvoice] Giveme 請求異常 odooNumber=%s error=%s', odoo, errMsg);
+    return { status: 'ok', data: { success: 'false', msg: 'Giveme 連線異常: ' + errMsg } };
+  }
 }
 
 async function storeList(auth) {
@@ -567,10 +589,10 @@ export async function handleCore(req, res, { authClient, url, bodyJson }) {
     return;
   }
 
-  if (!requireKey(url.searchParams, res)) return;
-
   const method = req.method || 'GET';
   const params = method === 'POST' && bodyJson && typeof bodyJson === 'object' ? bodyJson : Object.fromEntries(url.searchParams.entries());
+  const keySource = method === 'POST' && params && typeof params.key === 'string' ? new URLSearchParams({ key: params.key }) : url.searchParams;
+  if (!requireKey(keySource, res)) return;
   const finalAction = (params.action || action || 'token').trim();
 
   try {
