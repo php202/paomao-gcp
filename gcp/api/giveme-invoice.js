@@ -1,7 +1,8 @@
 /**
- * Giveme 電子發票開單 API（GCP 直連，IP 白名單已開在 GCP）
+ * Giveme 電子發票開單 API
  * 供 Tampermonkey（Saydou 結帳同步）或測試端 POST 呼叫。
  * 依 order.storid 從試算表「店家基本資料」M 欄（帳號密碼）、N 欄（統一編號）讀取憑證；找不到則用環境變數。
+ * 若設 GIVEME_PROXY_URL（VM 中繼站），則改打中繼站，由中繼站轉 Giveme（白名單用中繼站 IP）。
  */
 
 import crypto from 'crypto';
@@ -10,6 +11,7 @@ import { getAuth } from '../lib/auth.js';
 import { readSheet } from '../lib/sheets.js';
 
 const LINE_STORE_SS_ID = (process.env.LINE_STORE_SS_ID || process.env.INTEGRATED_SHEET_SS_ID || '').trim();
+const GIVEME_PROXY_URL = (process.env.GIVEME_PROXY_URL || '').trim();
 const GIVEME_UNCODE = (process.env.GIVEME_UNCODE || '').trim();
 const GIVEME_IDNO = (process.env.GIVEME_IDNO || '').trim();
 const GIVEME_PASSWORD = (process.env.GIVEME_PASSWORD || '').trim();
@@ -19,6 +21,7 @@ let credCache = { storid: null, cred: null, expiresAt: 0 };
 
 const GIVEME_B2C_URL = 'https://www.giveme.com.tw/invoice.do?action=addB2C';
 const GIVEME_B2B_URL = 'https://www.giveme.com.tw/invoice.do?action=addB2B';
+const GIVEME_PICTURE_URL = 'https://www.giveme.com.tw/invoice.do?action=picture';
 
 function md5Upper(text) {
   return crypto.createHash('md5').update(String(text), 'utf8').digest('hex').toUpperCase();
@@ -110,6 +113,41 @@ async function getCredentialByStorid(auth, storid) {
     const cred = { uncode, idno, password };
     credCache = { storid: needle, cred, expiresAt: now + CRED_CACHE_TTL_MS };
     return cred;
+  }
+  return null;
+}
+
+/**
+ * 依 uncode（統一編號）從試算表找該店 Giveme 憑證（用於列印時查詢）
+ */
+async function getCredentialByUncode(auth, uncode) {
+  if (!LINE_STORE_SS_ID || !uncode) return null;
+  const needle = String(uncode).trim();
+  const rows = await readSheet(auth, LINE_STORE_SS_ID, "'店家基本資料'!A:N");
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (String(row[13] ?? '').trim() !== needle) continue;
+    const mCell = String(row[12] ?? '').trim();
+    if (!mCell) continue;
+    let idno = '';
+    let password = '';
+    try {
+      const parsed = JSON.parse(mCell);
+      if (parsed && typeof parsed.idno === 'string' && typeof parsed.password === 'string') {
+        idno = parsed.idno.trim();
+        password = parsed.password.trim();
+      }
+    } catch {
+      const parts = mCell.split(/[,|]/).map((s) => s.trim());
+      if (parts.length >= 2) {
+        idno = parts[0];
+        password = parts[1];
+      }
+    }
+    if (idno && password) return { uncode: needle, idno, password };
+  }
+  if (GIVEME_UNCODE === needle && GIVEME_IDNO && GIVEME_PASSWORD) {
+    return { uncode: GIVEME_UNCODE, idno: GIVEME_IDNO, password: GIVEME_PASSWORD };
   }
   return null;
 }
@@ -228,43 +266,154 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
     return;
   }
 
-  try {
-    if (type === 'B2B') {
-      const payload = buildB2BBody(order, options, cred);
-      const resG = await fetch(GIVEME_B2B_URL, {
-        method: 'post',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(30000),
-      });
-      const text = await resG.text();
-      let json;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        json = { success: false, msg: text.slice(0, 300) };
-      }
-      send(res, 200, json);
-      return;
-    }
-
-    const payload = buildB2CBody(order, options, cred);
-    const resG = await fetch(GIVEME_B2C_URL, {
+  const postToGiveme = async (url, payload) => {
+    const resG = await fetch(url, {
       method: 'post',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(30000),
     });
     const text = await resG.text();
-    let json;
     try {
-      json = JSON.parse(text);
+      return JSON.parse(text);
     } catch {
-      json = { success: false, msg: text.slice(0, 300) };
+      return { success: false, msg: text.slice(0, 300) };
+    }
+  };
+
+  const buildPrintUrl = (code, uncode) => {
+    const proto = (req.headers['x-forwarded-proto'] || req.headers['x-forwarded-protocol'] || 'https').split(',')[0].trim();
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+    if (!host) return '';
+    const path = '/giveme-invoice-print?code=' + encodeURIComponent(code) + '&uncode=' + encodeURIComponent(uncode);
+    return proto + '://' + host + path;
+  };
+
+  try {
+    if (type === 'B2B') {
+      const payload = buildB2BBody(order, options, cred);
+      const targetUrl = GIVEME_PROXY_URL || GIVEME_B2B_URL;
+      const json = await postToGiveme(targetUrl, payload);
+      const ok = json && (json.success === true || String(json.success).toLowerCase() === 'true');
+      if (ok) {
+        json.uncode = cred.uncode;
+        if (json.code) {
+          json.printUrl = buildPrintUrl(json.code, cred.uncode);
+          try {
+            const pic = await fetchInvoicePicture(cred, json.code, '1');
+            if (pic.ok) {
+              json.printImageBase64 = pic.base64;
+              json.printImageContentType = pic.contentType;
+            }
+          } catch (e) {
+            console.warn('[giveme-invoice] fetchInvoicePicture:', e?.message || e);
+          }
+        }
+      }
+      send(res, 200, json);
+      return;
+    }
+
+    const payload = buildB2CBody(order, options, cred);
+    const targetUrl = GIVEME_PROXY_URL || GIVEME_B2C_URL;
+    const json = await postToGiveme(targetUrl, payload);
+    const ok = json && (json.success === true || String(json.success).toLowerCase() === 'true');
+    if (ok) {
+      json.uncode = cred.uncode;
+      if (json.code) {
+        json.printUrl = buildPrintUrl(json.code, cred.uncode);
+        try {
+          const pic = await fetchInvoicePicture(cred, json.code, '1');
+          if (pic.ok) {
+            json.printImageBase64 = pic.base64;
+            json.printImageContentType = pic.contentType;
+          }
+        } catch (e) {
+          console.warn('[giveme-invoice] fetchInvoicePicture:', e?.message || e);
+        }
+      }
     }
     send(res, 200, json);
   } catch (e) {
     console.error('[giveme-invoice]', e?.message || e);
     send(res, 500, { success: false, msg: e?.message || 'Giveme 請求失敗' });
+  }
+}
+
+/**
+ * 向 Giveme 取得發票圖片，回傳 { ok, base64, contentType } 或 { ok: false }
+ */
+async function fetchInvoicePicture(cred, code, typeNum = '1') {
+  const timeStamp = String(Date.now());
+  const signStr = timeStamp + cred.uncode + cred.idno + cred.password + code + typeNum;
+  const sign = md5Upper(signStr);
+  const body = {
+    timeStamp,
+    uncode: cred.uncode,
+    idno: cred.idno,
+    sign,
+    code,
+    type: typeNum,
+  };
+  const response = await fetch(GIVEME_PICTURE_URL, {
+    method: 'post',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  });
+  const contentType = response.headers.get('content-type') || 'image/png';
+  const buf = await response.arrayBuffer();
+  if (response.status !== 200 || buf.byteLength === 0) return { ok: false };
+  const base64 = Buffer.from(buf).toString('base64');
+  return { ok: true, base64, contentType };
+}
+
+/**
+ * GET /giveme-invoice-print?code=發票號碼&uncode=統一編號&type=1|2|3
+ * 取得 Giveme 發票圖片（1=證明聯+明細 2=證明聯 3=明細），回傳 image 供瀏覽器列印。
+ */
+export async function handleGivemeInvoicePrint(req, res) {
+  const u = new URL(req.url || '', 'http://localhost');
+  const code = (u.searchParams.get('code') || '').trim();
+  const uncode = (u.searchParams.get('uncode') || '').trim();
+  const type = (u.searchParams.get('type') || '1').trim();
+  if (!code || !uncode) {
+    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: false, msg: '需要 code 與 uncode 參數' }));
+    return;
+  }
+  const typeNum = ['1', '2', '3'].includes(type) ? type : '1';
+  let auth;
+  try {
+    auth = await getAuth();
+  } catch (e) {
+    console.error('[giveme-invoice-print] getAuth:', e?.message || e);
+    res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: false, msg: '無法取得憑證' }));
+    return;
+  }
+  const cred = await getCredentialByUncode(auth, uncode);
+  if (!cred) {
+    res.writeHead(404, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: false, msg: '找不到該統一編號的 Giveme 憑證' }));
+    return;
+  }
+  try {
+    const pic = await fetchInvoicePicture(cred, code, typeNum);
+    if (!pic.ok) {
+      res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: false, msg: '取得發票圖片失敗' }));
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': pic.contentType,
+      'Content-Length': Buffer.byteLength(Buffer.from(pic.base64, 'base64')),
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(Buffer.from(pic.base64, 'base64'));
+  } catch (e) {
+    console.error('[giveme-invoice-print]', e?.message || e);
+    res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ success: false, msg: e?.message || '取得發票圖片失敗' }));
   }
 }

@@ -21,7 +21,7 @@ import { handleAdmin } from './api/admin-api.js';
 import { handleReportApi } from './api/report-api.js';
 import { handleCustomerApi } from './api/customer-api.js';
 import { handleSaydouTokenSync } from './api/saydou-token-sync.js';
-import { handleGivemeInvoice } from './api/giveme-invoice.js';
+import { handleGivemeInvoice, handleGivemeInvoicePrint } from './api/giveme-invoice.js';
 import { appendWebhookError } from './lib/webhook-error-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -371,6 +371,11 @@ export function startServer() {
         return;
       }
       send(res, 405, { success: false, msg: 'Method not allowed' });
+      return;
+    }
+
+    if (method === 'GET' && url === '/giveme-invoice-print') {
+      await handleGivemeInvoicePrint(req, res);
       return;
     }
 

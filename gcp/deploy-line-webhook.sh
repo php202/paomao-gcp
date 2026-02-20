@@ -101,6 +101,7 @@ append_env "ADMIN_LINE_USER_ID" "$ADMIN_LINE_USER_ID"
 append_env "ADMIN_EMAIL" "$ADMIN_EMAIL"
 append_env "GMAIL_USER" "$GMAIL_USER"
 append_env "GMAIL_APP_PASSWORD" "$GMAIL_APP_PASSWORD"
+append_env "GIVEME_PROXY_URL" "$GIVEME_PROXY_URL"
 append_env "GIVEME_UNCODE" "$GIVEME_UNCODE"
 append_env "GIVEME_IDNO" "$GIVEME_IDNO"
 append_env "GIVEME_PASSWORD" "$GIVEME_PASSWORD"
@@ -108,6 +109,13 @@ append_env "GIVEME_PASSWORD" "$GIVEME_PASSWORD"
 if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
   append_env "GOOGLE_APPLICATION_CREDENTIALS" "/secrets/sa-key.json"
   echo "將掛載 Secret: ${SA_KEY_SECRET_NAME} -> /secrets/sa-key.json（店家本月出勤用）"
+fi
+
+# 固定出口 IP（Giveme 白名單）：先執行 scripts/setup-static-egress.sh，再設 EGRESS_NETWORK + EGRESS_SUBNET 後部署
+VPC_EGRESS_ARGS=""
+if [ -n "${EGRESS_NETWORK:-}" ] && [ -n "${EGRESS_SUBNET:-}" ]; then
+  VPC_EGRESS_ARGS="--network=$EGRESS_NETWORK --subnet=$EGRESS_SUBNET --vpc-egress=all-traffic"
+  echo "將使用固定出口 IP（VPC egress: $EGRESS_NETWORK / $EGRESS_SUBNET）"
 fi
 
 # Cloud Run Service 需執行 node index.js serve（--args 多個值用逗號分隔）
@@ -124,7 +132,8 @@ if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
     --set-secrets "/secrets/sa-key.json=${SA_KEY_SECRET_NAME}:latest" \
     --min-instances 0 \
     --max-instances 10 \
-    --cpu-boost
+    --cpu-boost \
+    $VPC_EGRESS_ARGS
 else
   gcloud run deploy "$SERVICE_NAME" \
     --image "$IMAGE" \
@@ -136,7 +145,8 @@ else
     --set-env-vars "$ENV_VARS" \
     --min-instances 0 \
     --max-instances 10 \
-    --cpu-boost
+    --cpu-boost \
+    $VPC_EGRESS_ARGS
 fi
 
 URL=$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" --format='value(status.url)')

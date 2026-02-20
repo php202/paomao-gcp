@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         SayDou Token Sync (Token 自動同步器)
+// @name         SayDou Token Sync (Token 自動同步器) - GCP 版
 // @namespace    http://tampermonkey.net/
 // @version      2026-01-12
 // @description  自動攔截 Authorization Token 並同步到 GCP（寫入 Token 試算表）
@@ -7,8 +7,6 @@
 // @match        *://m.saydou.com/*
 // @match        *://saywebdatafeed.saydou.com/*
 // @grant        GM_xmlhttpRequest
-// @updateURL    https://raw.githubusercontent.com/php202/paomao/gas-only/node_express/gas/tampermonkey/SayDou-Token-Sync.user.js
-// @downloadURL  https://raw.githubusercontent.com/php202/paomao/gas-only/node_express/gas/tampermonkey/SayDou-Token-Sync.user.js
 // ==/UserScript==
 
 (function() {
@@ -20,16 +18,12 @@
     }
     console.log("Token 監聽器已啟動 (GCP)...");
 
-    // 請改成你部署後的 Cloud Run 服務網址（例如 https://pao-checkin-api-xxxxx.asia-east1.run.app/saydou-token）
-    const GCP_SAYDOU_TOKEN_URL = "https://pao-checkin-api-254258679209.asia-east1.run.app/saydou-token";;
-    // 若 GCP 有設環境變數 SAYDOU_TOKEN_SYNC_KEY，請填在這裡（可選，不設則留空）
+    // 改成你的 GCP 服務網址（例如 Cloud Run 的 URL）
+    const GCP_SAYDOU_TOKEN_URL = "https://YOUR_PROJECT.run.app/saydou-token";
+    // 若 GCP 有設 SAYDOU_TOKEN_SYNC_KEY，請填在這裡（可選）
     const SYNC_KEY = "";
 
     let lastSentToken = "";
-    let lastFailedToken = "";
-    let lastFailedAt = 0;
-    let urlPlaceholderWarned = false;
-    const FAIL_COOLDOWN_MS = 60 * 1000; // 失敗後 60 秒內不重送同一 token
 
     const { fetch: originalFetch } = window;
     window.fetch = async (...args) => {
@@ -55,15 +49,6 @@
     function syncTokenToGCP(tokenString) {
         let cleanToken = tokenString.replace(/^Bearer\s+/i, "").trim();
         if (!cleanToken || cleanToken === lastSentToken) return;
-        if (lastFailedToken === cleanToken && (Date.now() - lastFailedAt) < FAIL_COOLDOWN_MS) return;
-
-        if (GCP_SAYDOU_TOKEN_URL.includes("YOUR-GCP-SERVICE")) {
-            if (!urlPlaceholderWarned) {
-                urlPlaceholderWarned = true;
-                console.warn("SayDou Token Sync: 請在腳本中將 GCP_SAYDOU_TOKEN_URL 改成你的 Cloud Run 網址（例如 https://pao-checkin-api-xxxxx.asia-east1.run.app/saydou-token），否則會 408 / Failed to fetch");
-            }
-            return;
-        }
 
         console.log("抓到新 Token! 準備同步到 GCP...");
         let url = GCP_SAYDOU_TOKEN_URL;
@@ -77,21 +62,12 @@
             url,
             headers,
             data: JSON.stringify({ token: cleanToken }),
-            timeout: 15000,
             onload: function(response) {
-                if (response.status === 200) {
-                    console.log("Token 同步成功: " + response.responseText);
-                    lastSentToken = cleanToken;
-                } else {
-                    lastFailedToken = cleanToken;
-                    lastFailedAt = Date.now();
-                    console.error("Token 同步失敗: HTTP " + response.status + " " + (response.responseText || "").slice(0, 200));
-                }
+                console.log("Token 同步成功: " + response.responseText);
+                lastSentToken = cleanToken;
             },
             onerror: function(err) {
-                lastFailedToken = cleanToken;
-                lastFailedAt = Date.now();
-                console.error("Token 同步失敗 (網路逾時或網址錯誤)。請確認 GCP_SAYDOU_TOKEN_URL 已改成實際的 Cloud Run 網址。", err.status || "Failed to fetch");
+                console.error("Token 同步失敗", err);
             }
         });
     }

@@ -4,7 +4,7 @@ import { nowTaipeiStr } from '../lib/date-tz.js';
 import { verifyLineSignature } from '../lib/line-webhook.js';
 import { appendSheet, readSheet, batchUpdateValues } from '../lib/sheets.js';
 import { appendWebhookError } from '../lib/webhook-error-log.js';
-import { sendNotification } from '../lib/email.js';
+import { sendAdminLinePush } from '../lib/line-push.js';
 import { sendJson } from './http-utils.js';
 
 const INTEGRATED_SHEET_SS_ID = (process.env.INTEGRATED_SHEET_SS_ID || process.env.LINE_STORE_SS_ID || '').trim();
@@ -268,11 +268,9 @@ async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, ac
     : `Hi ${name}，近幾天都滿了，可以呼叫貓小編協助看預約時間唷～`;
   if (!slotsStr && slotsDebug) {
     finalContent += `\n（除錯：${slotsDebug}；請將此整則訊息貼給管理員）`;
-    // 有除錯時寄信給管理員（ADMIN_EMAIL）；需設定 GMAIL_USER、GMAIL_APP_PASSWORD）
-    sendNotification(
-      '[泡泡貓] 查空位除錯（請檢查）',
-      `店：${store?.storeName || '-'}\n收件人：${name}\n除錯：${slotsDebug}\n\n請檢查 SayDou Token 或相關設定。`,
-    ).catch((e) => console.warn('[store-line-webhook] 除錯信寄送失敗', e?.message || e));
+    // 有除錯時 LINE Push 通知管理員（需設定 ADMIN_LINE_USER_ID、LINE_TOKEN_PAOSTAFF）
+    const debugMsg = `[泡泡貓] 查空位除錯（請檢查）\n店：${store?.storeName || '-'}\n收件人：${name}\n除錯：${slotsDebug}\n\n請檢查 SayDou Token 或相關設定。`;
+    sendAdminLinePush(debugMsg).catch((e) => console.warn('[store-line-webhook] 除錯 LINE 推播失敗', e?.message || e));
   }
   // 錯誤／除錯行只傳給 Robby Yu，其他使用者不顯示除錯行
   const messageToSend = slotsDebug && !isTestUser

@@ -59,6 +59,37 @@
         return origSend.apply(this, arguments);
     };
 
+    function showPrintModal(title, base64, contentType, printUrl) {
+        const overlay = document.createElement('div');
+        overlay.id = 'saydou-giveme-print-modal';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
+        const box = document.createElement('div');
+        box.style.cssText = 'background:#fff;border-radius:8px;padding:16px;max-width:95vw;max-height:90vh;overflow:auto;box-shadow:0 4px 20px rgba(0,0,0,.2);';
+        const dataUrl = 'data:' + (contentType || 'image/png') + ';base64,' + base64;
+        box.innerHTML = `
+            <h3 style="margin:0 0 12px 0;font-size:16px;">${title}</h3>
+            <img src="${dataUrl}" alt="發票" style="max-width:100%;height:auto;display:block;margin:0 auto 12px;">
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button type="button" id="giveme-print-btn">列印</button>
+                ${printUrl ? '<a href="' + printUrl + '" target="_blank" rel="noopener" style="margin-right:8px;">在新分頁開啟</a>' : ''}
+                <button type="button" id="giveme-close-print">關閉</button>
+            </div>
+        `;
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        box.querySelector('#giveme-close-print').addEventListener('click', () => overlay.remove());
+        box.querySelector('#giveme-print-btn').addEventListener('click', () => {
+            const w = window.open('', '_blank');
+            if (w) {
+                w.document.write('<html><head><title>發票列印</title></head><body style="margin:0;"><img src="' + dataUrl + '" style="max-width:100%;"/></body></html>');
+                w.document.close();
+                const img = w.document.body.querySelector('img');
+                if (img) img.onload = () => { w.focus(); w.print(); };
+                else { w.focus(); w.print(); }
+            }
+        });
+    }
+
     function openInvoiceModal(order) {
         if (document.getElementById('saydou-giveme-modal')) return;
 
@@ -128,18 +159,25 @@
                 timeout: 30000,
                 onload: function(r) {
                     overlay.remove();
-                    let msg = '';
                     try {
                         const j = JSON.parse(r.responseText);
-                        if (j.success === true) {
-                            msg = '開單成功！發票號碼：' + (j.code || '');
+                        const ok = j.success === true || String(j.success).toLowerCase() === 'true';
+                        if (ok) {
+                            const code = j.code || '';
+                            const printUrl = j.printUrl || (j.code && j.uncode ? (GCP_BASE + '/giveme-invoice-print?code=' + encodeURIComponent(j.code) + '&uncode=' + encodeURIComponent(j.uncode)) : '');
+                            if (j.printImageBase64) {
+                                showPrintModal('開單成功！發票號碼：' + code, j.printImageBase64, j.printImageContentType || 'image/png', printUrl);
+                            } else {
+                                const msg = '開單成功！發票號碼：' + code + (printUrl ? '\n\n已為您開啟列印頁面，可直接在該頁面用瀏覽器列印（Ctrl+P）。' : '');
+                                if (printUrl) window.open(printUrl, '_blank');
+                                alert(msg);
+                            }
                         } else {
-                            msg = '開單失敗：' + (j.msg || r.responseText?.slice(0, 100) || '');
+                            alert('開單失敗：' + (j.msg || r.responseText?.slice(0, 100) || ''));
                         }
                     } catch {
-                        msg = '開單失敗：' + (r.responseText?.slice(0, 150) || '網路錯誤');
+                        alert('開單失敗：' + (r.responseText?.slice(0, 150) || '網路錯誤'));
                     }
-                    alert(msg);
                 },
                 onerror: function() {
                     btn.disabled = false;

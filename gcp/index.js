@@ -24,6 +24,13 @@ async function main() {
     return;
   }
 
+  if (cmd === 'test-line-push') {
+    const { sendAdminLinePush } = await import('./lib/line-push.js');
+    const ok = await sendAdminLinePush('[泡泡貓] 測試推播\n\n這是一則測試訊息，若你收到代表 LINE Push 設定正確。');
+    console.log(ok ? '已送出測試推播，請檢查 LINE。' : '未送出（請確認 ADMIN_LINE_USER_ID、LINE_TOKEN_PAOSTAFF 已設定）');
+    return;
+  }
+
   if (cmd === 'check-auth') {
     const userId = rest[0]?.trim() || '';
     if (!userId) {

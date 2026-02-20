@@ -18,6 +18,7 @@ import { google } from 'googleapis';
 import { getAuth } from '../lib/auth.js';
 import { getBearerToken } from '../lib/saydou.js';
 import { sendNotification } from '../lib/email.js';
+import { sendAdminLinePush } from '../lib/line-push.js';
 
 const SHEET_ALL = '營收報表';
 const SHEET_DIRECT = '營收報表_直營';
@@ -357,13 +358,11 @@ export async function run(args = []) {
     if (isPermissionDeniedError(e)) {
       const tokenSheetId = (process.env.TOKEN_SHEET_SS_ID || '').trim();
       const msg = `${permissionHint(tokenSheetId, callerEmail, '讀取 Token 試算表')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`;
-      await sendNotification('[泡泡貓] daily-report 權限不足', msg);
+      await sendAdminLinePush('[泡泡貓] daily-report 權限不足\n\n' + msg).catch(() => {});
       throw new Error(msg);
     }
-    await sendNotification(
-      '[泡泡貓] daily-report 取得 Token 失敗',
-      `daily-report 取得 SayDou Token 時失敗。\n\n錯誤：${getGoogleApiErrorMessage(e)}`,
-    );
+    const tokenFailMsg = `[泡泡貓] daily-report 取得 Token 失敗\n\ndaily-report 取得 SayDou Token 時失敗。\n錯誤：${getGoogleApiErrorMessage(e)}`;
+    await sendAdminLinePush(tokenFailMsg).catch(() => {});
     throw e;
   }
   if (!bearerToken) throw new Error('無 Bearer Token，請設 SAYDOU_BEARER_TOKEN 或 TOKEN_SHEET_SS_ID');
@@ -437,20 +436,15 @@ export async function run(args = []) {
     } catch (e) {
       const msg = e?.message || String(e);
       if (msg.includes('Token 無效或過期') || msg.includes('HTTP 401') || msg.includes('HTTP 403')) {
-        await sendNotification(
-          '[泡泡貓] daily-report SayDou Token 過期',
-          `daily-report 執行時 SayDou API 回傳 Token 無效或過期（HTTP 401/403）。\n\n請執行「pao check token」或更新 Token 試算表／Token Web App 後再跑 daily-report。\n\n錯誤：${msg}`
-        );
+        const tokenExpMsg = `[泡泡貓] daily-report SayDou Token 過期\n\ndaily-report 執行時 SayDou API 回傳 Token 無效或過期。請執行「pao check token」或更新 Token 試算表後再跑。\n錯誤：${msg}`;
+        await sendAdminLinePush(tokenExpMsg).catch(() => {});
       } else if (isPermissionDeniedError(e)) {
         const hint = `${permissionHint(spreadsheetId, callerEmail, '寫入日報資料')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`;
-        await sendNotification('[泡泡貓] daily-report 權限不足', hint);
+        await sendAdminLinePush('[泡泡貓] daily-report 權限不足\n\n' + hint).catch(() => {});
       }
       // Generic failure alert (best-effort). Avoid spamming: Job usually runs once per day.
       if (!msg.includes('Token 無效或過期') && !msg.includes('HTTP 401') && !msg.includes('HTTP 403') && !isPermissionDeniedError(e)) {
-        await sendNotification(
-          '[泡泡貓] daily-report 執行失敗',
-          `daily-report 執行失敗（date=${dateStr}）。\n\n錯誤：${msg}`,
-        );
+        await sendAdminLinePush(`[泡泡貓] daily-report 執行失敗\n\ndate=${dateStr}\n錯誤：${msg}`).catch(() => {});
       }
       if (isPermissionDeniedError(e)) throw new Error(`${permissionHint(spreadsheetId, callerEmail, '寫入日報資料')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
       throw e;

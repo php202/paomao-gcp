@@ -1,15 +1,15 @@
 /**
- * 檢查 SayDou Bearer Token 是否有效；若無效則寄信至 ADMIN_EMAIL（預設 paopaomao.of@gmail.com）
+ * 檢查 SayDou Bearer Token 是否有效；若無效則 LINE Push 通知管理員
  * 等同 GAS 的 checkSaydouTokenAndNotify
  *
- * 環境變數：SAYDOU_BEARER_TOKEN 或 TOKEN_SHEET_SS_ID、ADMIN_EMAIL、GMAIL_USER、GMAIL_APP_PASSWORD
+ * 環境變數：SAYDOU_BEARER_TOKEN 或 TOKEN_SHEET_SS_ID、ADMIN_LINE_USER_ID、LINE_TOKEN_PAOSTAFF
  *
  * 執行：node index.js check-token
  */
 
 import { getAuth } from '../lib/auth.js';
 import { getBearerToken, checkToken } from '../lib/saydou.js';
-import { sendNotification } from '../lib/email.js';
+import { sendAdminLinePush } from '../lib/line-push.js';
 
 export async function run() {
   console.log('[GCP] SayDou Token 檢查...');
@@ -24,8 +24,7 @@ export async function run() {
   }
 
   console.log('[GCP] Token 異常:', problem);
-  await sendNotification(
-    '[泡泡貓] SayDou Token 檢查異常',
-    'SayDou Bearer Token 檢查結果：' + problem + '\n\n請檢查 Token 試算表或 Token Web App 設定。'
+  await sendAdminLinePush(
+    '[泡泡貓] SayDou Token 檢查異常\n\n' + problem + '\n\n請檢查 Token 試算表或 Token Web App 設定。'
   );
 }

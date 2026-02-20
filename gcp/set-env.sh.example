@@ -34,8 +34,10 @@ export PAO_CAT_SECRET_KEY=
 # 店家本月出勤 403 時可設：Secret Manager 密碼名稱（見 docs/店家本月出勤_改用金鑰建立試算表.md）
 # export SA_KEY_SECRET_NAME=pao-sheets-sa-key
 
-# ----- Giveme 電子發票（/giveme-invoice：Saydou 結帳同步開單，GCP 直連、IP 白名單開在 GCP）-----
-# export GIVEME_UNCODE=   # 貴司統一編號
+# ----- Giveme 電子發票（/giveme-invoice：Saydou 結帳同步開單）-----
+# 若使用 VM 中繼站（白名單用中繼站 IP），設 GIVEME_PROXY_URL 後開單會改打中繼站
+# export GIVEME_PROXY_URL=http://136.115.207.151:8080/invoice
+# export GIVEME_UNCODE=   # 貴司統一編號（fallback，各店以試算表 M/N 為主）
 # export GIVEME_IDNO=     # API 帳號
 # export GIVEME_PASSWORD= # API 密碼
 
