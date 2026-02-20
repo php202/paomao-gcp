@@ -193,7 +193,7 @@
                 btn.disabled = false;
                 btn.textContent = '確認開單';
             }
-            const SAFETY_MS = 35000;
+            const SAFETY_MS = 50000;
             const safetyTimer = setTimeout(function() {
                 if (responded) return;
                 resetButton();
@@ -205,7 +205,7 @@
                 url: GCP_BASE + '/giveme-invoice',
                 headers: { 'Content-Type': 'application/json' },
                 data: JSON.stringify({ order, options }),
-                timeout: 30000,
+                timeout: 45000,
                 onload: function(r) {
                     clearTimeout(safetyTimer);
                     if (responded) return;
@@ -242,7 +242,7 @@
                 ontimeout: function() {
                     clearTimeout(safetyTimer);
                     resetButton();
-                    alert('請求逾時（超過 30 秒），請稍後再試或至 Giveme 查詢發票。');
+                    alert('請求逾時（超過 45 秒），請稍後再試或至 Giveme 查詢發票。');
                 }
             });
         });

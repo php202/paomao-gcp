@@ -1,9 +1,9 @@
 /**
- * Giveme 電子發票開單 API
+ * Giveme 電子發票開單 API（篡改猴／門市開立發票用）
  * 供 Tampermonkey（Saydou 結帳同步）或測試端 POST 呼叫。
- * 依 order.storid 從試算表「店家基本資料」M 欄（帳號密碼）、N 欄（統一編號）讀取憑證；找不到則用環境變數。
- * 若設 GIVEME_PROXY_URL（VM 中繼站），則改打中繼站，由中繼站轉 Giveme（白名單用中繼站 IP）。
- * 發票圖片（列印）若被 Giveme 擋 IP，可設 GIVEME_PICTURE_PROXY_URL 經 VM 轉發。
+ * 依 order.storid（訂單門市 id）從試算表「店家基本資料」拉該門市的 M 欄（帳號密碼）、N 欄（統一編號）；找不到則 fallback 環境變數。
+ * 僅 /core issueInvoice（請款表單開發票）固定用 storid=0001 的 env GIVEME_*，本 API 一律用訂單的 storid。
+ * 若設 GIVEME_PROXY_URL（VM 中繼站），則改打中繼站；發票圖片可設 GIVEME_PICTURE_PROXY_URL。
  */
 
 import crypto from 'crypto';
@@ -325,7 +325,7 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
     return;
   }
 
-  const OPEN_TIMEOUT_MS = 25000;
+  const OPEN_TIMEOUT_MS = 40000;
   const PICTURE_TIMEOUT_MS = 10000;
 
   const postToGiveme = async (url, payload) => {
