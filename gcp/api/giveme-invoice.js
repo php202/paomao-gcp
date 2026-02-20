@@ -539,11 +539,20 @@ async function fetchInvoicePicture(cred, code, typeNum = '1') {
   if (buf.byteLength === 0) {
     return { ok: false, reason: 'Giveme 回傳空內容' };
   }
-  // 只接受實際的圖片或 PDF，避免把錯誤頁（JSON/HTML）當成圖
-  if (!rawContentType.includes('image/') && !rawContentType.includes('application/pdf')) {
+  // 依 Content-Type 或檔頭判斷是否為圖片/PDF（Giveme 可能回 application/octet-stream 或無 Content-Type）
+  const bytes = new Uint8Array(buf);
+  const isPng = bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  const isPdf = bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
+  const isJpeg = bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8;
+  const headerOk = isPng || isPdf || isJpeg;
+  const contentTypeOk = rawContentType.includes('image/') || rawContentType.includes('application/pdf') || rawContentType.includes('application/octet-stream');
+  if (!contentTypeOk && !headerOk) {
     return { ok: false, reason: bodyPreview ? `Giveme 非圖片回應: ${bodyPreview}` : `Content-Type: ${rawContentType || '(無)'}` };
   }
-  const contentType = rawContentType.split(';')[0].trim() || 'image/png';
+  let contentType = rawContentType.split(';')[0].trim();
+  if (!contentType || contentType === 'application/octet-stream') {
+    contentType = isPng ? 'image/png' : isJpeg ? 'image/jpeg' : isPdf ? 'application/pdf' : 'image/png';
+  }
   const base64 = Buffer.from(buf).toString('base64');
   return { ok: true, base64, contentType };
 }
