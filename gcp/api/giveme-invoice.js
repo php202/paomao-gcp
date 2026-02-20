@@ -342,6 +342,7 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
 
 /**
  * 向 Giveme 取得發票圖片，回傳 { ok, base64, contentType } 或 { ok: false }
+ * 僅在回應為實際圖片（或 PDF）時回傳 ok: true，否則不把 JSON/HTML 當成圖傳給前端。
  */
 async function fetchInvoicePicture(cred, code, typeNum = '1') {
   const timeStamp = String(Date.now());
@@ -361,9 +362,14 @@ async function fetchInvoicePicture(cred, code, typeNum = '1') {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15000),
   });
-  const contentType = response.headers.get('content-type') || 'image/png';
+  const rawContentType = (response.headers.get('content-type') || '').toLowerCase();
   const buf = await response.arrayBuffer();
   if (response.status !== 200 || buf.byteLength === 0) return { ok: false };
+  // 只接受實際的圖片或 PDF，避免把錯誤頁（JSON/HTML）當成圖
+  if (!rawContentType.includes('image/') && !rawContentType.includes('application/pdf')) {
+    return { ok: false };
+  }
+  const contentType = rawContentType.split(';')[0].trim() || 'image/png';
   const base64 = Buffer.from(buf).toString('base64');
   return { ok: true, base64, contentType };
 }

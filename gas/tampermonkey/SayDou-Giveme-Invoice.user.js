@@ -65,11 +65,15 @@
         overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
         const box = document.createElement('div');
         box.style.cssText = 'background:#fff;border-radius:8px;padding:16px;max-width:95vw;max-height:90vh;overflow:auto;box-shadow:0 4px 20px rgba(0,0,0,.2);';
-        const dataUrl = 'data:' + (contentType || 'image/png') + ';base64,' + base64;
+        const mime = (contentType && contentType.split(';')[0].trim()) || 'image/png';
+        const dataUrl = 'data:' + mime + ';base64,' + base64;
         box.innerHTML = `
             <h3 style="margin:0 0 12px 0;font-size:16px;">${title}</h3>
-            <img src="${dataUrl}" alt="發票" style="max-width:100%;height:auto;display:block;margin:0 auto 12px;">
-            <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <div id="giveme-img-wrap" style="margin:0 auto 12px;">
+                <img src="${dataUrl}" alt="發票" style="max-width:100%;height:auto;display:block;">
+            </div>
+            <p id="giveme-img-fail" style="display:none;color:#c00;font-size:13px;">圖片無法顯示，請點下方「在新分頁開啟」列印。</p>
+            <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
                 <button type="button" id="giveme-print-btn">列印</button>
                 ${printUrl ? '<a href="' + printUrl + '" target="_blank" rel="noopener" style="margin-right:8px;">在新分頁開啟</a>' : ''}
                 <button type="button" id="giveme-close-print">關閉</button>
@@ -77,14 +81,24 @@
         `;
         overlay.appendChild(box);
         document.body.appendChild(overlay);
+        const img = box.querySelector('img');
+        const failMsg = box.querySelector('#giveme-img-fail');
+        img.onerror = function() {
+            img.style.display = 'none';
+            if (failMsg) failMsg.style.display = 'block';
+        };
         box.querySelector('#giveme-close-print').addEventListener('click', () => overlay.remove());
         box.querySelector('#giveme-print-btn').addEventListener('click', () => {
+            if (printUrl) {
+                window.open(printUrl, '_blank');
+                return;
+            }
             const w = window.open('', '_blank');
             if (w) {
                 w.document.write('<html><head><title>發票列印</title></head><body style="margin:0;"><img src="' + dataUrl + '" style="max-width:100%;"/></body></html>');
                 w.document.close();
-                const img = w.document.body.querySelector('img');
-                if (img) img.onload = () => { w.focus(); w.print(); };
+                const wi = w.document.body.querySelector('img');
+                if (wi) wi.onload = () => { w.focus(); w.print(); };
                 else { w.focus(); w.print(); }
             }
         });
@@ -112,8 +126,9 @@
             <div id="giveme-b2b" style="display:none;margin-bottom:12px;">
                 <label>買方統編（必填）<input type="text" id="giveme-companyTaxId" style="margin-left:6px;width:120px;"></label>
             </div>
-            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
-                <button type="button" id="giveme-cancel">取消</button>
+            <p style="margin:12px 0 0;color:#888;font-size:12px;">按「取消」則本筆不開立電子發票。</p>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+                <button type="button" id="giveme-cancel">取消（不開立發票）</button>
                 <button type="button" id="giveme-submit">確認開單</button>
             </div>
         `;
