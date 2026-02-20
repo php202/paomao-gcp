@@ -125,13 +125,6 @@ function isoToMinutes(iso) {
   return Number.parseInt(m[1], 10) * 60 + Number.parseInt(m[2], 10);
 }
 
-// #region agent log
-function _debugLog(location, message, data, hypothesisId) {
-  const payload = { sessionId: 'c3ac94', location, message, data: data || {}, hypothesisId: hypothesisId || null, timestamp: Date.now() };
-  fetch('http://127.0.0.1:7242/ingest/a6b25e3c-5c96-45b2-80e4-5bfce25a8610', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'c3ac94' }, body: JSON.stringify(payload) }).catch(() => {});
-}
-// #endregion
-
 function addDays(date, d) {
   const x = new Date(date.getTime());
   x.setDate(x.getDate() + d);
@@ -238,18 +231,6 @@ export async function findAvailableSlotsAction(auth, params) {
     (byDateDutyoffs[ds] ||= []).push(d);
   }
 
-  // #region agent log
-  const sampleDateKeys = Object.keys(byDateReservations).slice(0, 3);
-  _debugLog('core-api.js:byDateKeys', 'byDateReservations keys sample', { sampleDateKeys, keyCount: Object.keys(byDateReservations).length }, 'H2');
-  const firstDayWithRes = sampleDateKeys[0];
-  if (firstDayWithRes && byDateReservations[firstDayWithRes]?.length) {
-    const r0 = byDateReservations[firstDayWithRes][0];
-    const rsvtimRaw = r0?.rsvtim; const endtimRaw = r0?.endtim;
-    _debugLog('core-api.js:isoParse', 'first res rsvtim/endtim parse', { dateStr: firstDayWithRes, rsvtimRaw, endtimRaw, rStartMin: isoToMinutes(rsvtimRaw), rEndMin: isoToMinutes(endtimRaw) }, 'H1');
-  }
-  _debugLog('core-api.js:validStaff', 'validStaffSet', { size: validStaffSet.size, sample: Array.from(validStaffSet).slice(0, 5) }, 'H4');
-  // #endregion
-
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const data = [];
   for (let cur = new Date(start.getTime()); cur.getTime() <= end.getTime(); cur = new Date(cur.getTime() + ONE_DAY_MS)) {
@@ -258,11 +239,6 @@ export async function findAvailableSlotsAction(auth, params) {
     if (!weekDays.includes(dayOfWeek)) continue;
     const dayRes = byDateReservations[dateStr] || [];
     const dayOff = byDateDutyoffs[dateStr] || [];
-    // #region agent log
-    if (dayRes.length > 0 && !data.some((d) => d.date === dateStr)) {
-      _debugLog('core-api.js:dayLookup', 'day lookup', { dateStr, hasRes: dayRes.length, byDateHasKey: dateStr in byDateReservations }, 'H5');
-    }
-    // #endregion
     const times = [];
     for (let t = openMin; t <= lastStartMin; t += 30) {
       const checkStart = t;
@@ -274,11 +250,6 @@ export async function findAvailableSlotsAction(auth, params) {
         if (validStaffSet.size && ru > 0 && !validStaffSet.has(ru)) continue;
         const rStart = isoToMinutes(r?.rsvtim);
         const rEnd = isoToMinutes(r?.endtim);
-        // #region agent log
-        if (dateStr === firstDayWithRes && t === 990) {
-          _debugLog('core-api.js:overlap', 'slot 16:30 overlap check', { checkStart, checkEnd, rStart, rEnd, rsvtim: r?.rsvtim, endtim: r?.endtim, overlaps: rEnd > checkStart && rStart < checkEnd }, 'H3');
-        }
-        // #endregion
         if (rEnd > checkStart && rStart < checkEnd) {
           if (ru > 0) busy.add(ru);
         }
