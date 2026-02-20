@@ -172,21 +172,48 @@ async function fetchReservationsAndDutyoffs(auth, sayId, startDate, endDate, tok
   return { reservations, dutyoffs };
 }
 
+/** 與 GAS getStoreCapacityIds 一致：baseData.staffs 可能為 [ { role1: [staff,...], role2: [staff,...] } ]，需遍歷各 category；並支援 msstor/storid 比對。 */
 function buildValidStaffSet(baseData, sayId) {
   const valid = new Set();
+  const sayIdStr = String(sayId);
   const rawStaffs = baseData?.staffs;
-  const staffs = Array.isArray(rawStaffs?.[0])
-    ? rawStaffs[0]
-    : Array.isArray(rawStaffs)
-      ? rawStaffs
-      : [];
-  for (const s of staffs) {
-    if (String(s?.storid || '') !== String(sayId)) continue;
+  const first = rawStaffs?.[0];
+  const staffList = [];
+  if (first && typeof first === 'object' && !Array.isArray(first)) {
+    for (const key of Object.keys(first)) {
+      const arr = first[key];
+      if (Array.isArray(arr)) staffList.push(...arr);
+    }
+  } else if (Array.isArray(first)) {
+    staffList.push(...first);
+  } else if (Array.isArray(rawStaffs)) {
+    staffList.push(...rawStaffs);
+  }
+  for (const s of staffList) {
+    const storeMatch = (s?.msstor != null && String(s.msstor) === sayIdStr) || (s?.storid != null && String(s.storid) === sayIdStr);
+    if (!storeMatch) continue;
     if (isCounterStaffName(s?.usrcod, s?.usrnam)) continue;
     const id = Number(s?.usrsid || 0);
     if (id > 0) valid.add(id);
   }
   return valid;
+}
+
+/** 與 GAS 一致：將預約/排休中出現的該店非櫃檯 usrsid 納入人力池（海每刻01/02 等若 baseData 未列仍算可預約人力）。 */
+function augmentValidStaffSetFromEvents(validStaffSet, reservations, dutyoffs, sayId) {
+  const sayIdStr = String(sayId);
+  const add = (id) => { if (id != null && Number(id) > 0) validStaffSet.add(Number(id)); };
+  for (const r of reservations || []) {
+    if (r?.storid == null || String(r.storid) !== sayIdStr || !r?.usrsid) continue;
+    const staffObj = r?.usrs || r;
+    if (isCounterStaffName(staffObj?.usrcod, staffObj?.usrnam)) continue;
+    add(r.usrsid);
+  }
+  for (const d of dutyoffs || []) {
+    if (d?.storid == null || String(d.storid) !== sayIdStr || !d?.usrsid) continue;
+    if (isCounterStaffName('', d?.usrnam)) continue;
+    add(d.usrsid);
+  }
 }
 
 export async function findAvailableSlotsAction(auth, params) {
@@ -203,6 +230,7 @@ export async function findAvailableSlotsAction(auth, params) {
   const baseData = await fetchBaseData(auth, token, { skipCache: true });
   const validStaffSet = buildValidStaffSet(baseData, sayId);
   const { reservations, dutyoffs } = await fetchReservationsAndDutyoffs(auth, sayId, startDate, endDate, token);
+  augmentValidStaffSetFromEvents(validStaffSet, reservations, dutyoffs, sayId);
 
   const weekDays = (() => {
     if (!params.weekDays) return [0, 1, 2, 3, 4, 5, 6];
