@@ -59,7 +59,7 @@
         return origSend.apply(this, arguments);
     };
 
-    function showPrintModal(title, base64, contentType, printUrl) {
+    function showPrintModal(title, base64, contentType, printUrl, searchInvoiceUrl) {
         const overlay = document.createElement('div');
         overlay.id = 'saydou-giveme-print-modal';
         overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
@@ -67,14 +67,16 @@
         box.style.cssText = 'background:#fff;border-radius:8px;padding:16px;max-width:95vw;max-height:90vh;overflow:auto;box-shadow:0 4px 20px rgba(0,0,0,.2);';
         const mime = (contentType && contentType.split(';')[0].trim()) || 'image/png';
         const dataUrl = 'data:' + mime + ';base64,' + base64;
+        const searchLink = searchInvoiceUrl ? '<a href="' + searchInvoiceUrl + '" target="_blank" rel="noopener" style="margin-right:8px;">Giveme 發票查詢</a>' : '';
         box.innerHTML = `
             <h3 style="margin:0 0 12px 0;font-size:16px;">${title}</h3>
             <div id="giveme-img-wrap" style="margin:0 auto 12px;">
                 <img src="${dataUrl}" alt="發票" style="max-width:100%;height:auto;display:block;">
             </div>
-            <p id="giveme-img-fail" style="display:none;color:#c00;font-size:13px;">圖片無法顯示，請點下方「在新分頁開啟」列印。</p>
+            <p id="giveme-img-fail" style="display:none;color:#c00;font-size:13px;">圖片無法顯示，請點下方「Giveme 發票查詢」或「在新分頁開啟」列印。</p>
             <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
                 <button type="button" id="giveme-print-btn">列印</button>
+                ${searchLink}
                 ${printUrl ? '<a href="' + printUrl + '" target="_blank" rel="noopener" style="margin-right:8px;">在新分頁開啟</a>' : ''}
                 <button type="button" id="giveme-close-print">關閉</button>
             </div>
@@ -89,6 +91,10 @@
         };
         box.querySelector('#giveme-close-print').addEventListener('click', () => overlay.remove());
         box.querySelector('#giveme-print-btn').addEventListener('click', () => {
+            if (searchInvoiceUrl) {
+                window.open(searchInvoiceUrl, '_blank');
+                return;
+            }
             if (printUrl) {
                 window.open(printUrl, '_blank');
                 return;
@@ -179,12 +185,14 @@
                         const ok = j.success === true || String(j.success).toLowerCase() === 'true';
                         if (ok) {
                             const code = j.code || '';
+                            const searchInvoiceUrl = j.searchInvoiceUrl || '';
                             const printUrl = j.printUrl || (j.code && j.uncode ? (GCP_BASE + '/giveme-invoice-print?code=' + encodeURIComponent(j.code) + '&uncode=' + encodeURIComponent(j.uncode)) : '');
                             if (j.printImageBase64) {
-                                showPrintModal('開單成功！發票號碼：' + code, j.printImageBase64, j.printImageContentType || 'image/png', printUrl);
+                                showPrintModal('開單成功！發票號碼：' + code, j.printImageBase64, j.printImageContentType || 'image/png', printUrl, searchInvoiceUrl);
                             } else {
-                                const msg = '開單成功！發票號碼：' + code + (printUrl ? '\n\n已為您開啟列印頁面，可直接在該頁面用瀏覽器列印（Ctrl+P）。' : '');
-                                if (printUrl) window.open(printUrl, '_blank');
+                                const openUrl = searchInvoiceUrl || printUrl;
+                                if (openUrl) window.open(openUrl, '_blank');
+                                const msg = '開單成功！發票號碼：' + code + (openUrl ? '\n\n已為您開啟' + (searchInvoiceUrl ? ' Giveme 發票查詢頁（可列印／轉 PDF）' : '列印頁面') + '。' : '');
                                 alert(msg);
                             }
                         } else {

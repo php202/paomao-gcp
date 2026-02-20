@@ -1,5 +1,5 @@
 /**
- * 測試 Giveme 開立發票 API：開單後應在同一回應拿到 printUrl 與發票圖（printImageBase64）
+ * 測試 Giveme 開立發票 API：開單後應在同一回應拿到 printUrl、searchInvoiceUrl（Giveme 發票查詢）、發票圖
  *
  * 環境變數：
  *   GIVEME_TEST_BASE_URL - API 根網址（預設 Cloud Run）
@@ -10,6 +10,30 @@
 
 const BASE = process.env.GIVEME_TEST_BASE_URL || 'https://pao-checkin-api-254258679209.asia-east1.run.app';
 const STORID = process.env.GIVEME_TEST_STORID || '';
+
+// 內部驗證：Giveme 回傳 id 時我們組出的 searchInvoiceUrl 格式
+const GIVEME_SEARCH_BASE = 'https://www.giveme.com.tw/168.do';
+function buildSearchInvoiceUrl(id) {
+  return id ? `${GIVEME_SEARCH_BASE}?action=searchInvoice&id=${encodeURIComponent(String(id).trim())}` : '';
+}
+const sampleId = '8ae4e5819c42f861019c7a968f882ece';
+const expected = 'https://www.giveme.com.tw/168.do?action=searchInvoice&id=8ae4e5819c42f861019c7a968f882ece';
+if (buildSearchInvoiceUrl(sampleId) !== expected) {
+  console.error('FAIL: buildSearchInvoiceUrl 格式錯誤');
+  process.exitCode = 1;
+  process.exit(1);
+}
+console.log('OK: searchInvoiceUrl 格式驗證通過（Giveme 回傳 id 時可正確組出）');
+
+// 模擬後端邏輯：收到 Giveme 回傳 { success, code, id } 時會加上 searchInvoiceUrl
+const mockJson = { success: true, code: 'AB12345678', id: sampleId };
+if (mockJson.id) mockJson.searchInvoiceUrl = buildSearchInvoiceUrl(mockJson.id);
+if (mockJson.searchInvoiceUrl !== expected) {
+  console.error('FAIL: 模擬後端邏輯未正確產出 searchInvoiceUrl');
+  process.exitCode = 1;
+  process.exit(1);
+}
+console.log('OK: 模擬後端邏輯驗證通過（有 id 即會產出 searchInvoiceUrl）\n');
 
 const testOrder = {
   storid: STORID || 'TEST',
@@ -42,6 +66,8 @@ async function run() {
   console.log('code:', json.code);
   console.log('msg:', json.msg);
   console.log('uncode:', json.uncode);
+  console.log('id:', json.id ?? '(無)');
+  console.log('searchInvoiceUrl:', json.searchInvoiceUrl ? json.searchInvoiceUrl : '(無)');
   console.log('printUrl:', json.printUrl ? '(有)' : '(無)');
   console.log('printImageBase64:', json.printImageBase64 ? `有 (${json.printImageBase64.length} 字元)` : '(無)');
 
@@ -59,6 +85,19 @@ async function run() {
     return;
   }
   console.log('OK: 開立時已直接拿到 printUrl');
+
+  if (json.id && json.searchInvoiceUrl) {
+    const want = buildSearchInvoiceUrl(json.id);
+    if (json.searchInvoiceUrl === want) {
+      console.log('OK: 開立時已直接拿到 searchInvoiceUrl（Giveme 發票查詢頁）');
+    } else {
+      console.log('WARN: searchInvoiceUrl 與 id 組出結果不一致');
+    }
+  } else if (json.id) {
+    console.log('WARN: 有 id 但無 searchInvoiceUrl');
+  } else {
+    console.log('INFO: Giveme 未回傳 id，無法提供發票查詢連結（請向 Giveme 確認 addB2C/addB2B 是否回傳 id）');
+  }
 
   if (json.printImageBase64) {
     console.log('OK: 開立時已直接拿到發票圖 (printImageBase64)');

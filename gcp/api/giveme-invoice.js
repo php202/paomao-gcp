@@ -289,6 +289,9 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
     return proto + '://' + host + path;
   };
 
+  const GIVEME_SEARCH_BASE = 'https://www.giveme.com.tw/168.do';
+  const buildSearchInvoiceUrl = (id) => (id ? `${GIVEME_SEARCH_BASE}?action=searchInvoice&id=${encodeURIComponent(String(id).trim())}` : '');
+
   try {
     if (type === 'B2B') {
       const payload = buildB2BBody(order, options, cred);
@@ -297,6 +300,7 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
       const ok = json && (json.success === true || String(json.success).toLowerCase() === 'true');
       if (ok) {
         json.uncode = cred.uncode;
+        if (json.id) json.searchInvoiceUrl = buildSearchInvoiceUrl(json.id);
         if (json.code) {
           json.printUrl = buildPrintUrl(json.code, cred.uncode);
           try {
@@ -320,6 +324,7 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
     const ok = json && (json.success === true || String(json.success).toLowerCase() === 'true');
     if (ok) {
       json.uncode = cred.uncode;
+      if (json.id) json.searchInvoiceUrl = buildSearchInvoiceUrl(json.id);
       if (json.code) {
         json.printUrl = buildPrintUrl(json.code, cred.uncode);
         try {
@@ -341,8 +346,8 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
 }
 
 /**
- * 向 Giveme 取得發票圖片，回傳 { ok, base64, contentType } 或 { ok: false }
- * 僅在回應為實際圖片（或 PDF）時回傳 ok: true，否則不把 JSON/HTML 當成圖傳給前端。
+ * 向 Giveme 取得發票圖片，回傳 { ok, base64, contentType } 或 { ok: false, reason? }
+ * 僅在回應為實際圖片（或 PDF）時回傳 ok: true，否則回傳 reason 供除錯。
  */
 async function fetchInvoicePicture(cred, code, typeNum = '1') {
   const timeStamp = String(Date.now());
@@ -356,18 +361,32 @@ async function fetchInvoicePicture(cred, code, typeNum = '1') {
     code,
     type: typeNum,
   };
-  const response = await fetch(GIVEME_PICTURE_URL, {
-    method: 'post',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
-  });
+  let response;
+  try {
+    response = await fetch(GIVEME_PICTURE_URL, {
+      method: 'post',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    return { ok: false, reason: e?.message || '連線 Giveme 失敗' };
+  }
   const rawContentType = (response.headers.get('content-type') || '').toLowerCase();
   const buf = await response.arrayBuffer();
-  if (response.status !== 200 || buf.byteLength === 0) return { ok: false };
+  const bodyPreview = (() => {
+    const s = Buffer.from(buf).toString('utf8').slice(0, 200);
+    return s.replace(/\s+/g, ' ').trim();
+  })();
+  if (response.status !== 200) {
+    return { ok: false, reason: `Giveme 回傳 ${response.status}${bodyPreview ? ': ' + bodyPreview : ''}` };
+  }
+  if (buf.byteLength === 0) {
+    return { ok: false, reason: 'Giveme 回傳空內容' };
+  }
   // 只接受實際的圖片或 PDF，避免把錯誤頁（JSON/HTML）當成圖
   if (!rawContentType.includes('image/') && !rawContentType.includes('application/pdf')) {
-    return { ok: false };
+    return { ok: false, reason: bodyPreview ? `Giveme 非圖片回應: ${bodyPreview}` : `Content-Type: ${rawContentType || '(無)'}` };
   }
   const contentType = rawContentType.split(';')[0].trim() || 'image/png';
   const base64 = Buffer.from(buf).toString('base64');
@@ -407,8 +426,9 @@ export async function handleGivemeInvoicePrint(req, res) {
   try {
     const pic = await fetchInvoicePicture(cred, code, typeNum);
     if (!pic.ok) {
+      const msg = pic.reason ? `取得發票圖片失敗: ${pic.reason}` : '取得發票圖片失敗';
       res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-      res.end(JSON.stringify({ success: false, msg: '取得發票圖片失敗' }));
+      res.end(JSON.stringify({ success: false, msg }));
       return;
     }
     res.writeHead(200, {
