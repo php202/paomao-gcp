@@ -34,6 +34,10 @@ cd "$(dirname "$0")"
 : "${GAS_WEBHOOK_URL:=}"
 : "${FORWARD_UNKNOWN_TO_GAS:=0}"
 : "${WEBHOOK_LOG_VERBOSE:=1}"
+# 查空位除錯時寄信給管理員（需 GMAIL_USER、GMAIL_APP_PASSWORD）
+: "${ADMIN_EMAIL:=}"
+: "${GMAIL_USER:=}"
+: "${GMAIL_APP_PASSWORD:=}"
 # 店家本月出勤 403 時可設：Secret Manager 密碼名稱（金鑰會掛到 /secrets/sa-key.json，並設 GOOGLE_APPLICATION_CREDENTIALS）
 : "${SA_KEY_SECRET_NAME:=}"
 
@@ -91,6 +95,9 @@ append_env "CUSTOMER_TOKEN_SECRET" "$CUSTOMER_TOKEN_SECRET"
 append_env "GAS_WEBHOOK_URL" "$GAS_WEBHOOK_URL"
 append_env "FORWARD_UNKNOWN_TO_GAS" "$FORWARD_UNKNOWN_TO_GAS"
 append_env "WEBHOOK_LOG_VERBOSE" "$WEBHOOK_LOG_VERBOSE"
+append_env "ADMIN_EMAIL" "$ADMIN_EMAIL"
+append_env "GMAIL_USER" "$GMAIL_USER"
+append_env "GMAIL_APP_PASSWORD" "$GMAIL_APP_PASSWORD"
 
 if [ -n "${SA_KEY_SECRET_NAME:-}" ]; then
   append_env "GOOGLE_APPLICATION_CREDENTIALS" "/secrets/sa-key.json"

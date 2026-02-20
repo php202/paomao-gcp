@@ -24,6 +24,11 @@ export DAILY_REPORT_CRON="10 0 * * *"
 export PAO_CAT_CORE_API_URL=
 export PAO_CAT_SECRET_KEY=
 
+# 查空位除錯時寄信給管理員（store-line-webhook；選填，有設才會寄信）
+# export ADMIN_EMAIL=paopaomao.of@gmail.com
+# export GMAIL_USER=paopaomao.of@gmail.com
+# export GMAIL_APP_PASSWORD=xxxx   # Gmail 應用程式密碼（兩步驟驗證後產生）
+
 # 店家本月出勤 403 時可設：Secret Manager 密碼名稱（見 docs/店家本月出勤_改用金鑰建立試算表.md）
 # export SA_KEY_SECRET_NAME=pao-sheets-sa-key
 
