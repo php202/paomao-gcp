@@ -220,6 +220,16 @@ function getInvoiceContent(order) {
   return 'Saydou 結帳';
 }
 
+/** 發票買方名稱：姓名_手機（order.memnam + order.phone_） */
+function getCustomerName(order) {
+  const name = String(order?.memnam ?? '').trim();
+  const phone = String(order?.phone_ ?? order?.memphone ?? order?.phone ?? order?.tel ?? order?.mobile ?? '').trim();
+  if (name && phone) return `${name}_${phone}`;
+  if (name) return name;
+  if (phone) return phone;
+  return undefined;
+}
+
 /**
  * 組 B2C 請求 body（不列印時需 phone 或 orderCode 其一）；cred = { uncode, idno, password }
  */
@@ -236,7 +246,7 @@ function buildB2CBody(order, options, cred) {
     uncode: cred.uncode,
     idno: cred.idno,
     sign,
-    customerName: String(order?.memnam ?? '').trim() || undefined,
+    customerName: getCustomerName(order),
     datetime,
     state: '0',
     totalFee: String(totalFee),
@@ -271,7 +281,7 @@ function buildB2BBody(order, options, cred) {
     uncode: cred.uncode,
     idno: cred.idno,
     sign,
-    customerName: String(order?.memnam ?? '').trim() || undefined,
+    customerName: getCustomerName(order),
     phone,
     datetime,
     taxState: '0',
