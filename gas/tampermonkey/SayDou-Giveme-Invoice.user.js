@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         SayDou 結帳同步 Giveme 發票
 // @namespace    http://tampermonkey.net/
-// @version      2026-02-20
+// @version      2026.2.21
 // @description  Saydou 結帳成功時跳出發票綁定視窗，開立 Giveme 電子發票（可連動印表機）
 // @author       You
 // @match        *://m.saydou.com/*
 // @match        *://saywebdatafeed.saydou.com/*
 // @grant        GM_xmlhttpRequest
+// @updateURL    https://raw.githubusercontent.com/php202/paomao-gcp/master/gas/tampermonkey/SayDou-Giveme-Invoice.user.js
+// @downloadURL  https://raw.githubusercontent.com/php202/paomao-gcp/master/gas/tampermonkey/SayDou-Giveme-Invoice.user.js
 // ==/UserScript==
 
 (function() {
