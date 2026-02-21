@@ -206,15 +206,9 @@ async function getCredentialByUncode(auth, uncode) {
 }
 
 /**
- * 發票備註（總備註）：避開「測試」等無意義字樣，優先用品項名稱或訂單編號
+ * 發票備註：僅用訂單號碼（不用 SayDou 的 remark）
  */
 function getInvoiceContent(order) {
-  const remark = (order?.remark && String(order.remark).trim()) || '';
-  const skipRemark = /^(測試|test)$/i.test(remark);
-  if (remark && !skipRemark) return remark.slice(0, 200);
-  const ordds = Array.isArray(order?.ordds) ? order.ordds : [];
-  const firstName = ordds[0] && (ordds[0].godnam || ordds[0].name);
-  if (firstName && String(firstName).trim()) return sanitizeName(firstName).slice(0, 200);
   const ordNo = String(order?.ordrsn || order?.ordcid || '').trim();
   if (ordNo) return `Saydou ${ordNo}`.slice(0, 200);
   return 'Saydou 結帳';
