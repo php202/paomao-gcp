@@ -22,6 +22,7 @@ import { handleReportApi } from './api/report-api.js';
 import { handleCustomerApi } from './api/customer-api.js';
 import { handleSaydouTokenSync } from './api/saydou-token-sync.js';
 import { handleGivemeInvoice, handleGivemeInvoiceCheck, handleGivemeInvoicePrint } from './api/giveme-invoice.js';
+import { handleCheckinApi } from './scripts/checkin-api.js';
 import { appendWebhookError } from './lib/webhook-error-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -332,6 +333,40 @@ export function startServer() {
         })();
       }
       await handleStores(req, res, { authClient, url: fullUrl, bodyJson });
+      return;
+    }
+
+    if (url === '/checkin') {
+      if (method === 'OPTIONS') {
+        res.writeHead(204, {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Max-Age': '86400',
+        });
+        res.end();
+        return;
+      }
+      if (method === 'GET') {
+        send(res, 200, {
+          usage: 'POST JSON { action: "bind"|"check_in", uuid, frontUuid, userId?, latitude?, longitude? }',
+          endpoint: '/checkin',
+        });
+        return;
+      }
+      if (method === 'POST') {
+        const authClient = await getAuth();
+        let bodyJson = null;
+        try {
+          const rawBody = await parseBody(req);
+          bodyJson = JSON.parse(rawBody.toString('utf8'));
+        } catch {
+          bodyJson = null;
+        }
+        await handleCheckinApi(req, res, { auth: authClient, bodyJson });
+        return;
+      }
+      send(res, 405, { status: 'error', message: 'Method not allowed' });
       return;
     }
 

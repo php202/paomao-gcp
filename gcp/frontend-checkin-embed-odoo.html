@@ -1,0 +1,351 @@
+<!--
+  打卡驗證嵌入片段（Odoo / 網頁用）- 已搬遷至 GCP
+  - 先打 GCP /checkin，失敗再打 GAS（備援）。
+  - 請將下方 GCP_CHECKIN_URL / GAS_API_URL 改為您的實際網址。
+-->
+<style>
+  #checkin-widget-root {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: #333;
+    line-height: 1.5;
+    box-sizing: border-box;
+    font-size: 16px;
+    padding: 20px;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+  }
+  #checkin-widget-root * { box-sizing: border-box; }
+
+  #checkin-widget-root .ci-card {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 .125rem .25rem rgba(0,0,0,.075);
+    border: 1px solid #dee2e6;
+    width: 100%;
+    max-width: 500px;
+    overflow: hidden;
+  }
+  #checkin-widget-root .ci-card-body { padding: 2rem; text-align: center; }
+
+  #checkin-widget-root .ci-title {
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    font-weight: 700;
+    font-size: 1.75rem;
+    color: #212529;
+  }
+
+  #checkin-widget-root .ci-alert {
+    position: relative;
+    padding: 0.75rem 1.25rem;
+    margin-bottom: 1rem;
+    border: 1px solid transparent;
+    border-radius: 0.25rem;
+    font-size: 1rem;
+    display: block;
+  }
+  #checkin-widget-root .ci-alert-info {
+    color: #0c5460;
+    background-color: #d1ecf1;
+    border-color: #bee5eb;
+  }
+  #checkin-widget-root .ci-alert-danger {
+    color: #721c24;
+    background-color: #f8d7da;
+    border-color: #f5c6cb;
+  }
+  #checkin-widget-root .ci-alert-success {
+    color: #155724;
+    background-color: #d4edda;
+    border-color: #c3e6cb;
+  }
+  #checkin-widget-root .ci-alert-warning {
+    color: #856404;
+    background-color: #fff3cd;
+    border-color: #ffeeba;
+  }
+
+  #checkin-widget-root .ci-btn {
+    display: inline-block;
+    font-weight: 400;
+    text-align: center;
+    vertical-align: middle;
+    user-select: none;
+    border: 1px solid transparent;
+    padding: 0.5rem 1rem;
+    font-size: 1.25rem;
+    line-height: 1.5;
+    border-radius: 0.3rem;
+    transition: color .15s ease-in-out, background-color .15s ease-in-out, border-color .15s ease-in-out, box-shadow .15s ease-in-out;
+    cursor: pointer;
+    width: 100%;
+  }
+  #checkin-widget-root .ci-btn:disabled { opacity: 0.65; cursor: not-allowed; }
+
+  #checkin-widget-root .ci-btn-secondary {
+    color: #fff;
+    background-color: #6c757d;
+    border-color: #6c757d;
+  }
+  #checkin-widget-root .ci-btn-secondary:not(:disabled):hover {
+    background-color: #5a6268;
+    border-color: #545b62;
+  }
+  #checkin-widget-root .ci-btn-success {
+    color: #fff;
+    background-color: #28a745;
+    border-color: #28a745;
+  }
+  #checkin-widget-root .ci-btn-success:not(:disabled):hover {
+    background-color: #218838;
+    border-color: #1e7e34;
+  }
+
+  #checkin-widget-root .ci-text-muted {
+    color: #6c757d !important;
+    margin-top: 1rem;
+    font-size: 80%;
+  }
+
+  @keyframes ci-spinner-border { to { transform: rotate(360deg); } }
+  #checkin-widget-root .ci-spinner {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    vertical-align: text-bottom;
+    border: .2em solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: ci-spinner-border .75s linear infinite;
+    margin-right: 0.5rem;
+  }
+</style>
+
+<div id="checkin-widget-root">
+  <div class="ci-card">
+    <div class="ci-card-body">
+      <h2 class="ci-title">📍 打卡驗證</h2>
+      <div id="ci-status" class="ci-alert ci-alert-info" role="alert">正在連線驗證中...</div>
+      <button id="ci-btn-main" class="ci-btn ci-btn-secondary" onclick="startProcess()" disabled="">
+        <span class="ci-spinner" role="status" aria-hidden="true"></span>
+        連線中...
+      </button>
+      <p class="ci-text-muted">請允許瀏覽器獲取您的 GPS 位置</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  /** 設定區：已搬遷至 GCP，先打 GCP、失敗再打 GAS */
+  const GCP_CHECKIN_URL = "https://pao-checkin-api-254258679209.asia-east1.run.app/checkin";
+  const GAS_API_URL = "https://script.google.com/macros/s/AKfycby4JvdNSueVmq1_gG-mrRL0IfR4kPm1nX2itxMDg1c7MWIvEgP2xd7rmSfoxmM3Lung2w/exec";
+  const GCP_TIMEOUT_MS = 15000;
+  const GAS_TIMEOUT_MS = 20000;
+
+  window.checkInData = {};
+
+  function isGASQuotaError(text) {
+    if (!text || typeof text !== "string") return false;
+    return /urlfetch|配額|quota|過多|実行した回数が多すぎます|單日.*次數過多/i.test(text);
+  }
+
+  function shouldFallbackToGas(res, data, responseText) {
+    if (!res || res.status === 0) return true;
+    if (res.status >= 500 || res.status === 404) return true;
+    if (responseText && isGASQuotaError(responseText)) return true;
+    if (data && data.status === "failed" && isGASQuotaError(data.text || "")) return true;
+    return false;
+  }
+
+  /** 先打 GCP，失敗再打 GAS（備援） */
+  async function postCheckin(body) {
+    let res = null, data = null, responseText = "";
+    try {
+      res = await fetch(GCP_CHECKIN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(GCP_TIMEOUT_MS),
+      });
+      responseText = await res.text();
+      try { data = responseText ? JSON.parse(responseText) : null; } catch (_) { data = null; }
+    } catch (e) {
+      res = null;
+      data = null;
+      responseText = "";
+    }
+    if (shouldFallbackToGas(res, data, responseText)) {
+      try {
+        res = await fetch(GAS_API_URL, {
+          method: "POST",
+          redirect: "follow",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(GAS_TIMEOUT_MS),
+        });
+        responseText = await res.text();
+        try { data = responseText ? JSON.parse(responseText) : null; } catch (_) { data = null; }
+      } catch (e) {
+        res = null;
+        data = null;
+      }
+    }
+    if (!res || !res.ok) {
+      throw new Error((data && (data.text || data.message)) || "打卡請求失敗，請稍後再試");
+    }
+    return data;
+  }
+
+  function updateStatus(text, className) {
+    const el = document.getElementById("ci-status");
+    if (!el) return;
+    el.innerText = text;
+    el.className = "ci-alert " + className;
+  }
+
+  function resetButton(text) {
+    const btn = document.getElementById("ci-btn-main");
+    if (!btn) return;
+    btn.disabled = false;
+    btn.innerHTML = text;
+  }
+
+  function generateUUID() {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c) {
+      var r = Math.random() * 16 | 0, v = c === "x" ? r : (r & 3 | 8);
+      return v.toString(16);
+    });
+  }
+
+  /** 綁定 Session：改用 postCheckin，GAS 失敗會自動打 GCP */
+  async function bindSession() {
+    const btn = document.getElementById("ci-btn-main");
+    const payload = {
+      action: "bind",
+      userId: window.checkInData.userId,
+      uuid: window.checkInData.uuid,
+      frontUuid: window.checkInData.frontUuid,
+    };
+    if (!payload.userId || !payload.uuid || !payload.frontUuid) {
+      updateStatus("❌ 程式錯誤：參數缺失", "ci-alert-danger");
+      return;
+    }
+    console.log("[前端] Bind 請求", payload);
+    try {
+      const data = await postCheckin(payload);
+      console.log("[後端] Bind 回應", data);
+      const msg = data.text || "連線回應";
+      if (data.status === "success") {
+        updateStatus("✅ " + msg + "，請開始打卡", "ci-alert-info");
+        btn.disabled = false;
+        btn.classList.remove("ci-btn-secondary");
+        btn.classList.add("ci-btn-success");
+        btn.innerHTML = "開始打卡";
+      } else {
+        updateStatus("❌ " + msg, "ci-alert-danger");
+        btn.innerHTML = "連結已失效";
+      }
+    } catch (err) {
+      console.error("[連線錯誤]", err);
+      updateStatus("連線失敗，請檢查網路", "ci-alert-danger");
+      btn.innerHTML = "連結已失效";
+    }
+  }
+
+  window.startProcess = function startProcess() {
+    const btn = document.getElementById("ci-btn-main");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="ci-spinner" role="status" aria-hidden="true"></span> 讀取 GPS 中...';
+    updateStatus("正在獲取您的位置，請稍候...", "ci-alert-info");
+    getLocation();
+  };
+
+  function getLocation() {
+    if (!navigator.geolocation) {
+      updateStatus("您的裝置不支援 GPS 定位", "ci-alert-danger");
+      resetButton("重試打卡");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(sendPosition, showError, {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 0,
+    });
+  }
+
+  /** 送出打卡：改用 postCheckin，GAS 失敗會自動打 GCP */
+  async function sendPosition(position) {
+    const btn = document.getElementById("ci-btn-main");
+    updateStatus("位置獲取成功，正在回傳伺服器...", "ci-alert-warning");
+    btn.innerHTML = '<span class="ci-spinner"></span> 資料傳送中...';
+
+    const payload = {
+      action: "check_in",
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude,
+      userId: window.checkInData.userId,
+      uuid: window.checkInData.uuid,
+      frontUuid: window.checkInData.frontUuid,
+    };
+    try {
+      const data = await postCheckin(payload);
+      const msg = data.text || data.message || "未知回應";
+      if (data.status === "success") {
+        updateStatus("✅ " + msg, "ci-alert-success");
+        btn.innerText = "打卡完成";
+        btn.classList.remove("ci-btn-success");
+        btn.classList.add("ci-btn-secondary");
+        setTimeout(closePage, 3000);
+      } else {
+        updateStatus("❌ " + msg, "ci-alert-danger");
+        resetButton("重試打卡");
+      }
+    } catch (err) {
+      console.error(err);
+      updateStatus("傳送失敗：" + (err.message || "請稍後再試"), "ci-alert-danger");
+      resetButton("重試打卡");
+    }
+  }
+
+  function showError(error) {
+    var msg = "";
+    switch (error.code) {
+      case error.PERMISSION_DENIED: msg = "您拒絕了定位權限，請至設定開啟。"; break;
+      case error.POSITION_UNAVAILABLE: msg = "無法偵測目前位置。"; break;
+      case error.TIMEOUT: msg = "定位時間逾時，請移動位置後重試。"; break;
+      default: msg = "發生未知錯誤：" + (error.message || "");
+    }
+    updateStatus(msg, "ci-alert-danger");
+    resetButton("重試打卡");
+  }
+
+  function closePage() {
+    updateStatus("驗證完成，請手動關閉視窗", "ci-alert-success");
+    try {
+      window.close();
+      if (typeof liff !== "undefined") liff.closeWindow();
+    } catch (e) {}
+  }
+
+  document.addEventListener("DOMContentLoaded", function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const userId = urlParams.get("userId");
+    const uuid = urlParams.get("uuid");
+
+    if (!userId || !uuid) {
+      updateStatus("❌ 連結無效：缺少必要參數", "ci-alert-danger");
+      return;
+    }
+
+    let frontUuid = sessionStorage.getItem("pao_front_uuid");
+    if (!frontUuid) {
+      frontUuid = generateUUID();
+      sessionStorage.setItem("pao_front_uuid", frontUuid);
+    }
+    window.checkInData = { userId, uuid, frontUuid };
+    bindSession();
+  });
+})();
+</script>

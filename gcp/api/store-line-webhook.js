@@ -269,7 +269,11 @@ async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, ac
   if (!slotsStr && slotsDebug) {
     finalContent += `\n（除錯：${slotsDebug}；請將此整則訊息貼給管理員）`;
     // 有除錯時 LINE Push 通知管理員（需設定 ADMIN_LINE_USER_ID、LINE_TOKEN_PAOSTAFF）
-    const debugMsg = `[泡泡貓] 查空位除錯（請檢查）\n店：${store?.storeName || '-'}\n收件人：${name}\n除錯：${slotsDebug}\n\n請檢查 SayDou Token 或相關設定。`;
+    const isQuotaError = /Quota exceeded|Read requests/i.test(String(slotsDebug));
+    const hint = isQuotaError
+      ? '此為 GCP Google Sheets API「讀取」配額超限，非 SayDou Token 問題。建議：1) 在 GCP 環境變數設定 SAYDOU_BEARER_TOKEN 以減少試算表讀取；2) 至 GCP 主控台檢查 Sheets API 配額與用量。'
+      : '請檢查 SayDou Token 或相關設定。';
+    const debugMsg = `[泡泡貓] 查空位除錯（請檢查）\n店：${store?.storeName || '-'}\n收件人：${name}\n除錯：${slotsDebug}\n\n${hint}`;
     sendAdminLinePush(debugMsg).catch((e) => console.warn('[store-line-webhook] 除錯 LINE 推播失敗', e?.message || e));
   }
   // 錯誤／除錯行只傳給 Robby Yu，其他使用者不顯示除錯行
