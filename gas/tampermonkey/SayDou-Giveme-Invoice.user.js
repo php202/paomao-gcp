@@ -99,7 +99,7 @@
         overlay.id = 'saydou-giveme-modal';
         overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
         const box = document.createElement('div');
-        box.style.cssText = 'background:#fff;border-radius:8px;padding:20px;min-width:320px;max-width:90vw;box-shadow:0 4px 20px rgba(0,0,0,.2);';
+        box.style.cssText = 'background:#fff;border-radius:8px;padding:40px;min-width:640px;max-width:90vw;box-shadow:0 4px 20px rgba(0,0,0,.2);';
         box.innerHTML = `
             <h3 style="margin:0 0 12px 0;font-size:16px;">開立電子發票</h3>
             <p style="margin:0 0 12px;color:#666;font-size:13px;">單號 ${(order.ordrsn || order.ordcid || '').slice(0, 20)} 金額 $${order.rprice ?? order.price_ ?? 0}</p>
