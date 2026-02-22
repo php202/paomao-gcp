@@ -289,27 +289,32 @@ function bindFrontUuidToSheet(uuid, frontUuid) {
   return true;
 }
 
+/**
+ * 今日該員工「依時間排序」的最後一筆打卡（用於判斷下一筆是上班或下班）。
+ * 改為依 B 欄時間取最後一筆，避免多人交錯打卡時依「列順序」取到錯列，導致下班被誤寫成上班。
+ */
 function getEmployeeHistoryToday(sheet, userId) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return { hasRecord: false };
 
   const startRow = Math.max(2, lastRow - 200);
   const data = sheet.getRange(startRow, 1, lastRow - startRow + 1, 3).getValues();
-  
-  const todayStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy-MM-dd");
-  let result = { hasRecord: false, lastTime: null, lastType: "" };
 
-  for (let i = data.length - 1; i >= 0; i--) {
+  const todayStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy-MM-dd");
+  const todayRows = [];
+
+  for (let i = 0; i < data.length; i++) {
     const row = data[i];
-    if (String(row[0]) === String(userId) && row[1]) {
-      const rowDate = Utilities.formatDate(new Date(row[1]), "Asia/Taipei", "yyyy-MM-dd");
-      if (rowDate === todayStr && row[2]) {
-        result.hasRecord = true;
-        result.lastTime = row[1];
-        result.lastType = row[2];
-        break; 
-      }
-    }
+    if (String(row[0]) !== String(userId) || !row[1] || !row[2]) continue;
+    const rowDate = Utilities.formatDate(new Date(row[1]), "Asia/Taipei", "yyyy-MM-dd");
+    if (rowDate === todayStr) todayRows.push({ time: row[1], type: String(row[2]).trim() });
   }
-  return result;
+
+  if (todayRows.length === 0) return { hasRecord: false };
+
+  todayRows.sort(function (a, b) {
+    return new Date(a.time) - new Date(b.time);
+  });
+  const last = todayRows[todayRows.length - 1];
+  return { hasRecord: true, lastTime: last.time, lastType: last.type };
 }

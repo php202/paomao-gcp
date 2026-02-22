@@ -119,7 +119,10 @@ async function checkLocation(auth, lat, lon) {
   return data.sort((a, b) => a.distance - b.distance);
 }
 
-/** 今日該員工最後一筆打卡：從員工打卡紀錄 A,B,C 由後往前找 */
+/**
+ * 今日該員工「依時間排序」的最後一筆打卡（用於判斷下一筆是上班或下班）。
+ * 依 B 欄時間取最後一筆，避免多人交錯打卡時依列順序取到錯列，導致下班被誤寫成上班。
+ */
 async function getEmployeeHistoryToday(auth, userId) {
   if (!LINE_STAFF_SS_ID) return { hasRecord: false };
   const lastRow = await getLastRowNum(auth, LOG_SHEET, 'A');
@@ -129,16 +132,17 @@ async function getEmployeeHistoryToday(auth, userId) {
   const data = await readSheet(auth, LINE_STAFF_SS_ID, range);
   if (!data || !data.length) return { hasRecord: false };
   const todayStr = toTaipeiDateStr(new Date());
-  for (let i = data.length - 1; i >= 0; i--) {
+  const todayRows = [];
+  for (let i = 0; i < data.length; i++) {
     const row = data[i];
-    if (String(row[0] || '').trim() !== String(userId).trim()) continue;
-    if (!row[1]) continue;
+    if (String(row[0] || '').trim() !== String(userId).trim() || !row[1] || !row[2]) continue;
     const rowDate = toTaipeiDateStr(row[1]);
-    if (rowDate === todayStr && row[2]) {
-      return { hasRecord: true, lastTime: row[1], lastType: String(row[2]).trim() };
-    }
+    if (rowDate === todayStr) todayRows.push({ time: row[1], type: String(row[2]).trim() });
   }
-  return { hasRecord: false };
+  if (todayRows.length === 0) return { hasRecord: false };
+  todayRows.sort((a, b) => new Date(a.time) - new Date(b.time));
+  const last = todayRows[todayRows.length - 1];
+  return { hasRecord: true, lastTime: last.time, lastType: last.type };
 }
 
 async function getLastRowNum(auth, sheetName, columnLetter = 'A') {
