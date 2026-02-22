@@ -117,8 +117,9 @@ function handleCheckInAPI(jsonData) {
       }
     }
 
-    // 7. 寫入資料庫
-    const resultValues = [userId, timestamp, punchType, checkResult[0].name];
+    // 7. 寫入資料庫（時間以台北 YYYY-MM-DD HH:mm:ss 字串寫入，避免時區／顯示不一致）
+    const timeStrForSheet = Utilities.formatDate(timestamp, "Asia/Taipei", "yyyy-MM-dd HH:mm:ss");
+    const resultValues = [userId, timeStrForSheet, punchType, checkResult[0].name];
     updateRowData(uuid, resultValues);
     // #region agent log
     try {

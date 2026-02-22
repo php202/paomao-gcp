@@ -25,6 +25,13 @@ function toTaipeiTimeStr(d) {
   return date.toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false, hour: '2-digit', minute: '2-digit' });
 }
 
+/** 台北時間 YYYY-MM-DD HH:mm:ss，寫入試算表用，避免 ISO Z 造成時區／解析問題 */
+function toTaipeiDateTimeStr(d) {
+  if (!d) return '';
+  const date = d instanceof Date ? d : new Date(d);
+  return date.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 19);
+}
+
 /** 回傳 JSON 給前端 */
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, {
@@ -249,7 +256,7 @@ async function handleCheckIn(req, res, auth, body) {
     const lastWasClockIn = lastTypeStr.indexOf('上班') !== -1;
     punchType = lastWasClockIn ? '下班打卡' : '上班打卡';
   }
-  const resultValues = [userId, timestamp.toISOString(), punchType, checkResult[0].name];
+  const resultValues = [userId, toTaipeiDateTimeStr(timestamp), punchType, checkResult[0].name];
   await updateRowData(auth, uuid, resultValues);
   const dateStr = toTaipeiDateStr(timestamp);
   const timeStr = toTaipeiTimeStr(timestamp);
