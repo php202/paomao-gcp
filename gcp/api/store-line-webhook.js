@@ -276,6 +276,11 @@ async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, ac
     const debugMsg = `[泡泡貓] 查空位除錯（請檢查）\n店：${store?.storeName || '-'}\n收件人：${name}\n除錯：${slotsDebug}\n\n${hint}`;
     sendAdminLinePush(debugMsg).catch((e) => console.warn('[store-line-webhook] 除錯 LINE 推播失敗', e?.message || e));
   }
+  // Token 失效（401/Unauthenticated）時：不傳任何訊息給客人（不傳滿了、也不 reply）；只有 Robby 可收到回覆方便除錯
+  const isTokenError = /401|Unauthenticated/i.test(String(slotsDebug));
+  if (isTokenError && !isTestUser) {
+    return { finalContent: '', replied: false };
+  }
   // 錯誤／除錯行只傳給 Robby Yu，其他使用者不顯示除錯行
   const messageToSend = slotsDebug && !isTestUser
     ? String(finalContent).replace(/\n（除錯：[^\n]+$/, '')
