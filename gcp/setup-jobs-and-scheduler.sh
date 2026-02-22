@@ -1,5 +1,5 @@
 #!/bin/bash
-# 照「執行指南_GCP 權限與步驟.md」建立 Job + Scheduler
+# 照「docs/執行指南_GCP 權限與步驟.md」建立 Job + Scheduler
 # 執行前：source set-env.sh，並設定試算表 ID（LINE_STAFF_SS_ID、LINE_STORE_SS_ID、OUTPUT_SS_ID、TOKEN_SHEET_SS_ID）
 # 也會建立 run acc（日報）的每日凌晨排程（pao-daily-report）
 set -e

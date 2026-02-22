@@ -2,6 +2,21 @@
 
 避開 Google Apps Script `urlfetch` 每日限制；日報與打卡 API 移轉至 GCP 可減輕 GAS 負載。
 
+## 目錄結構
+
+| 目錄／檔案 | 說明 |
+|------------|------|
+| `api/` | HTTP API 處理（core、stores、line-webhook、checkin 等） |
+| `lib/` | 共用模組（auth、sheets、line-webhook、saydou 等） |
+| `scripts/` | 排程與一次性腳本（打卡 API、日報、月報、check-token 等） |
+| `public/` | 靜態頁面與嵌入片段（report、customer-info、checkin-embed-odoo、saydou-token-sync.user.js） |
+| `docs/` | 說明文件（部署、LINE Webhook、出勤、Giveme 等），見 [docs/README.md](docs/README.md) |
+| `test/` | 單元測試 |
+| `index.js` | 入口（serve / daily-report / check-token 等） |
+| `server.js` | HTTP 服務（Cloud Run） |
+| `deploy-line-webhook.sh` | 部署 Cloud Run 服務 |
+| `set-env.sh` | 環境變數（勿提交版控） |
+
 ## 各店日報（GCP 版）
 
 使用 Node.js 直接呼叫 SayDou `dailyIncome`，並寫入「營收報表 / 營收報表_直營」。
@@ -207,4 +222,4 @@ node index.js serve
 ### 測試「urlfetch 滿了」情境
 
 - **打卡頁**：前端使用 `postCheckin(body)` 先打 GAS、失敗再打 GCP，即可在 GAS 掛掉或額度滿時仍能打卡。
-- **LINE 我要打卡**：將 Webhook URL 改為 GCP `/line-webhook` 後，在 LINE 傳「我要打卡」即可驗證；無須真的把 GAS 額度用完。詳見 `測試urlfetch滿了.md`。
+- **LINE 我要打卡**：將 Webhook URL 改為 GCP `/line-webhook` 後，在 LINE 傳「我要打卡」即可驗證；無須真的把 GAS 額度用完。詳見 `docs/測試urlfetch滿了.md`。

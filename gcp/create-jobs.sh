@@ -51,4 +51,4 @@ gcloud run jobs update pao-employee-report --region "$REGION" \
 
 echo "完成。可到 Console 手動執行一次測試，再設定排程："
 echo "  https://console.cloud.google.com/run?project=$PROJECT_ID"
-echo "詳見 接下來步驟.md 與 DEPLOY.md"
+echo "詳見 docs/接下來步驟.md 與 docs/DEPLOY.md"

@@ -8,7 +8,7 @@
 
 ### 做法
 
-- 打卡頁前端改用 **`postCheckin(body)`**（見 `gcp/frontend-checkin-with-fallback.js`）：先 POST 到 GAS，若逾時、5xx 或回應內容含 urlfetch/quota 等關鍵字，再 POST 到 GCP `/checkin`。
+- 打卡頁前端改用 **`postCheckin(body)`**（見 `public/checkin-embed-odoo.html`）：先 POST 到 GCP `/checkin`，失敗再打 GAS。
 - 確保 GCP 服務已部署，且 `LINE_STAFF_SS_ID` 試算表已共用給 GCP 的 Service Account（編輯者）。
 
 ### 如何模擬「urlfetch 滿了」
