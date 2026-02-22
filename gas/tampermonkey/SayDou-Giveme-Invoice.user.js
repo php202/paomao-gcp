@@ -108,8 +108,7 @@
                 <label style="margin-left:12px;"><input type="radio" name="invType" value="B2B"> B2B 統編</label>
             </div>
             <div id="giveme-b2c" style="margin-bottom:12px;">
-                <div style="margin-bottom:6px;"><label>條碼載具（選填，有則不列印）<input type="text" id="giveme-phone" placeholder="/1234567" style="margin-left:6px;width:120px;"></label></div>
-                <div><label>編號載具（選填）<input type="text" id="giveme-orderCode" placeholder="會員載具" style="margin-left:6px;width:140px;"></label></div>
+                <div><label>條碼載具（選填，有則不列印）<input type="text" id="giveme-phone" placeholder="/1234567" style="margin-left:6px;width:120px;"></label></div>
             </div>
             <div id="giveme-b2b" style="display:none;margin-bottom:12px;">
                 <label>買方統編（必填）<input type="text" id="giveme-companyTaxId" style="margin-left:6px;width:120px;"></label>
@@ -147,7 +146,6 @@
                 }
             } else {
                 options.phone = (box.querySelector('#giveme-phone').value || '').trim();
-                options.orderCode = (box.querySelector('#giveme-orderCode').value || '').trim() || undefined;
             }
 
             const btn = box.querySelector('#giveme-submit');
