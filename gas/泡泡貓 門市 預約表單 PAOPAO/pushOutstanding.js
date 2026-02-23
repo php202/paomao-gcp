@@ -143,6 +143,8 @@ function dailyCheckAndPush() {
 // 4. 按鈕確認回填邏輯 (handleConfirmPostback)
 // 以 odooId（P 欄）＋ storeName（B 欄）在試算表內比對找列，不依賴 postback 的 row，避免增刪列後錯行
 // ==========================================
+var CUSTOMER_FALLBACK_MSG = '暫時無法處理，請稍後再試。';
+
 function handleConfirmPostback(event) {
   try {
     handleConfirmPostback_(event);
@@ -151,8 +153,9 @@ function handleConfirmPostback(event) {
     console.error("handleConfirmPostback 錯誤: " + msg);
     var ctx = (event && event.postback && event.postback.data) ? event.postback.data : '';
     appendErrorLog(msg, 'postback: ' + ctx);
+    try { Core.sendAdminLinePush('[PAOPAO 請款] ' + (msg || '請查看試算表「錯誤紀錄」工作表')); } catch (_) {}
     try {
-      Core.sendLineReply(event.replyToken, "錯誤: " + (msg || "請查看試算表「錯誤紀錄」工作表"), LINE_TOKEN_PAOPAO);
+      Core.sendLineReply(event.replyToken, CUSTOMER_FALLBACK_MSG, LINE_TOKEN_PAOPAO);
     } catch (replyErr) {
       console.error("回覆錯誤訊息失敗: " + replyErr);
       appendErrorLog('回覆失敗: ' + replyErr, ctx);
@@ -199,7 +202,8 @@ function handleConfirmPostback_(event) {
   const sheet = externalSs.getSheetByName(SHEET_NAME);
   if (!sheet) {
     console.error("找不到工作表: " + SHEET_NAME);
-    Core.sendLineReply(event.replyToken, '⚠️ 找不到工作表，請聯絡管理員。', LINE_TOKEN_PAOPAO);
+    try { Core.sendAdminLinePush('[PAOPAO 請款] 找不到工作表「' + SHEET_NAME + '」，請聯絡管理員。'); } catch (_) {}
+    Core.sendLineReply(event.replyToken, CUSTOMER_FALLBACK_MSG, LINE_TOKEN_PAOPAO);
     return;
   }
 

@@ -38,14 +38,18 @@ function isPermissionDeniedError(e) {
   return msg.includes('permission') || msg.includes('permission_denied') || msg.includes('not have permission');
 }
 
-function permissionHint(spreadsheetId, callerEmail, purpose) {
+function permissionHint(spreadsheetId, callerEmail, purpose, rawError = '') {
   const url = spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : '(unknown spreadsheetId)';
   const who = callerEmail || '(unknown caller)';
-  return [
+  const lines = [
     `[daily-report] Sheets 權限不足（${purpose}）`,
     `請確認已將試算表共用給 ${who}（至少「編輯者」；Token 只需可檢視）`,
     `試算表：${url}`,
-  ].join('\n');
+  ];
+  if (rawError && String(rawError).toLowerCase().includes('insufficient authentication scopes')) {
+    lines.push('若已共用仍報錯：請在 GCP 專案啟用「Google Sheets API」，並確認執行 Job 的服務帳戶有權使用該 API。');
+  }
+  return lines.join('\n');
 }
 
 function parseYmd(value) {
@@ -347,10 +351,29 @@ async function runOneDate(sheets, spreadsheetId, bearerToken, stores, dateStr, r
   console.log(`[GCP][daily-report] [${dateStr}] 完成（全門市 更新${allWrite.updated}/新增${allWrite.appended}；直營 更新${directWrite.updated}/新增${directWrite.appended}）`);
 }
 
+/** 取得目前執行身分 email（用於權限錯誤時提示「請將試算表共用給此 email」）。ADC 時 getCredentials 常無 client_email，改從 metadata 取。 */
+async function getCallerEmail(auth) {
+  try {
+    const creds = await auth.getCredentials?.().catch(() => null);
+    if (creds?.client_email) return creds.client_email;
+    if (typeof fetch === 'function') {
+      const meta = await fetch(
+        'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email',
+        { headers: { 'Metadata-Flavor': 'Google' } }
+      )
+        .then((r) => (r.ok ? r.text() : null))
+        .catch(() => null);
+      if (meta) return meta;
+    }
+    return '(no client_email; enable Sheets API in project)';
+  } catch (e) {
+    return `(error: ${e?.message})`;
+  }
+}
+
 export async function run(args = []) {
   const auth = await getAuth();
-  const creds = await auth.getCredentials?.().catch(() => null);
-  const callerEmail = creds?.client_email ?? '(no client_email)';
+  const callerEmail = await getCallerEmail(auth);
   console.log('[GCP][daily-report] caller:', callerEmail);
 
   let bearerToken = '';
@@ -359,7 +382,7 @@ export async function run(args = []) {
   } catch (e) {
     if (isPermissionDeniedError(e)) {
       const tokenSheetId = (process.env.TOKEN_SHEET_SS_ID || '').trim();
-      const msg = `${permissionHint(tokenSheetId, callerEmail, '讀取 Token 試算表')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`;
+      const msg = `${permissionHint(tokenSheetId, callerEmail, '讀取 Token 試算表', getGoogleApiErrorMessage(e))}\n原始錯誤：${getGoogleApiErrorMessage(e)}`;
       await sendAdminLinePush('[泡泡貓] daily-report 權限不足\n\n' + msg).catch(() => {});
       throw new Error(msg);
     }
@@ -393,7 +416,7 @@ export async function run(args = []) {
     rowMapDirect = await buildDateStoreRowMap(sheets, spreadsheetId, SHEET_DIRECT);
   } catch (e) {
     if (isPermissionDeniedError(e)) {
-      throw new Error(`${permissionHint(spreadsheetId, callerEmail, '讀寫日報試算表')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
+      throw new Error(`${permissionHint(spreadsheetId, callerEmail, '讀寫日報試算表', getGoogleApiErrorMessage(e))}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
     }
     throw e;
   }
@@ -441,14 +464,14 @@ export async function run(args = []) {
         const tokenExpMsg = `[泡泡貓] daily-report SayDou Token 過期\n\ndaily-report 執行時 SayDou API 回傳 Token 無效或過期。請執行「pao check token」或更新 Token 試算表後再跑。\n錯誤：${msg}`;
         await sendAdminLinePush(tokenExpMsg).catch(() => {});
       } else if (isPermissionDeniedError(e)) {
-        const hint = `${permissionHint(spreadsheetId, callerEmail, '寫入日報資料')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`;
+        const hint = `${permissionHint(spreadsheetId, callerEmail, '寫入日報資料', getGoogleApiErrorMessage(e))}\n原始錯誤：${getGoogleApiErrorMessage(e)}`;
         await sendAdminLinePush('[泡泡貓] daily-report 權限不足\n\n' + hint).catch(() => {});
       }
       // Generic failure alert (best-effort). Avoid spamming: Job usually runs once per day.
       if (!msg.includes('Token 無效或過期') && !msg.includes('HTTP 401') && !msg.includes('HTTP 403') && !isPermissionDeniedError(e)) {
         await sendAdminLinePush(`[泡泡貓] daily-report 執行失敗\n\ndate=${dateStr}\n錯誤：${msg}`).catch(() => {});
       }
-      if (isPermissionDeniedError(e)) throw new Error(`${permissionHint(spreadsheetId, callerEmail, '寫入日報資料')}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
+      if (isPermissionDeniedError(e)) throw new Error(`${permissionHint(spreadsheetId, callerEmail, '寫入日報資料', getGoogleApiErrorMessage(e))}\n原始錯誤：${getGoogleApiErrorMessage(e)}`);
       throw e;
     }
   }

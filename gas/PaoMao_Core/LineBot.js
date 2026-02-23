@@ -51,6 +51,28 @@ function sendLineConfirmButton(storeName, itemsText, totalAmount, rowNum, odooId
   }
 }
 
+/** 推播給管理員（Robby）；使用 LINE_TOKEN_PAOSTAFF，需在 PaoMao_Core 指令碼屬性設 ADMIN_LINE_USER_ID */
+function sendAdminLinePush(text) {
+  var config = typeof getCoreConfig === 'function' ? getCoreConfig() : {};
+  var token = (config.LINE_TOKEN_PAOSTAFF || '').trim();
+  var userId = (config.ADMIN_LINE_USER_ID || '').trim();
+  if (!userId || !token) {
+    console.warn('[Core] 未設定 ADMIN_LINE_USER_ID 或 LINE_TOKEN_PAOSTAFF，無法推播給管理員');
+    return;
+  }
+  try {
+    var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'post',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      payload: JSON.stringify({ to: userId, messages: [{ type: 'text', text: String(text || '') }] }),
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) console.warn('[Core] sendAdminLinePush 失敗: ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 200));
+  } catch (e) {
+    console.warn('[Core] sendAdminLinePush 例外: ' + (e && e.message));
+  }
+}
+
 // 一般回覆
 function sendLineReply(replyToken, text, token) {
   var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
