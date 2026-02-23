@@ -11,7 +11,8 @@ const PAOPAO_CHANNEL_SECRET = (process.env.LINE_CHANNEL_SECRET_PAOPAO || '').tri
 const PAOPAO_TOKEN = (process.env.LINE_TOKEN_PAOPAO || '').trim();
 /** 請款 ACH 紀錄試算表（與 GAS Config EXTERNAL_SS_ID 一致）；未設則不處理「正確」postback */
 const EXTERNAL_SS_ID = (process.env.EXTERNAL_SS_ID || '').trim();
-const ACH_SHEET_NAME = '2026/ACH紀錄';
+/** 工作表分頁名稱（須與試算表底部標籤完全一致，含斜線／繁簡體）；可設 ACH_SHEET_NAME 覆寫 */
+const ACH_SHEET_NAME = (process.env.ACH_SHEET_NAME || '2026/ACH紀錄').trim() || '2026/ACH紀錄';
 
 async function replyText(replyToken, text) {
   if (!replyToken || !PAOPAO_TOKEN) return;
@@ -171,7 +172,9 @@ async function handleConfirmPostback(authClient, event) {
   try {
     rows = await readSheet(authClient, EXTERNAL_SS_ID, `'${ACH_SHEET_NAME}'!A:P`);
   } catch (err) {
-    await replyText(event.replyToken, '⚠️ 找不到工作表，請聯絡管理員。');
+    const errMsg = err?.message || String(err);
+    console.error('[paopao-webhook] readSheet ACH 失敗:', errMsg, 'sheet=', ACH_SHEET_NAME);
+    await replyText(event.replyToken, `⚠️ 無法讀取工作表「${ACH_SHEET_NAME}」。請確認：\n1. 試算表底部是否有此名稱的分頁\n2. Cloud Run 服務帳號是否有編輯權限`);
     return;
   }
   const colP = 16;
