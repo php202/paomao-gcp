@@ -77,6 +77,14 @@ export async function handleAdmin(req, res, { url, bodyJson }) {
           message: '此 action 尚未在 GCP 實作，請在試算表使用本機流程（帳務工具選單對應功能或直接執行 main / issueInvoice 等）。',
         });
         return;
+      // 泡泡貓拉廣告資料 GAS 選單「產出動態預約 / 取得今日預約（改由 GCP 執行）」會呼叫；目前尚未在 GCP 實作，請在試算表直接執行 appointmentLists / todayReservation
+      case 'ads_appointmentLists':
+      case 'ads_todayReservation':
+        sendJson(res, 200, {
+          status: 'error',
+          message: '此 action 尚未在 GCP 實作。請在試算表開啟「擴充功能」→「Apps Script」→ 選取 appointmentLists 或 todayReservation 後執行。',
+        });
+        return;
       default:
         sendJson(res, 200, { status: 'error', message: `unknown admin action: ${action}` });
     }
