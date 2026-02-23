@@ -1,3 +1,4 @@
+import { sendAdminLinePush } from '../lib/line-push.js';
 import { sendJson } from './http-utils.js';
 
 const ADMIN_KEY = (process.env.ADMIN_KEY || process.env.PAO_CAT_SECRET_KEY || '').trim();
@@ -53,6 +54,16 @@ export async function handleAdmin(req, res, { url, bodyJson }) {
       case 'runWaitlistAutoPush': {
         const { run } = await import('../scripts/waitlist-auto-push.js');
         await run();
+        sendJson(res, 200, { status: 'ok' });
+        return;
+      }
+      case 'linePushAdmin': {
+        const text = String(params.text || params.message || '').trim();
+        if (!text) {
+          sendJson(res, 200, { status: 'error', message: 'missing text' });
+          return;
+        }
+        await sendAdminLinePush(text).catch((e) => console.warn('[admin] linePushAdmin failed', e?.message));
         sendJson(res, 200, { status: 'ok' });
         return;
       }

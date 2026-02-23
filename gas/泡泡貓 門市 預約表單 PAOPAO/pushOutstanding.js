@@ -145,6 +145,17 @@ function dailyCheckAndPush() {
 // ==========================================
 var CUSTOMER_FALLBACK_MSG = '暫時無法處理，請稍後再試。';
 
+/** 通知 Robby：優先呼叫 GCP /admin?action=linePushAdmin，否則用 Core.sendAdminLinePush */
+function notifyAdminRobby(text) {
+  try {
+    if (typeof callGcpAdmin_ === 'function') {
+      var res = callGcpAdmin_('linePushAdmin', { text: text });
+      if (res && res.status === 'ok') return;
+    }
+  } catch (_) {}
+  try { Core.sendAdminLinePush(text); } catch (_) {}
+}
+
 function handleConfirmPostback(event) {
   try {
     handleConfirmPostback_(event);
@@ -153,7 +164,7 @@ function handleConfirmPostback(event) {
     console.error("handleConfirmPostback 錯誤: " + msg);
     var ctx = (event && event.postback && event.postback.data) ? event.postback.data : '';
     appendErrorLog(msg, 'postback: ' + ctx);
-    try { Core.sendAdminLinePush('[PAOPAO 請款] ' + (msg || '請查看試算表「錯誤紀錄」工作表')); } catch (_) {}
+    notifyAdminRobby('[PAOPAO 請款] ' + (msg || '請查看試算表「錯誤紀錄」工作表'));
     try {
       Core.sendLineReply(event.replyToken, CUSTOMER_FALLBACK_MSG, LINE_TOKEN_PAOPAO);
     } catch (replyErr) {
@@ -202,7 +213,7 @@ function handleConfirmPostback_(event) {
   const sheet = externalSs.getSheetByName(SHEET_NAME);
   if (!sheet) {
     console.error("找不到工作表: " + SHEET_NAME);
-    try { Core.sendAdminLinePush('[PAOPAO 請款] 找不到工作表「' + SHEET_NAME + '」，請聯絡管理員。'); } catch (_) {}
+    notifyAdminRobby('[PAOPAO 請款] 找不到工作表「' + SHEET_NAME + '」，請聯絡管理員。');
     Core.sendLineReply(event.replyToken, CUSTOMER_FALLBACK_MSG, LINE_TOKEN_PAOPAO);
     return;
   }

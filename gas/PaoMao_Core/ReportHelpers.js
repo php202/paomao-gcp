@@ -440,6 +440,103 @@ function formatDirectStoreCompletionRate(val) {
 }
 
 /**
+ * 從 訊息一覽 的 A 欄（訊息時間）或 F 欄（回覆時間字串）解析成時間戳（ms）。
+ * 支援 Date 物件、ISO 字串、或 "yyyy/MM/dd HH:mm:ss"。
+ */
+function parseMessageListTime_(val) {
+  if (val == null) return NaN;
+  if (val instanceof Date) return val.getTime();
+  var s = String(val).trim();
+  if (!s) return NaN;
+  var d = new Date(s);
+  if (!isNaN(d.getTime())) return d.getTime();
+  // 嘗試 yyyy/MM/dd HH:mm:ss（台灣常用）
+  var m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+  if (m) {
+    d = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10), parseInt(m[4], 10), parseInt(m[5], 10), parseInt(m[6], 10) || 0);
+    return isNaN(d.getTime()) ? NaN : d.getTime();
+  }
+  return NaN;
+}
+
+/**
+ * 依「訊息一覽」計算各店平均回覆時間（訊息時間 A → 回覆時間 F），寫入 店家基本資料 J 欄。
+ * 僅計算有被標記回覆的列（F 欄有值）；F 欄在員工標記完成時會寫入回覆時間字串。
+ * 可手動執行或設為時間驅動觸發（例如每小時一次）。
+ */
+function updateStoreSheetAverageReplyTime() {
+  var config = (typeof getCoreConfig === "function") ? getCoreConfig() : {};
+  var ssId = config && config.LINE_STORE_SS_ID ? config.LINE_STORE_SS_ID : "";
+  if (!ssId) {
+    console.warn("[平均回覆時間] 無法取得 LINE_STORE_SS_ID");
+    return;
+  }
+  try {
+    var ss = SpreadsheetApp.openById(ssId);
+    var storeSheet = ss.getSheetById(72760104) || ss.getSheetByName("店家基本資料");
+    var msgSheet = ss.getSheetByName("訊息一覽");
+    if (!storeSheet || !msgSheet) {
+      console.warn("[平均回覆時間] 找不到店家基本資料或訊息一覽");
+      return;
+    }
+    var msgData = msgSheet.getDataRange().getValues();
+    var MSG_TIME_COL = 0;   // A：訊息時間
+    var MSG_STORE_COL = 2;  // C：店家
+    var MSG_REPLY_COL = 5;  // F：狀態（有值時為回覆時間字串）
+
+    // 依店名彙總：該店每筆「已回覆」的 (回覆時間 - 訊息時間) 分鐘數
+    var byStore = {};
+    for (var j = 1; j < msgData.length; j++) {
+      var m = msgData[j];
+      var storeName = (m[MSG_STORE_COL] != null) ? String(m[MSG_STORE_COL]).trim() : "";
+      if (!storeName) continue;
+      var replyVal = m[MSG_REPLY_COL];
+      if (replyVal == null || String(replyVal).trim() === "") continue;
+      var msgMs = parseMessageListTime_(m[MSG_TIME_COL]);
+      var replyMs = parseMessageListTime_(replyVal);
+      if (isNaN(msgMs) || isNaN(replyMs) || replyMs < msgMs) continue;
+      var minutes = (replyMs - msgMs) / (60 * 1000);
+      if (!byStore[storeName]) byStore[storeName] = [];
+      byStore[storeName].push(minutes);
+    }
+
+    var lastRow = storeSheet.getLastRow();
+    if (lastRow < 2) return;
+    var storeData = storeSheet.getRange(2, 1, lastRow, 12).getValues();
+    var STORE_NAME_COL = 1;  // B：店名
+    var J_COL = 10;          // J 欄（1-based）
+
+    // 確保第 1 列 J 欄標題
+    var headerVal = storeSheet.getRange(1, J_COL).getValue();
+    if (headerVal == null || String(headerVal).trim() === "") {
+      storeSheet.getRange(1, J_COL).setValue("平均回覆時間");
+    }
+
+    var jValues = [];
+    for (var i = 0; i < storeData.length; i++) {
+      var storeName = (storeData[i][STORE_NAME_COL] != null) ? String(storeData[i][STORE_NAME_COL]).trim() : "";
+      var display = "";
+      if (storeName && byStore[storeName] && byStore[storeName].length > 0) {
+        var sum = 0;
+        for (var k = 0; k < byStore[storeName].length; k++) sum += byStore[storeName][k];
+        var avgMin = sum / byStore[storeName].length;
+        if (avgMin >= 60) {
+          display = (Math.round(avgMin / 6) / 10).toFixed(1) + " 小時";
+        } else {
+          display = Math.round(avgMin) + " 分鐘";
+        }
+      }
+      jValues.push([display]);
+    }
+    if (jValues.length > 0) {
+      storeSheet.getRange(2, J_COL, jValues.length, 1).setValues(jValues);
+    }
+  } catch (e) {
+    console.warn("[平均回覆時間] 寫入失敗:", e && e.message ? e.message : String(e));
+  }
+}
+
+/**
  * 依使用者輸入取得報告 handler（供員工打卡等專案呼叫）
  * @param {string} msg - 使用者輸入（會 trim）
  * @returns {string|null} "yesterday" | "tomorrow" | "monthly" | "employee" 或 null

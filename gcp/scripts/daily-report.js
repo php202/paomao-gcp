@@ -184,9 +184,8 @@ function parseDailyRow(dateStr, store, apiJson) {
   const lineUnearn = lineTotal - lineRecord;
   const todayService = runData.businessIncome?.service ?? 0;
 
-  // A 欄留空；日期、店家一律字串，避免直營表日期顯示成數字
+  // A 欄不寫入（保留）；B=日期、C=店家，一律字串避免直營表日期顯示成數字
   return [
-    '',
     String(dateStr || ''),
     String((store.alias || '').trim() || store.storid),
     cashTotal,
@@ -202,6 +201,7 @@ function parseDailyRow(dateStr, store, apiJson) {
 }
 
 async function ensureHeader(sheets, spreadsheetId, sheetName) {
+  // 標題 A1 留空，B1=日期、C1=店家… 與資料列 B=日期、C=店家 對齊
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: `'${sheetName}'!A1:L1`,
@@ -278,15 +278,15 @@ async function buildDateStoreRowMap(sheets, spreadsheetId, sheetName) {
 
 async function upsertRows(sheets, spreadsheetId, sheetName, rowMap, rows) {
   if (!rows.length) return { updated: 0, appended: 0 };
-  // row = ['', dateStr, store, ...] 共 12 欄，key 為 dateStr|store
+  // row = [dateStr, store, ...] 共 11 欄寫入 B:L（A 欄不寫入）
   const updates = [];
   const appends = [];
 
   for (const row of rows) {
-    const key = `${row[1]}|${String(row[2] || '').trim()}`;
+    const key = `${row[0]}|${String(row[1] || '').trim()}`;
     const rowIndex = rowMap[key];
     if (rowIndex) {
-      updates.push({ range: `'${sheetName}'!A${rowIndex}:L${rowIndex}`, values: [row] });
+      updates.push({ range: `'${sheetName}'!B${rowIndex}:L${rowIndex}`, values: [row] });
     } else {
       appends.push(row);
     }
@@ -302,7 +302,7 @@ async function upsertRows(sheets, spreadsheetId, sheetName, rowMap, rows) {
   if (appends.length) {
     await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: `'${sheetName}'!A:L`,
+      range: `'${sheetName}'!B:L`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: appends },
