@@ -67,6 +67,16 @@ export async function handleAdmin(req, res, { url, bodyJson }) {
         sendJson(res, 200, { status: 'ok' });
         return;
       }
+      // 請款表單內容 GAS 選單「改由 GCP 執行」會呼叫；實際產出仍在 GAS 試算表本機流程，此處僅回傳說明
+      case 'billing_bankTxt':
+      case 'billing_issueInvoice':
+      case 'billing_createLaborReceipts':
+      case 'billing_cleanupTempSheets':
+        sendJson(res, 200, {
+          status: 'error',
+          message: '此 action 尚未在 GCP 實作，請在試算表使用本機流程（帳務工具選單對應功能或直接執行 main / issueInvoice 等）。',
+        });
+        return;
       default:
         sendJson(res, 200, { status: 'error', message: `unknown admin action: ${action}` });
     }
