@@ -2,7 +2,11 @@ import fetch from 'node-fetch';
 import { verifyLineSignature } from '../lib/line-webhook.js';
 import { appendSheet, readSheet, writeSheet, batchUpdateValues } from '../lib/sheets.js';
 import { getDirectStoreReplyStatusText } from '../lib/store-reply-status.js';
+import { sendAdminLinePush } from '../lib/line-push.js';
 import { sendJson } from './http-utils.js';
+
+/** 管理員級錯誤只推給 Robby，客戶只收到通用訊息 */
+const CUSTOMER_FALLBACK_MSG = '暫時無法處理，請稍後再試。';
 
 const PAOPAO_STORE_SS_ID = (process.env.PAOPAO_STORE_SS_ID || '').trim();
 /** 店家回覆狀態報表用（各店訊息一覽表，含店家名、狀態欄）；與員工打卡同一份 */
@@ -36,6 +40,23 @@ async function fetchDisplayName(userId) {
     if (!res.ok) return '';
     const json = JSON.parse(text);
     return String(json?.displayName || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/** 取得 LINE 群組顯示名稱（用於訊息一覽 C 欄顯示真實群組名而非 UUID） */
+async function fetchGroupName(groupId) {
+  if (!groupId || !PAOPAO_TOKEN) return '';
+  try {
+    const res = await fetch(`https://api.line.me/v2/bot/group/${encodeURIComponent(groupId)}/summary`, {
+      method: 'get',
+      headers: { Authorization: `Bearer ${PAOPAO_TOKEN}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return '';
+    const json = await res.json();
+    return String(json?.groupName || '').trim();
   } catch {
     return '';
   }
@@ -159,7 +180,8 @@ async function handleConfirmPostback(authClient, event) {
     return;
   }
   if (!EXTERNAL_SS_ID) {
-    await replyText(event.replyToken, '⚠️ 伺服器未設定 ACH 試算表，請聯絡管理員。');
+    await sendAdminLinePush('[PAOPAO 請款] 伺服器未設定 ACH 試算表 (EXTERNAL_SS_ID)，請聯絡管理員設定。').catch(() => {});
+    await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
     return;
   }
   const source = event.source || {};
@@ -174,7 +196,8 @@ async function handleConfirmPostback(authClient, event) {
   } catch (err) {
     const errMsg = err?.message || String(err);
     console.error('[paopao-webhook] readSheet ACH 失敗:', errMsg, 'sheet=', ACH_SHEET_NAME);
-    await replyText(event.replyToken, `⚠️ 無法讀取工作表「${ACH_SHEET_NAME}」。請確認：\n1. 試算表底部是否有此名稱的分頁\n2. Cloud Run 服務帳號是否有編輯權限`);
+    await sendAdminLinePush(`[PAOPAO 請款] 無法讀取工作表「${ACH_SHEET_NAME}」。請確認：\n1. 試算表底部是否有此名稱的分頁\n2. Cloud Run 服務帳號是否有編輯權限\n\n錯誤: ${errMsg}`).catch(() => {});
+    await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
     return;
   }
   const colP = 16;
@@ -207,7 +230,8 @@ async function handleConfirmPostback(authClient, event) {
       { range: `'${ACH_SHEET_NAME}'!G${rowIndex}`, values: [[`${now} 由 ${userName} 確認`]] },
     ]);
   } catch (err) {
-    await replyText(event.replyToken, '⚠️ 寫入試算表失敗，請聯絡管理員。');
+    await sendAdminLinePush(`[PAOPAO 請款] 寫入試算表失敗（單號: ${odooId}）\n\n${err?.message || err}`).catch(() => {});
+    await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
     return;
   }
   await replyText(event.replyToken, '✅ 已確認，請稍候收據。');
@@ -281,6 +305,7 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
   // Log text messages into PAOPAO 試算表（PAOPAO_STORE_SS_ID）的工作表「訊息一覽」
   // 試算表範例：https://docs.google.com/spreadsheets/d/1-t4KPVK-uzJ2xUoy_NR3d4XcUohLHVETEFXTlvj4baE/edit
   // 該試算表內必須有名為「訊息一覽」的工作表，且 Cloud Run 的 Service Account 需有編輯權限
+  // C 欄「群組」寫入 LINE 群組真實名稱，不寫 UUID
   const PAOPAO_MESSAGE_SHEET_NAME = '訊息一覽';
   const logRows = [];
   for (const event of events) {
@@ -289,7 +314,16 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     const msg = String(event?.message?.text || '');
     const replyToken = String(event?.replyToken || '').trim();
     const sourceType = String(event?.source?.type || 'user');
-    const sourceName = sourceType === 'group' ? `[群] ${String(event?.source?.groupId || '')}` : sourceType === 'room' ? `[聊天室] ${String(event?.source?.roomId || '')}` : '個人私訊';
+    let sourceName;
+    if (sourceType === 'group') {
+      const groupId = String(event?.source?.groupId || '');
+      const groupName = await fetchGroupName(groupId);
+      sourceName = groupName ? `[群] ${groupName}` : '[群] 未知群組';
+    } else if (sourceType === 'room') {
+      sourceName = `[聊天室] ${String(event?.source?.roomId || '')}`;
+    } else {
+      sourceName = '個人私訊';
+    }
     const userName = await fetchDisplayName(userId);
     logRows.push([new Date().toISOString(), replyToken, sourceName, userName, msg, event?.source?.groupId || '', event?.source?.roomId || '']);
   }

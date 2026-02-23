@@ -242,11 +242,8 @@ function handleLineWebhook(data, lineToken) {
       
       if (event.source.type === 'group') {
         groupId = event.source.groupId;
-        
-        // ★★★ 修改重點：改用 Core 的函式 ★★★
-        // 假設 Core 裡已經有了 getGroupName (含快取)
-        const groupName = Core.getGroupName(groupId, lineToken);
-        sourceName = `[群] ${groupName}`; 
+        const groupName = Core.getGroupName(groupId, lineToken) || '';
+        sourceName = groupName ? `[群] ${groupName}` : '[群] 未知群組';
 
       } else if (event.source.type === 'room') {
         roomId = event.source.roomId;
