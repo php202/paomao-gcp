@@ -87,7 +87,15 @@
             '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + (title || '發票列印').replace(/</g, '&lt;') + '</title>' +
             '<style>@page{margin:0;size:80mm auto;}body{margin:0;padding:0;background:#fff;}@media print{body{margin:0;padding:0;}.print-hide{display:none!important;}img{display:block;margin:0 auto;max-width:100%;height:auto;}}</style></head>' +
             '<body>' +
-            '<p class="print-hide" style="margin:8px;font-size:12px;color:#666;">列印時請關閉「頁首與頁尾」，只列印發票本體。</p>' +
+            '<div class="print-hide" style="margin:8px;font-size:12px;color:#333;line-height:1.6;">' +
+            '<p style="margin:0 0 6px 0;font-weight:bold;">感熱紙列印設定：</p>' +
+            '<ul style="margin:0;padding-left:18px;">' +
+            '<li>展開「更多設定」→ 邊界選 <b>無</b></li>' +
+            '<li>紙張大小：58mm 感熱紙（如 58×3276mm）</li>' +
+            '<li>縮放：預設或 100%</li>' +
+            '<li><b>請勿勾選</b>「頁首及頁尾」「背景圖形」</li>' +
+            '</ul>' +
+            '<p style="margin:6px 0 0;color:#666;">預覽若未顯示發票可點「符合視窗寬度」後再列印。</p></div>' +
             '<img src="' + dataUrl.replace(/"/g, '&quot;') + '" alt="發票" onload="window.focus();window.print();">' +
             '</body></html>'
         );
