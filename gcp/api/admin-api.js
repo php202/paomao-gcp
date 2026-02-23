@@ -22,6 +22,7 @@ export async function handleAdmin(req, res, { url, bodyJson }) {
       case 'runDailyReport': {
         const { run } = await import('../scripts/daily-report.js');
         const args = [];
+        if (params.date) args.push(String(params.date));
         if (params.startDate) args.push(String(params.startDate));
         if (params.endDate) args.push(String(params.endDate));
         await run(args);

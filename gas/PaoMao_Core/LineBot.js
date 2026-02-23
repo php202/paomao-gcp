@@ -238,7 +238,8 @@ function getUserDisplayName(userId, groupId, roomId, token) {
   }
 }
 function getGroupName(groupId, token) {
-  if (!token || !groupId) return groupId;
+  // 無 token 或 groupId 時回傳空字串，避免群組名稱欄位寫入 UUID
+  if (!token || !groupId) return "";
 
   // --- 快取機制 ---
   const cache = CacheService.getScriptCache();
@@ -257,7 +258,7 @@ function getGroupName(groupId, token) {
 
     // 檢查 HTTP 狀態碼 (非 200 代表失敗，可能是機器人不在群組內)
     if (res.getResponseCode() !== 200) {
-      return `未知群組(${groupId})`;
+      return "未知群組"; // 不回傳 groupId，避免 C 排顯示 UUID
     }
 
     const json = JSON.parse(res.getContentText());
@@ -269,7 +270,7 @@ function getGroupName(groupId, token) {
     return name;
   } catch (e) {
     console.error(`[Core] getGroupName Error: ${e}`);
-    return groupId; // 失敗時回傳 ID
+    return ""; // 失敗時不回傳 ID，避免群組名稱欄位顯示 UUID
   }
 }
 
