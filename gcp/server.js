@@ -394,8 +394,8 @@ export function startServer() {
       if (method === 'GET') {
         send(res, 200, {
           usage: 'POST JSON: { order, options }',
-          order: 'Saydou order 或含 ordds[], price_/rprice, date, ordrsn, memnam, remark',
-          options: { type: 'B2C|B2B', phone: '手機條碼(例/1234567)', orderCode: '編號載具', companyTaxId: 'B2B買方統編' },
+          order: 'Saydou order 或含 ordds[], price_/rprice, date, ordrsn, memnam, remark；若有實際收款(優惠券折抵)可傳 actualAmount/invoiceAmount/realTotal/payamt',
+          options: { type: 'B2C|B2B', phone: '手機條碼', companyTaxId: 'B2B買方統編', invoiceAmount: '發票金額(實際收款，選填)' },
           example: { order: { ordds: [{ godnam: '測試', rprice: 10, amount: 1 }], rprice: 10, date: '2026-02-20', ordrsn: 'TEST001' }, options: { type: 'B2C' } },
         });
         return;

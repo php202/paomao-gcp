@@ -102,7 +102,11 @@
         box.style.cssText = 'background:#fff;border-radius:8px;padding:40px;min-width:640px;max-width:90vw;box-shadow:0 4px 20px rgba(0,0,0,.2);';
         box.innerHTML = `
             <h3 style="margin:0 0 12px 0;font-size:16px;">開立電子發票</h3>
-            <p style="margin:0 0 12px;color:#666;font-size:13px;">單號 ${(order.ordrsn || order.ordcid || '').slice(0, 20)} 金額 $${order.rprice ?? order.price_ ?? 0}</p>
+            <p style="margin:0 0 12px;color:#666;font-size:13px;">單號 ${(order.ordrsn || order.ordcid || '').slice(0, 20)} 訂單總額 $${order.rprice ?? order.price_ ?? 0}</p>
+            <div style="margin-bottom:12px;">
+                <label>發票金額（實際收款，選填）<input type="number" id="giveme-invoiceAmount" placeholder="與訂單總額相同則留空" min="1" step="1" style="margin-left:6px;width:100px;"></label>
+                <span style="color:#888;font-size:12px;">若部分為優惠券／儲值等，請填實際開立金額（例 520）</span>
+            </div>
             <div style="margin-bottom:12px;">
                 <label><input type="radio" name="invType" value="B2C" checked> B2C 一般</label>
                 <label style="margin-left:12px;"><input type="radio" name="invType" value="B2B"> B2B 統編</label>
@@ -138,6 +142,11 @@
         box.querySelector('#giveme-submit').addEventListener('click', () => {
             const isB2B = box.querySelector('input[name="invType"]:checked').value === 'B2B';
             const options = { type: isB2B ? 'B2B' : 'B2C' };
+            const invoiceAmountVal = (box.querySelector('#giveme-invoiceAmount').value || '').trim();
+            if (invoiceAmountVal) {
+                const n = parseInt(invoiceAmountVal, 10);
+                if (!isNaN(n) && n >= 1) options.invoiceAmount = n;
+            }
             if (isB2B) {
                 options.companyTaxId = (box.querySelector('#giveme-companyTaxId').value || '').trim();
                 if (!options.companyTaxId) {

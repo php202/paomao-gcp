@@ -112,11 +112,24 @@ function buildItemsFromOrder(order) {
 }
 
 /**
- * 從 Saydou order 取總金額（整數）
+ * 從 Saydou order 取總金額（整數），用於明細加總等
  */
 function getTotalFromOrder(order) {
   const total = Number(order?.rprice ?? order?.price_ ?? 0);
   return Math.max(0, Math.round(total));
+}
+
+/**
+ * 發票應開金額（實際收款）：優先 options.invoiceAmount 或 order 的實際收款欄位，否則用訂單總額
+ * 當有優惠券／加購券時，Saydou 可能傳 actualAmount / invoiceAmount / realTotal / payamt 等表示實際收款
+ */
+function getInvoiceTotal(order, options) {
+  const fromOpt = options?.invoiceAmount != null ? Number(options.invoiceAmount) : NaN;
+  if (!Number.isNaN(fromOpt) && fromOpt >= 0) return Math.round(fromOpt);
+  const fromOrder =
+    Number(order?.actualAmount ?? order?.invoiceAmount ?? order?.realTotal ?? order?.payamt ?? NaN);
+  if (!Number.isNaN(fromOrder) && fromOrder >= 0) return Math.round(fromOrder);
+  return getTotalFromOrder(order);
 }
 
 /**
@@ -224,14 +237,25 @@ function getCustomerName(order) {
   return undefined;
 }
 
+/** 發票明細：若開立金額與訂單總額不同則回傳單一筆（實際收款），否則回傳 ordds 明細 */
+function getInvoiceItems(order, options) {
+  const totalFee = getInvoiceTotal(order, options);
+  const orderTotal = getTotalFromOrder(order);
+  const origItems = buildItemsFromOrder(order);
+  if (totalFee !== orderTotal && origItems.length > 0) {
+    return [{ name: sanitizeName(origItems[0]?.name) || '銷售', money: totalFee, number: 1 }];
+  }
+  return origItems;
+}
+
 /**
  * 組 B2C 請求 body（不列印時需 phone 或 orderCode 其一）；cred = { uncode, idno, password }
  */
 function buildB2CBody(order, options, cred) {
   const timeStamp = Date.now().toString();
   const sign = md5Upper(timeStamp + cred.idno + cred.password);
-  const items = buildItemsFromOrder(order);
-  const totalFee = getTotalFromOrder(order);
+  const totalFee = getInvoiceTotal(order, options);
+  const items = getInvoiceItems(order, options);
   const datetime = getInvoiceDate(order);
   const content = getInvoiceContent(order);
 
@@ -262,8 +286,8 @@ function buildB2CBody(order, options, cred) {
 function buildB2BBody(order, options, cred) {
   const timeStamp = Date.now().toString();
   const sign = md5Upper(timeStamp + cred.idno + cred.password);
-  const items = buildItemsFromOrder(order);
-  const totalAmount = getTotalFromOrder(order);
+  const totalAmount = getInvoiceTotal(order, options);
+  const items = getInvoiceItems(order, options);
   const sales = Math.round(totalAmount / 1.05);
   const taxAmount = totalAmount - sales;
   const datetime = getInvoiceDate(order);
@@ -338,7 +362,7 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
   const options = body?.options ?? {};
   const type = String(options.type ?? 'B2C').toUpperCase();
   const storid = order?.storid != null ? String(order.storid).trim() : '';
-  const totalFee = getTotalFromOrder(order);
+  const totalFee = getInvoiceTotal(order, options);
   const ordrsn = order?.ordrsn || order?.ordcid || '';
 
   console.log('[giveme-invoice]', reqId, 'start', { storid, type, totalFee, ordrsn: String(ordrsn).slice(0, 30) });
@@ -357,7 +381,7 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
     return;
   }
 
-  const items = buildItemsFromOrder(order);
+  const items = getInvoiceItems(order, options);
   if (!items.length) {
     send(res, 400, { success: false, msg: '訂單無有效明細' });
     return;
