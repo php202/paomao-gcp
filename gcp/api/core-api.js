@@ -418,7 +418,7 @@ function consumeReportToken(token) {
   return x.payload;
 }
 
-async function fetchReservationData(auth, startDate, endDate, storeId) {
+export async function fetchReservationData(auth, startDate, endDate, storeId) {
   const token = await getBearerToken(auth);
   const url = 'https://saywebdatafeed.saydou.com/api/management/analytics/reservation';
   const payload = { timebase: 'reservation', start: startDate, end: endDate, 'store[]': [storeId] };
@@ -430,14 +430,14 @@ async function fetchReservationData(auth, startDate, endDate, storeId) {
   return json?.source ?? [];
 }
 
-async function fetchTodayReservationData(auth, start, end, storeId) {
+export async function fetchTodayReservationData(auth, start, end, storeId) {
   const token = await getBearerToken(auth);
   const url = 'https://saywebdatafeed.saydou.com/api/management/analytics/reservation';
   const payload = { timebase: 'create', start, end, 'store[]': [storeId] };
   return saydouFetchJson(url, token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
 }
 
-async function oldNewA(auth, startDate, endDate, storeId) {
+export async function oldNewA(auth, startDate, endDate, storeId) {
   const token = await getBearerToken(auth);
   const url =
     `https://saywebdatafeed.saydou.com/api/management/analytics/member/oldNewAnalyse/0/1?start=${encodeURIComponent(startDate)}&end=${encodeURIComponent(endDate)}` +

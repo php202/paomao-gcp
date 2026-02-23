@@ -11,8 +11,9 @@ function onOpen() {
   ui.createMenu('🛠 分析幫手')
       .addItem('🚀 產出動態預約（改由 GCP 執行）', 'gcp_appointmentLists')
       .addItem('🚀 取得今日預約（改由 GCP 執行）', 'gcp_todayReservation')
-      // .addSeparator()
-      // .addItem('🗑️ 刪除暫存工作表', 'cleanupTempSheets')
+      .addSeparator()
+      .addItem('📋 產出動態預約（本機執行）', 'appointmentLists')
+      .addItem('📋 取得今日預約（本機執行）', 'todayReservation')
       .addToUi();
 }
 

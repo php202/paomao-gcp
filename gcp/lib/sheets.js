@@ -6,6 +6,12 @@ export async function readSheet(auth, spreadsheetId, range) {
   return res.data.values || [];
 }
 
+/** 清除指定範圍的內容 */
+export async function clearSheetRange(auth, spreadsheetId, range) {
+  const sheets = google.sheets({ version: 'v4', auth });
+  await sheets.spreadsheets.values.clear({ spreadsheetId, range });
+}
+
 /** 寫入指定範圍（單一列或多列）；values 為二維陣列，undefined/null 會轉成空字串 */
 export async function writeSheet(auth, spreadsheetId, range, values) {
   const sheets = google.sheets({ version: 'v4', auth });
