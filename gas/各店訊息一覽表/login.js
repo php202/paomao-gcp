@@ -108,49 +108,56 @@ function doGet(e) {
 
 /**
  * 取得 GCP Stores API 網址與金鑰（指令碼屬性：GCP_STORES_API_URL、GCP_CORE_SECRET_KEY 或 STORE_API_KEY）
+ * 僅在為 Cloud Run 網址（run.app）時才用 GCP_CORE_API_URL 推導 /stores，避免誤用 GAS Core URL。
  */
 function getGcpStoresApiParams() {
   var p = typeof PropertiesService !== "undefined" ? PropertiesService.getScriptProperties() : null;
   if (!p) return { url: "", key: "" };
   var url = (p.getProperty("GCP_STORES_API_URL") || "").trim();
+  if (!url) {
+    var coreUrl = (p.getProperty("GCP_CORE_API_URL") || "").trim();
+    if (coreUrl && coreUrl.indexOf("run.app") !== -1) url = coreUrl.replace(/\/core\/?$/, "") + "/stores";
+  }
   if (!url && typeof getGcpCoreApiParams === "function") {
     var core = getGcpCoreApiParams();
-    if (core && core.url) url = (core.url + "").replace(/\/core\/?$/, "") + "/stores";
-  }
-  if (!url && p.getProperty("GCP_CORE_API_URL")) {
-    url = (p.getProperty("GCP_CORE_API_URL") + "").trim().replace(/\/core\/?$/, "") + "/stores";
+    if (core && core.url && (core.url + "").indexOf("run.app") !== -1) url = (core.url + "").replace(/\/core\/?$/, "") + "/stores";
   }
   var key = (p.getProperty("STORE_API_KEY") || p.getProperty("GCP_CORE_SECRET_KEY") || "").trim();
   return { url: url, key: key };
 }
 
 /**
- * 查詢空位：若已設定 GCP_STORES_API_URL 則代轉至 GCP /stores，否則走本機 getSlots(e)
+ * 查詢空位：若已設定 GCP Stores URL 則代轉至 GCP /stores，否則走本機 getSlots(e)。
+ * 本機 getSlots 會呼叫 Core API 取 token，常因跨專案 403 失敗，故建議設定 GCP。
  */
 function proxySearchAvailabilityToGcpOrLocal(e) {
   var gcp = getGcpStoresApiParams();
-  if (!gcp.url) {
-    return typeof getSlots === "function" ? getSlots(e) : Core.jsonResponse({ status: "moved", message: "查詢空位請設定 GCP_STORES_API_URL 或使用本機 getSlots。" });
+  if (gcp.url) {
+    var params = e.parameter || {};
+    var parts = [];
+    for (var k in params) if (params.hasOwnProperty(k)) parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(params[k])));
+    var qs = parts.join("&");
+    var fullUrl = gcp.url + (qs ? "?" + qs : "");
+    var options = { method: "get", muteHttpExceptions: true };
+    if (gcp.key) options.headers = { "X-Store-Api-Key": gcp.key };
+    try {
+      var resp = UrlFetchApp.fetch(fullUrl, options);
+      var text = resp.getContentText();
+      var json = null;
+      try { json = JSON.parse(text); } catch (parseErr) { json = { status: "error", message: "GCP 回傳非 JSON", details: text.slice(0, 200) }; }
+      return ContentService.createTextOutput(JSON.stringify(json)).setMimeType(ContentService.MimeType.JSON);
+    } catch (err) {
+      var msg = (err && err.message) ? err.message : String(err);
+      try { appendErrorLog("proxySearchAvailabilityToGcp: " + msg, "doGet"); } catch (logErr) {}
+      return Core.jsonResponse({ status: "error", message: "查詢空位連線失敗", details: msg });
+    }
   }
-  var params = e.parameter || {};
-  var parts = [];
-  for (var k in params) if (params.hasOwnProperty(k)) parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(params[k])));
-  var qs = parts.join("&");
-  var fullUrl = gcp.url + (qs ? "?" + qs : "");
-  var options = { method: "get", muteHttpExceptions: true };
-  if (gcp.key) options.headers = { "X-Store-Api-Key": gcp.key };
-  try {
-    var resp = UrlFetchApp.fetch(fullUrl, options);
-    var code = resp.getResponseCode();
-    var text = resp.getContentText();
-    var json = null;
-    try { json = JSON.parse(text); } catch (parseErr) { json = { status: "error", message: "GCP 回傳非 JSON", details: text.slice(0, 200) }; }
-    return ContentService.createTextOutput(JSON.stringify(json)).setMimeType(ContentService.MimeType.JSON);
-  } catch (err) {
-    var msg = (err && err.message) ? err.message : String(err);
-    try { appendErrorLog("proxySearchAvailabilityToGcp: " + msg, "doGet"); } catch (logErr) {}
-    return Core.jsonResponse({ status: "error", message: "查詢空位連線失敗", details: msg });
-  }
+  // 不再走本機 getSlots（會呼叫 Core API 取 token，跨專案常 403）。未設 GCP 時直接回傳設定說明。
+  return Core.jsonResponse({
+    status: "error",
+    message: "查詢空位請使用 GCP。在「各店訊息一覽表」指令碼屬性新增：GCP_STORES_API_URL = 您的 Cloud Run 網址/stores（例 https://xxx.run.app/stores）、GCP_CORE_SECRET_KEY = 與 GCP 環境變數 STORE_API_KEY 相同的金鑰。",
+    details: "未設定 GCP_STORES_API_URL，已停用本機查詢以避免 Core API 403。"
+  });
 }
 
 // 本地手機正規化（當 Core 未定義時使用）：09xxxxxxxx
