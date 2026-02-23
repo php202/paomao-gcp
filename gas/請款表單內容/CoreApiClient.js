@@ -11,7 +11,10 @@ var CoreApi = (function () {
     var props = PropertiesService.getScriptProperties();
     var gcpUrl = (props.getProperty("GCP_CORE_API_URL") || "").trim();
     var gcpKey = (props.getProperty("GCP_CORE_SECRET_KEY") || "").trim();
-    if (gcpUrl && gcpKey) return { url: gcpUrl, key: gcpKey };
+    if (gcpUrl && gcpKey) {
+      if (/\/admin\/?$/i.test(gcpUrl)) gcpUrl = gcpUrl.replace(/\/admin\/?$/i, "/core");
+      return { url: gcpUrl, key: gcpKey };
+    }
     var url = (props.getProperty("PAO_CAT_CORE_API_URL") || "").trim();
     var key = (props.getProperty("PAO_CAT_SECRET_KEY") || "").trim();
     return { url: url, key: key };

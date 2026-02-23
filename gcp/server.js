@@ -302,6 +302,16 @@ export function startServer() {
       return;
     }
 
+    if (method === 'OPTIONS' && url === '/core') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Max-Age': '86400',
+      });
+      res.end();
+      return;
+    }
     if ((method === 'GET' || method === 'POST') && url === '/core') {
       const authClient = await getAuth();
       let bodyJson = null;

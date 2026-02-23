@@ -8,6 +8,7 @@ import { safeJsonParse, sendJson, sendRedirect, sendText } from './http-utils.js
 
 const CORE_KEY = (process.env.PAO_CAT_SECRET_KEY || '').trim();
 const LINE_STORE_SS_ID = (process.env.LINE_STORE_SS_ID || '').trim();
+const LINE_HQ_SS_ID = (process.env.LINE_HQ_SS_ID || '').trim(); // 泡泡貓 門市資料（門市列表／near 頁用）
 const EXTERNAL_SS_ID = (process.env.EXTERNAL_SS_ID || '').trim(); // 請款單＿店家基本資訊表（若有）
 
 const ODOO_URL = (process.env.ODOO_URL || '').trim();
@@ -640,6 +641,51 @@ async function storeList(auth) {
   return out;
 }
 
+/** 與 GAS getStoreListData() 同格式：供官網 /near 門市據點頁使用，來自 LINE_HQ_SS_ID「門市列表」 */
+const CORS_HEADER = { 'Access-Control-Allow-Origin': '*' };
+
+async function getStoreListDataForNear(auth) {
+  if (!LINE_HQ_SS_ID) return [{ name: '未設定 LINE_HQ_SS_ID', address: '請檢查後端', lineUrl: '', lat: 0, lng: 0 }];
+  try {
+    const rows = await readSheet(auth, LINE_HQ_SS_ID, "'門市列表'!A:AZ");
+    if (!rows || rows.length < 2) return [{ name: '試算表無資料', address: '請檢查後端', lineUrl: '', lat: 0, lng: 0 }];
+    const headers = rows[0].map((h) => String(h || ''));
+    const nameIdx = headers.findIndex((h) => h.indexOf('店名') >= 0);
+    const addrIdx = headers.findIndex((h) => h.indexOf('地址') >= 0);
+    const lineIdx = headers.findIndex((h) => h.indexOf('line官方') >= 0 || h.indexOf('LINE官方') >= 0);
+    const locIdx = headers.findIndex((h) => h.indexOf('經度') >= 0 || h.indexOf('緯度') >= 0);
+    const nIdx = nameIdx >= 0 ? nameIdx : 0;
+    const aIdx = addrIdx >= 0 ? addrIdx : 1;
+    const lIdx = locIdx >= 0 ? locIdx : 39;
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      let lat = 0; let lng = 0;
+      let hasValidCoord = false;
+      const rawCoords = row[lIdx];
+      if (rawCoords && typeof rawCoords === 'string' && rawCoords.indexOf(',') >= 0) {
+        const parts = rawCoords.split(',');
+        lat = parseFloat(parts[0]);
+        lng = parseFloat(parts[1]);
+        if (!Number.isNaN(lat) && !Number.isNaN(lng) && lat !== 0) hasValidCoord = true;
+      }
+      let safeLine = '';
+      if (lineIdx >= 0 && row[lineIdx]) {
+        const rawLine = String(row[lineIdx]).trim();
+        if (rawLine.length > 5 && rawLine !== '無' && rawLine !== '-' && rawLine.toLowerCase() !== 'null' && rawLine.toLowerCase() !== 'none') safeLine = rawLine;
+      }
+      if (hasValidCoord && safeLine) {
+        const safeName = (row[nIdx] ? String(row[nIdx]).replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '') : '') || '店名讀取中';
+        const safeAddr = (row[aIdx] ? String(row[aIdx]).replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '') : '') || '地址讀取中';
+        out.push({ name: safeName, address: safeAddr, lineUrl: safeLine, lat, lng });
+      }
+    }
+    return out.length ? out : [{ name: '無有效門市資料', address: '請檢查門市列表（需有經緯度與 LINE 連結）', lineUrl: '', lat: 0, lng: 0 }];
+  } catch (e) {
+    return [{ name: '後端錯誤: ' + (e && e.message ? e.message : String(e)), address: '請檢查後端', lineUrl: '', lat: 0, lng: 0 }];
+  }
+}
+
 export async function handleCore(req, res, { authClient, url, bodyJson }) {
   // Public shortcuts
   const action = (url.searchParams.get('action') || '').trim();
@@ -648,8 +694,17 @@ export async function handleCore(req, res, { authClient, url, bodyJson }) {
     return;
   }
   if (action === 'storeList') {
-    const data = await storeList(authClient);
-    sendJson(res, 200, { status: 'ok', data });
+    // 與 GAS 一致：回傳門市據點頁用的陣列 [{ name, address, lineUrl, lat, lng }]，並加 CORS 供官網呼叫
+    const data = LINE_HQ_SS_ID
+      ? await getStoreListDataForNear(authClient)
+      : await storeList(authClient);
+    const body = LINE_HQ_SS_ID ? data : { status: 'ok', data };
+    sendJson(res, 200, body, LINE_HQ_SS_ID ? CORS_HEADER : {});
+    return;
+  }
+  if (action === 'storeListNear') {
+    const data = await getStoreListDataForNear(authClient);
+    sendJson(res, 200, data, CORS_HEADER);
     return;
   }
 
