@@ -4,12 +4,12 @@
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('🛠 帳務工具')
-      .addItem('🚀 產出銀行傳輸 TXT 檔（改由 GCP 執行）', 'gcp_main')
-      .addItem('🚀 開發票（改由 GCP 執行）', 'gcp_issueInvoice')
-      .addItem('🚀 產出勞報單（改由 GCP 執行）', 'gcp_createLaborReceipts')
+      .addItem('產出銀行傳輸 TXT 檔', 'main')
+      .addItem('開發票', 'issueInvoice')
+      .addItem('產出勞報單', 'createLaborReceipts')
+      .addItem('刪除暫存工作表', 'cleanupTempSheets')
       .addSeparator()
-      .addItem('🔍 檢查 Odoo 單號與開票連線', 'checkOdooNumberAndCoreApi')
-      .addItem('🗑️ 刪除暫存工作表（改由 GCP 執行）', 'gcp_cleanupTempSheets')
+      .addItem('檢查 Odoo 單號與開票連線', 'checkOdooNumberAndCoreApi')
       .addToUi();
 }
 

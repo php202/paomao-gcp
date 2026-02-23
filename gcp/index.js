@@ -80,6 +80,12 @@ async function main() {
     return;
   }
 
+  if (cmd === 'billing-issue-invoice') {
+    const { run } = await import('./scripts/billing-issue-invoice.js');
+    await run();
+    return;
+  }
+
   if (cmd === 'refresh-customers-by-tomorrow-reservations') {
     const { run } = await import('./scripts/refresh-customers-by-tomorrow-reservations.js');
     await run();

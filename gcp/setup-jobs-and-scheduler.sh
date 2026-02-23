@@ -128,6 +128,28 @@ gcloud run jobs create pao-stores-refresh-customers-tomorrow \
 gcloud run jobs update pao-stores-refresh-customers-tomorrow --region "$REGION" \
   --command "node" --args "index.js,refresh-customers-by-tomorrow-reservations"
 
+# Job 8：請款表單每日開發票（每日 20:00；讀 EXTERNAL_SS_ID 試算表 2026/ACH紀錄 → Odoo 明細 → Giveme 開票 → 寫回 N/R 欄）
+EXTERNAL_SS_ID="${EXTERNAL_SS_ID:-}"
+ODOO_URL="${ODOO_URL:-}"
+ODOO_DB="${ODOO_DB:-}"
+ODOO_USERNAME="${ODOO_USERNAME:-}"
+ODOO_PASSWORD="${ODOO_PASSWORD:-}"
+GIVEME_UNCODE="${GIVEME_UNCODE:-}"
+GIVEME_IDNO="${GIVEME_IDNO:-}"
+GIVEME_PASSWORD="${GIVEME_PASSWORD:-}"
+GIVEME_PROXY_URL="${GIVEME_PROXY_URL:-}"
+gcloud run jobs create pao-billing-issue-invoice \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --task-timeout 15m \
+  --set-env-vars "EXTERNAL_SS_ID=$EXTERNAL_SS_ID,ODOO_URL=$ODOO_URL,ODOO_DB=$ODOO_DB,ODOO_USERNAME=$ODOO_USERNAME,ODOO_PASSWORD=$ODOO_PASSWORD,GIVEME_UNCODE=$GIVEME_UNCODE,GIVEME_IDNO=$GIVEME_IDNO,GIVEME_PASSWORD=$GIVEME_PASSWORD,GIVEME_PROXY_URL=$GIVEME_PROXY_URL" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
+  2>/dev/null || gcloud run jobs update pao-billing-issue-invoice --image "$IMAGE" --region "$REGION" \
+  --set-env-vars "EXTERNAL_SS_ID=$EXTERNAL_SS_ID,ODOO_URL=$ODOO_URL,ODOO_DB=$ODOO_DB,ODOO_USERNAME=$ODOO_USERNAME,ODOO_PASSWORD=$ODOO_PASSWORD,GIVEME_UNCODE=$GIVEME_UNCODE,GIVEME_IDNO=$GIVEME_IDNO,GIVEME_PASSWORD=$GIVEME_PASSWORD,GIVEME_PROXY_URL=$GIVEME_PROXY_URL" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
+gcloud run jobs update pao-billing-issue-invoice --region "$REGION" \
+  --command "node" --args "index.js,billing-issue-invoice"
+
 echo "=== 5. 給 Scheduler 觸發 Job 的權限 ==="
 gcloud run jobs add-iam-policy-binding pao-check-token --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
@@ -142,6 +164,8 @@ gcloud run jobs add-iam-policy-binding pao-stores-cleanup-retention --region="$R
 gcloud run jobs add-iam-policy-binding pao-stores-waitlist-auto-push --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
 gcloud run jobs add-iam-policy-binding pao-stores-refresh-customers-tomorrow --region="$REGION" \
+  --member="serviceAccount:${SA}" --role="roles/run.invoker"
+gcloud run jobs add-iam-policy-binding pao-billing-issue-invoice --region="$REGION" \
   --member="serviceAccount:${SA}" --role="roles/run.invoker"
 
 echo "=== 6. 建立 Cloud Scheduler 排程 ==="
@@ -217,6 +241,22 @@ gcloud scheduler jobs create http pao-stores-refresh-customers-tomorrow-daily \
   --http-method POST \
   --oauth-service-account-email "${SA}" \
   2>/dev/null || echo "（pao-stores-refresh-customers-tomorrow-daily 可能已存在，可略過或到 Console 編輯）"
+
+# 每日 20:00（台灣）：請款表單開發票
+gcloud scheduler jobs create http pao-billing-issue-invoice-daily \
+  --location "$REGION" \
+  --schedule "0 20 * * *" \
+  --time-zone "Asia/Taipei" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/pao-billing-issue-invoice:run" \
+  --http-method POST \
+  --oauth-service-account-email "${SA}" \
+  2>/dev/null || gcloud scheduler jobs update http pao-billing-issue-invoice-daily \
+  --location "$REGION" \
+  --schedule "0 20 * * *" \
+  --time-zone "Asia/Taipei" \
+  --uri "https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/pao-billing-issue-invoice:run" \
+  --http-method POST \
+  --oauth-service-account-email "${SA}"
 
 echo "完成。請到 Console 手動執行一次 Job 測試："
 echo "  https://console.cloud.google.com/run?project=$PROJECT_ID"

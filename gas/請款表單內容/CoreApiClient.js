@@ -1,6 +1,7 @@
 /**
  * 請款表單內容 - Core API 客戶端：不依賴 Core 程式庫，改由 Core API + 本機試算表讀取提供相同介面。
- * 指令碼屬性：PAO_CAT_CORE_API_URL（結尾 /exec）、PAO_CAT_SECRET_KEY
+ * 指令碼屬性：優先 GCP_CORE_API_URL + GCP_CORE_SECRET_KEY（直連 GCP /core，可避免 GAS 403）；
+ *            否則 PAO_CAT_CORE_API_URL（結尾 /exec）+ PAO_CAT_SECRET_KEY。
  * 對外以 Core 物件提供 getBankInfoMap、getTransferDate、cleanupTempSheets，其餘開發票改由 main.js 的 API 函式。
  */
 var CoreApi = (function () {
@@ -8,6 +9,9 @@ var CoreApi = (function () {
 
   function getApiConfig() {
     var props = PropertiesService.getScriptProperties();
+    var gcpUrl = (props.getProperty("GCP_CORE_API_URL") || "").trim();
+    var gcpKey = (props.getProperty("GCP_CORE_SECRET_KEY") || "").trim();
+    if (gcpUrl && gcpKey) return { url: gcpUrl, key: gcpKey };
     var url = (props.getProperty("PAO_CAT_CORE_API_URL") || "").trim();
     var key = (props.getProperty("PAO_CAT_SECRET_KEY") || "").trim();
     return { url: url, key: key };
@@ -15,7 +19,7 @@ var CoreApi = (function () {
 
   function callGet(action, params) {
     var c = getApiConfig();
-    if (!c.url || !c.key) throw new Error("請在指令碼屬性設定 PAO_CAT_CORE_API_URL 與 PAO_CAT_SECRET_KEY");
+    if (!c.url || !c.key) throw new Error("請在指令碼屬性設定 GCP_CORE_API_URL＋GCP_CORE_SECRET_KEY 或 PAO_CAT_CORE_API_URL＋PAO_CAT_SECRET_KEY");
     var q = ["key=" + encodeURIComponent(c.key), "action=" + encodeURIComponent(action)];
     if (params) {
       Object.keys(params).forEach(function (k) {
@@ -28,7 +32,10 @@ var CoreApi = (function () {
     var res = UrlFetchApp.fetch(fullUrl, { muteHttpExceptions: true, timeout: 90, followRedirects: true });
     var code = res.getResponseCode();
     var text = res.getContentText();
-    if (code !== 200) throw new Error("Core API 錯誤: " + code + " " + (text ? text.slice(0, 150) : ""));
+    if (code !== 200) {
+      var hint = (code === 403) ? " 【解法】請在「專案設定」→「指令碼屬性」新增兩筆：① GCP_CORE_API_URL = https://pao-checkin-api-vkffbzouva-de.a.run.app/core  ② GCP_CORE_SECRET_KEY = 與 PAO_CAT_SECRET_KEY 相同（或與 GCP 專案 PAO_CAT_SECRET_KEY 一致）。儲存後重新執行。" : "";
+      throw new Error("Core API 錯誤: " + code + (text && text.indexOf("<html") === -1 ? " " + text.slice(0, 120) : "") + hint);
+    }
     try {
       return JSON.parse(text);
     } catch (e) {

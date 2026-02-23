@@ -488,7 +488,7 @@ async function getCustomerAIResult(auth, phone) {
   return { status: 'error', message: `查無此客人（${phone}）。請確認該手機是否已在「客人消費狀態」試算表。` };
 }
 
-async function getOdooInvoice(auth, id) {
+export async function getOdooInvoice(auth, id) {
   if (!ODOO_URL || !ODOO_DB || !ODOO_USERNAME || !ODOO_PASSWORD) {
     return { status: 'error', message: 'Odoo 設定未完成（ODOO_URL/DB/USERNAME/PASSWORD）' };
   }
@@ -568,7 +568,7 @@ async function getOdooInvoice(auth, id) {
  * /core issueInvoice：請款表單開發票用，固定使用環境變數 GIVEME_*（建議填 storid=0001 的 M/N）。
  * 篡改猴／門市開立發票走 /giveme-invoice，依 order.storid 從試算表拉該門市 M/N。
  */
-async function issueInvoice({ storeInfo, odooNumber, buyType, items }) {
+export async function issueInvoice({ storeInfo, odooNumber, buyType, items }) {
   const odoo = String(odooNumber ?? '');
   const company = storeInfo?.companyName ?? '';
   const safeItems = Array.isArray(items) ? items : [];
