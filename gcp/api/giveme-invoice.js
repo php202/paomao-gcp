@@ -120,12 +120,16 @@ function getTotalFromOrder(order) {
 }
 
 /**
- * 發票應開金額（實際收款）：優先 options.invoiceAmount 或 order 的實際收款欄位，否則用訂單總額
- * 當有優惠券／加購券時，Saydou 可能傳 actualAmount / invoiceAmount / realTotal / payamt 等表示實際收款
+ * 發票應開金額（實際收款）：優先 options.invoiceAmount，其次 order.bmod.cash + order.bmod.card（SayDou 實際收款），否則用訂單總額
  */
 function getInvoiceTotal(order, options) {
   const fromOpt = options?.invoiceAmount != null ? Number(options.invoiceAmount) : NaN;
   if (!Number.isNaN(fromOpt) && fromOpt >= 0) return Math.round(fromOpt);
+  const bmod = order?.bmod;
+  if (bmod && (bmod.cash != null || bmod.card != null)) {
+    const sum = Number(bmod.cash ?? 0) + Number(bmod.card ?? 0);
+    if (sum >= 0) return Math.round(sum);
+  }
   const fromOrder =
     Number(order?.actualAmount ?? order?.invoiceAmount ?? order?.realTotal ?? order?.payamt ?? NaN);
   if (!Number.isNaN(fromOrder) && fromOrder >= 0) return Math.round(fromOrder);
