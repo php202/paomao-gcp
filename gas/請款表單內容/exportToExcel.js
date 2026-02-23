@@ -114,7 +114,7 @@ function exportToExcelWithFilter(excel666To686, pay666ToFranchisee, pay686ToFran
     return;
   }
 
-  const etewfTempSheetName = '銀行匯款格式_' + Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'yyyyMMdd_HHmmss');
+  const etewfTempSheetName = '銀行匯款格式_' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd_HHmmss');
   const tempSheet = ss.insertSheet(etewfTempSheetName);
   tempSheet.getRange(1, 1, filteredData.length, outputHeaders.length).setValues(filteredData);
   const etewfDownloadUrl = `https://docs.google.com/spreadsheets/d/${ss.getId()}/export?format=xlsx&gid=${tempSheet.getSheetId()}`;

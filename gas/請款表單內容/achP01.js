@@ -6,11 +6,12 @@ function achP01(lists) {
     SpreadsheetApp.getUi().alert('設定錯誤：' + e.toString());
     return;
   }
-  // 1. 日期處理
+  // 1. 日期處理（匯出時間以 Asia/Taipei 為準）
+  const TZ = "Asia/Taipei";
   const now = new Date();
   const todayROC = (now.getFullYear() - 1911).toString() +
-    Utilities.formatDate(now, "GMT+8", "MMdd");
-  const fileDate = Utilities.formatDate(now, "GMT+8", "yyyyMMddHHmmss");
+    Utilities.formatDate(now, TZ, "MMdd");
+  const fileDate = Utilities.formatDate(now, TZ, "yyyyMMddHHmmss");
   
   // 2. 初始化內容與 Header (固定長度 250)
   let txtContent = [];

@@ -133,7 +133,7 @@ function generatePDF(name, rowData, folder) {
   // --- 準備檔名 ---
   let timestampRaw = rowData['時間戳記'];
   if (!timestampRaw) timestampRaw = new Date(); 
-  const dateStrForFilename = Utilities.formatDate(new Date(timestampRaw), Session.getScriptTimeZone(), 'yyyyMMdd');
+  const dateStrForFilename = Utilities.formatDate(new Date(timestampRaw), 'Asia/Taipei', 'yyyyMMdd');
   
   const newFilename = `${dateStrForFilename}_${name}_勞報單`;
 
@@ -149,7 +149,7 @@ function generatePDF(name, rowData, folder) {
   for (const [placeholder, header] of Object.entries(CONFIG.TEXT_MAPPING)) {
     let value = rowData[header];
     if (value instanceof Date) {
-      value = Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy/MM/dd');
+      value = Utilities.formatDate(value, 'Asia/Taipei', 'yyyy/MM/dd');
     }
     slide.replaceAllText(placeholder, value ? value.toString() : '');
   }
@@ -203,7 +203,7 @@ function generatePDF(name, rowData, folder) {
 function formatDate(dateObj) {
   if (!dateObj) return '';
   if (dateObj instanceof Date) {
-    return Utilities.formatDate(dateObj, Session.getScriptTimeZone(), 'yyyy/MM/dd');
+    return Utilities.formatDate(dateObj, 'Asia/Taipei', 'yyyy/MM/dd');
   }
   return dateObj.toString().substring(0, 10);
 }
