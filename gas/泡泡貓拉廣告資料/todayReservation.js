@@ -1,5 +1,4 @@
 /** 預約清單（動態）試算表 ID */
-const AD_SS_ID = '19NWuiZ1hI0pC6_eMxsKvQlzcf5aGrs4OJgtOTJANjjQ';
 
 function todayReservation() {
   Logger.log("todayReservation: 開始");

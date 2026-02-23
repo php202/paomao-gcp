@@ -31,6 +31,7 @@ var CoreApi = (function () {
     var code = res.getResponseCode();
     if (code !== 200) {
       if (code === 404) throw new Error("Core API 404：請在本專案指令碼屬性將 PAO_CAT_CORE_API_URL 設為 https://script.google.com/macros/s/AKfycby5ibTcUxvPD-Xj1-lOHOJ5oI27CbyyaHv2K3cvNd1PwMiPvwGCpjlzi6UbW4fwip2UaA/exec（結尾 /exec，勿用測試部署）。");
+      if (code === 403) throw new Error("Core API 403 無權存取。請執行本專案函式 runCoreApi403Check 查看設定網址與測試結果；並到 PaoMao_Core「管理部署」中「網址與 PAO_CAT_CORE_API_URL 相同」的那一筆→編輯→誰可以存取改「任何人」→按「部署」儲存。詳見 403-排查.md。");
       throw new Error("Core API 錯誤: " + code + " " + text);
     }
     try {
@@ -61,6 +62,7 @@ var CoreApi = (function () {
     var code = res.getResponseCode();
     if (code !== 200) {
       if (code === 404) throw new Error("Core API 404：請在本專案指令碼屬性將 PAO_CAT_CORE_API_URL 設為 https://script.google.com/macros/s/AKfycby5ibTcUxvPD-Xj1-lOHOJ5oI27CbyyaHv2K3cvNd1PwMiPvwGCpjlzi6UbW4fwip2UaA/exec（結尾 /exec，勿用測試部署）。");
+      if (code === 403) throw new Error("Core API 403 無權存取。請執行本專案函式 runCoreApi403Check 查看設定網址與測試結果；並到 PaoMao_Core「管理部署」中「網址與 PAO_CAT_CORE_API_URL 相同」的那一筆→編輯→誰可以存取改「任何人」→按「部署」儲存。詳見 403-排查.md。");
       throw new Error("Core API 錯誤: " + code + " " + text);
     }
     try {
@@ -71,6 +73,12 @@ var CoreApi = (function () {
       }
       throw new Error("Core API 回傳非 JSON: " + text.slice(0, 200));
     }
+  }
+
+  /** 診斷用：回傳目前設定的 Core API 網址（不含 key），方便對照 PaoMao_Core 管理部署裡的 URL。403 時請執行此函式確認網址是否正確。 */
+  function getCoreApiUrlForCheck() {
+    var c = getConfig();
+    return c.url || "(未設定 PAO_CAT_CORE_API_URL)";
   }
 
   return {
@@ -93,6 +101,8 @@ var CoreApi = (function () {
       var r = callGet("fetchTodayReservationData", { start: start, end: end, storeId: storeId });
       if (r.status !== "ok") throw new Error(r.message || "fetchTodayReservationData 失敗");
       return r.data;
-    }
+    },
+    /** 診斷：回傳目前使用的 Core API 網址（無 key），403 排查時可執行後在紀錄中查看。 */
+    getCoreApiUrlForCheck: getCoreApiUrlForCheck
   };
 })();
