@@ -238,11 +238,14 @@ function handleConfirmPostback_(event) {
   const now = Utilities.formatDate(new Date(), 'GMT+8', 'yyyy/MM/dd HH:mm');
   existingStatusRange.setValue(`${now} 由 ${userName} 確認`);
 
+  // 先回覆使用者，避免「點了沒反應」；再推播收據
+  Core.sendLineReply(event.replyToken, '✅ 已確認，請稍候收據。', LINE_TOKEN_PAOPAO);
+
   try {
     console.log(`準備 Push 收據至: ${targetId} (單號: ${odooId})`);
     Core.pushFlexReceipt(targetId, resolvedStoreName, odooId, userName);
   } catch (e) {
-    console.error('收據 Push 失敗，改用文字回覆: ' + (e && e.message));
-    Core.sendLineReply(event.replyToken, '✅ 確認成功！\n(收據顯示異常但已紀錄)', LINE_TOKEN_PAOPAO);
+    console.error('收據 Push 失敗: ' + (e && e.message));
+    appendErrorLog('收據 Push 失敗: ' + (e && e.message), 'pushFlexReceipt odoo=' + odooId);
   }
 }
