@@ -783,6 +783,10 @@ export async function handleCore(req, res, { authClient, url, bodyJson }) {
           employeeCode: String(params.employeeCode || '').trim(),
           dateStr,
           createdAt: Date.now(),
+          groupId: String(params.groupId || '').trim(),
+          groupName: String(params.groupName || '').trim(),
+          employeeName: String(params.employeeName || '').trim(),
+          userName: String(params.userName || '').trim(),
         };
         const token = putReportToken(payload, 600);
         sendJson(res, 200, { status: 'ok', token, expiresIn: 600, dateStr });

@@ -31,6 +31,31 @@ const LINE_HQ_SS_ID = process.env.LINE_HQ_SS_ID || '';
 const STORE_INFO_SS_ID = process.env.LINE_STORE_SS_ID || process.env.INTEGRATED_SHEET_SS_ID || '';
 const WORKFLOW_SHEET_SS_ID = (process.env.WORKFLOW_SHEET_SS_ID || '').trim();
 const GCS_BUCKET_ATTENDANCE = (process.env.GCS_BUCKET_ATTENDANCE || '').trim();
+const LINE_TOKEN_PAOSTAFF = (process.env.LINE_TOKEN_PAOSTAFF || '').trim();
+
+/**
+ * 呼叫 LINE Bot API 取得群組顯示名稱（用於神美日報開啟紀錄 C 排顯示真實群組名而非 UUID）
+ * @param {string} groupId
+ * @param {typeof fetch} fetcher
+ * @returns {Promise<string>}
+ */
+async function getLineGroupName(groupId, fetcher = fetch) {
+  if (!groupId || !LINE_TOKEN_PAOSTAFF) return '';
+  try {
+    const res = await fetcher(
+      `https://api.line.me/v2/bot/group/${encodeURIComponent(groupId)}/summary`,
+      {
+        method: 'get',
+        headers: { Authorization: `Bearer ${LINE_TOKEN_PAOSTAFF}` },
+      },
+    );
+    if (res.status !== 200) return '';
+    const json = await res.json();
+    return typeof json?.groupName === 'string' ? String(json.groupName).trim() : '';
+  } catch {
+    return '';
+  }
+}
 
 // 店別顯示規則：所有【店別】區塊一律使用 getStoreDisplayName(storeNameMap, storeId, apiStoreName)，
 // 不得直接使用 storeId 或 resolveStoreName(...) || storeId，避免出現【0001】等代碼。
@@ -1506,6 +1531,9 @@ export async function handleStaffCommand({
       await replyText('無法判斷您所屬的門市，請管理者補上店家代碼。');
       return true;
     }
+    const groupId = (event?.source?.groupId && String(event.source.groupId).trim()) || '';
+    let groupName = '';
+    if (groupId) groupName = await getLineGroupName(groupId, fetcher);
     const r = await callCoreApiPost(
       'createReportToken',
       {
@@ -1513,6 +1541,10 @@ export async function handleStaffCommand({
         storeIds: storeIds.join(','),
         userId,
         employeeCode: authResult.employeeCode || '',
+        groupId,
+        groupName,
+        employeeName: authResult.employeeName || authResult.displayName || '',
+        userName: authResult.userName || authResult.displayName || '',
       },
       fetcher,
     );
