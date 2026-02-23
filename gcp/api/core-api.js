@@ -687,8 +687,9 @@ async function getStoreListDataForNear(auth) {
 }
 
 export async function handleCore(req, res, { authClient, url, bodyJson }) {
-  // Public shortcuts
-  const action = (url.searchParams.get('action') || '').trim();
+  // Public shortcuts（action 正規化：避免 URL 重複 ? 導致 action=storeList?action=storeList 而 401）
+  const rawAction = (url.searchParams.get('action') || '').trim();
+  const action = rawAction.split('?')[0].trim();
   if (action === 'near') {
     sendRedirect(res, NEAR_REDIRECT_URL);
     return;
