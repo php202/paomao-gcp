@@ -10,7 +10,8 @@ export async function getAuth() {
   const useKeyFile = !!resolvedPath && exists;
 
   if (keyPath && !exists) {
-    console.warn('[auth] GOOGLE_APPLICATION_CREDENTIALS set but file not found:', resolvedPath);
+    console.warn('[auth] GOOGLE_APPLICATION_CREDENTIALS 指向的檔案不存在，改為使用應用程式預設憑證（gcloud auth application-default login）:', resolvedPath);
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
   } else if (useKeyFile) {
     console.warn('[auth] using keyFile:', resolvedPath);
   }

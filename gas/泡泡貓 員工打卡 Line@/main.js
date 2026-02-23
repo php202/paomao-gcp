@@ -575,13 +575,23 @@ function routeMessageEvent(event) {
           return;
         }
         try {
+          var groupId = (event.source && event.source.groupId) ? String(event.source.groupId) : "";
+          var roomId = (event.source && event.source.roomId) ? String(event.source.roomId) : "";
+          var displayName = "";
+          try {
+            if (typeof Core !== "undefined" && typeof Core.getUserDisplayName === "function") {
+              displayName = Core.getUserDisplayName(userId, groupId, roomId, LINE_TOKEN_PAOSTAFF) || "";
+            }
+          } catch (eDisp) {}
           var payload = {
             key: key,
             action: "createReportToken",
             role: isManager ? "manager" : "employee",
             storeIds: storeIds.join(","),
             userId: userId,
-            employeeCode: (auth.employeeCode != null ? String(auth.employeeCode).trim() : "")
+            employeeCode: (auth.employeeCode != null ? String(auth.employeeCode).trim() : ""),
+            groupId: groupId,
+            userName: displayName
           };
           var res = UrlFetchApp.fetch(url, {
             method: "post",

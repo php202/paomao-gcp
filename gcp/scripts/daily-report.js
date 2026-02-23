@@ -19,6 +19,7 @@ import { getAuth } from '../lib/auth.js';
 import { getBearerToken } from '../lib/saydou.js';
 import { sendNotification } from '../lib/email.js';
 import { sendAdminLinePush } from '../lib/line-push.js';
+import { getLineSayDouInfoMap } from '../api/core-api.js';
 
 const SHEET_ALL = '營收報表';
 const SHEET_DIRECT = '營收報表_直營';
@@ -101,7 +102,8 @@ async function getSheetMaxDate(sheets, spreadsheetId, sheetName) {
   return maxDate;
 }
 
-async function callCoreApi(coreUrl, coreKey, action) {
+/** 不再使用：日報改為直接用 GCP 讀試算表，不依賴 GAS Core API */
+async function _callCoreApi(coreUrl, coreKey, action) {
   if (!coreUrl || !coreKey) throw new Error('缺少 PAO_CAT_CORE_API_URL 或 PAO_CAT_SECRET_KEY');
   const sep = coreUrl.includes('?') ? '&' : '?';
   const url = `${coreUrl}${sep}key=${encodeURIComponent(coreKey)}&action=${encodeURIComponent(action)}`;
@@ -367,17 +369,17 @@ export async function run(args = []) {
   }
   if (!bearerToken) throw new Error('無 Bearer Token，請設 SAYDOU_BEARER_TOKEN 或 TOKEN_SHEET_SS_ID');
 
-  const coreUrl = (process.env.PAO_CAT_CORE_API_URL || '').trim();
-  const coreKey = (process.env.PAO_CAT_SECRET_KEY || '').trim();
-  const [coreConfig, storeMap] = await Promise.all([
-    callCoreApi(coreUrl, coreKey, 'getCoreConfig'),
-    callCoreApi(coreUrl, coreKey, 'getLineSayDouInfoMap'),
-  ]);
-  const spreadsheetId = (process.env.DAILY_ACCOUNT_REPORT_SS_ID || coreConfig?.DAILY_ACCOUNT_REPORT_SS_ID || '').trim();
-  if (!spreadsheetId) throw new Error('缺少 DAILY_ACCOUNT_REPORT_SS_ID（可設 env 或由 Core getCoreConfig 提供）');
+  // 直接用 GCP 讀「店家基本資料」試算表，不呼叫 GAS Core API，避免 getCoreConfig / getLineSayDouInfoMap 0 筆或未回傳
+  const spreadsheetId = (process.env.DAILY_ACCOUNT_REPORT_SS_ID || '').trim();
+  if (!spreadsheetId) throw new Error('缺少 DAILY_ACCOUNT_REPORT_SS_ID（請在 set-env.sh 或 Cloud Run Job 環境變數設定）');
 
+  const storeMap = await getLineSayDouInfoMap(auth);
   const stores = parseStores(storeMap);
-  if (!stores.length) throw new Error('店家清單為空（getLineSayDouInfoMap）');
+  if (!stores.length) {
+    throw new Error(
+      '店家清單為空。請設定 LINE_STORE_SS_ID（店家基本資料試算表），並確認試算表 F 欄有 SayDou 店號、已共用給 GCP 服務帳戶。'
+    );
+  }
 
   const sheets = google.sheets({ version: 'v4', auth });
   let rowMapAll;

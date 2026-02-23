@@ -106,13 +106,16 @@ function doGet(e) {
   }
 }
 
+/** 查詢空位 GCP /stores 預設網址（與 gcp/set-env.sh、請款表單 GCP_CORE 同服務） */
+var GCP_STORES_API_URL_FALLBACK = "https://pao-checkin-api-vkffbzouva-de.a.run.app/stores";
+
 /**
  * 取得 GCP Stores API 網址與金鑰（指令碼屬性：GCP_STORES_API_URL、GCP_CORE_SECRET_KEY 或 STORE_API_KEY）
- * 僅在為 Cloud Run 網址（run.app）時才用 GCP_CORE_API_URL 推導 /stores，避免誤用 GAS Core URL。
+ * 僅在為 Cloud Run 網址（run.app）時才用 GCP_CORE_API_URL 推導 /stores；未設則用 GCP_STORES_API_URL_FALLBACK。
  */
 function getGcpStoresApiParams() {
   var p = typeof PropertiesService !== "undefined" ? PropertiesService.getScriptProperties() : null;
-  if (!p) return { url: "", key: "" };
+  if (!p) return { url: GCP_STORES_API_URL_FALLBACK || "", key: "" };
   var url = (p.getProperty("GCP_STORES_API_URL") || "").trim();
   if (!url) {
     var coreUrl = (p.getProperty("GCP_CORE_API_URL") || "").trim();
@@ -122,6 +125,7 @@ function getGcpStoresApiParams() {
     var core = getGcpCoreApiParams();
     if (core && core.url && (core.url + "").indexOf("run.app") !== -1) url = (core.url + "").replace(/\/core\/?$/, "") + "/stores";
   }
+  if (!url && typeof GCP_STORES_API_URL_FALLBACK !== "undefined" && GCP_STORES_API_URL_FALLBACK) url = GCP_STORES_API_URL_FALLBACK;
   var key = (p.getProperty("STORE_API_KEY") || p.getProperty("GCP_CORE_SECRET_KEY") || "").trim();
   return { url: url, key: key };
 }

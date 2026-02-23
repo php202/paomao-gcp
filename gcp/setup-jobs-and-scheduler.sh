@@ -20,10 +20,7 @@ PAO_CAT_CORE_API_URL="${PAO_CAT_CORE_API_URL:-}"
 PAO_CAT_SECRET_KEY="${PAO_CAT_SECRET_KEY:-}"
 DAILY_REPORT_CRON="${DAILY_REPORT_CRON:-10 0 * * *}" # 台灣時間凌晨 00:10
 
-if [ -z "$PAO_CAT_CORE_API_URL" ] || [ -z "$PAO_CAT_SECRET_KEY" ]; then
-  echo "錯誤：daily-report 需要 PAO_CAT_CORE_API_URL 與 PAO_CAT_SECRET_KEY（請在 set-env.sh 設定）"
-  exit 1
-fi
+# daily-report 已改為直接用 GCP 讀試算表（不呼叫 GAS Core API），只需 LINE_STORE_SS_ID、OUTPUT_SS_ID、TOKEN_SHEET_SS_ID
 
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/gcp-scripts/pao-run:latest"
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
@@ -63,16 +60,16 @@ gcloud run jobs create pao-employee-report \
 gcloud run jobs update pao-employee-report --region "$REGION" \
   --command "node" --args "index.js,employee-monthly-report"
 
-# Job 3：run acc（日報，GCP 版）
+# Job 3：run acc（日報，GCP 版；直接讀 LINE_STORE_SS_ID 店家基本資料，不依賴 GAS Core API）
 gcloud run jobs create pao-daily-report \
   --image "$IMAGE" \
   --region "$REGION" \
   --task-timeout 60m \
-  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,PAO_CAT_CORE_API_URL=$PAO_CAT_CORE_API_URL,PAO_CAT_SECRET_KEY=$PAO_CAT_SECRET_KEY,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
+  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,LINE_STORE_SS_ID=$LINE_STORE_SS_ID,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
   --set-secrets "GMAIL_USER=gmail-user:latest,GMAIL_APP_PASSWORD=gmail-app-password:latest" \
   $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT") \
   2>/dev/null || gcloud run jobs update pao-daily-report --image "$IMAGE" --region "$REGION" \
-  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,PAO_CAT_CORE_API_URL=$PAO_CAT_CORE_API_URL,PAO_CAT_SECRET_KEY=$PAO_CAT_SECRET_KEY,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
+  --set-env-vars "ADMIN_EMAIL=paopaomao.of@gmail.com,TOKEN_SHEET_SS_ID=$TOKEN_SHEET_SS_ID,DAILY_ACCOUNT_REPORT_SS_ID=$OUTPUT_SS_ID,LINE_STORE_SS_ID=$LINE_STORE_SS_ID,FETCH_BATCH_SIZE=${FETCH_BATCH_SIZE:-10}" \
   --set-secrets "GMAIL_USER=gmail-user:latest,GMAIL_APP_PASSWORD=gmail-app-password:latest" \
   $([ -n "$SERVICE_ACCOUNT" ] && echo "--service-account=$SERVICE_ACCOUNT")
 

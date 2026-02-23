@@ -60,6 +60,9 @@ export async function handleReportApi(req, res, opts) {
           employeeCode: payload.employeeCode,
           employeeName: payload.employeeName ?? '',
           storeIds: payload.storeIds ?? [],
+          groupId: payload.groupId ?? '',
+          groupName: payload.groupName ?? '',
+          userName: payload.userName ?? '',
         });
         if (!logResult.ok) {
           console.warn('[report-api] writeDailyReportAccessLog:', logResult.message);

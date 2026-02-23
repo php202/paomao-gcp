@@ -126,6 +126,12 @@ function handleRequest(params, method) {
         return actionFindAvailableSlots(params);
       case "debugLineStoreMap":
         return jsonOut({ status: "ok", data: debugLineStoreMap() });
+      case "clearLineStoreMapCache":
+        if (typeof clearLineStoreMapCache !== "function") {
+          return jsonOut({ status: "error", message: "clearLineStoreMapCache 未定義" });
+        }
+        var clearRes = clearLineStoreMapCache();
+        return jsonOut(clearRes.ok ? { status: "ok", message: "店家快取已清除" } : { status: "error", message: clearRes.error || "清除失敗" });
       case "getDirectStoreReplyStatusText":
         var directRes = (typeof getDirectStoreReplyStatusText === "function") ? getDirectStoreReplyStatusText() : { ok: false, message: "功能未就緒" };
         return jsonOut(directRes.ok ? { status: "ok", ok: true, text: directRes.text } : { status: "error", ok: false, message: directRes.message || "取得失敗" });
@@ -706,6 +712,8 @@ function actionCreateReportToken(params) {
   }
   var userId = (params.userId != null) ? String(params.userId).trim() : "";
   var employeeCode = (params.employeeCode != null) ? String(params.employeeCode).trim() : "";
+  var groupId = (params.groupId != null) ? String(params.groupId).trim() : "";
+  var userName = (params.userName != null) ? String(params.userName).trim() : "";
   if (!storeIds.length) {
     return jsonOut({ status: "error", message: "storeIds 必填" });
   }
@@ -718,6 +726,8 @@ function actionCreateReportToken(params) {
     userId: userId,
     employeeCode: employeeCode,
     dateStr: dateStr,
+    groupId: groupId,
+    userName: userName,
     createdAt: Date.now()
   };
   var cache = CacheService.getScriptCache();
@@ -797,13 +807,23 @@ function actionConsumeReportToken(params) {
       empNameForLog = empMapLog[payload.employeeCode];
     }
     if (typeof writeDailyReportAccessLog === "function") {
+      var groupName = payload.groupName || "";
+      if (!groupName && payload.groupId && typeof getGroupName === "function") {
+        try {
+          var lineToken = (typeof getCoreConfig === "function") ? (getCoreConfig().LINE_TOKEN_PAOSTAFF || "") : "";
+          if (lineToken) groupName = getGroupName(payload.groupId, lineToken) || "";
+        } catch (eG) {}
+      }
       writeDailyReportAccessLog({
         dateStr: dateStr,
         role: role,
         userId: payload.userId || "",
         employeeCode: payload.employeeCode || "",
         employeeName: empNameForLog,
-        storeIds: storeIds
+        storeIds: storeIds,
+        groupId: payload.groupId || "",
+        groupName: groupName,
+        userName: payload.userName || ""
       });
     }
   } catch (eLog) {}

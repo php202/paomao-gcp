@@ -632,7 +632,7 @@ var DAILY_REPORT_SHARE_HEADERS = [
   "AvgTicket", "OrderCount", "Content", "Approved", "ApprovedBy", "ApprovedAt"
 ];
 var DAILY_REPORT_ACCESS_HEADERS = [
-  "Timestamp", "Date", "Role", "UserId", "EmployeeCode", "EmployeeName", "StoreIds"
+  "Timestamp", "Date", "Role", "UserId", "EmployeeCode", "EmployeeName", "StoreIds", "GroupId", "GroupName", "UserName"
 ];
 var DAILY_REPORT_ADVANCED_KEYS = ["活氧", "逆齡", "頸緻", "嘟唇", "晶淨"];
 
@@ -1301,6 +1301,16 @@ function writeDailyReportAccessLog(payload) {
   if (!ss) return { ok: false, message: "無法開啟日報試算表" };
   var sheet = getOrCreateReportSheet_(ss, DAILY_REPORT_ACCESS_SHEET_NAME, DAILY_REPORT_ACCESS_HEADERS);
   if (!sheet) return { ok: false, message: "無法取得開啟紀錄工作表" };
+  var numCols = DAILY_REPORT_ACCESS_HEADERS.length;
+  if (sheet.getLastRow() >= 1) {
+    var headerRange = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), numCols));
+    var headerVals = headerRange.getValues()[0];
+    while (headerVals.length < numCols) headerVals.push("");
+    if (headerVals[7] !== "GroupId") headerVals[7] = "GroupId";
+    if (headerVals[8] !== "GroupName") headerVals[8] = "GroupName";
+    if (headerVals[9] !== "UserName") headerVals[9] = "UserName";
+    sheet.getRange(1, 1, 1, headerVals.length).setValues([headerVals]);
+  }
   var nowStr = Utilities.formatDate(new Date(), REPORT_HELPERS_TZ || "Asia/Taipei", "yyyy-MM-dd HH:mm:ss");
   sheet.appendRow([
     nowStr,
@@ -1309,7 +1319,10 @@ function writeDailyReportAccessLog(payload) {
     payload.userId || "",
     payload.employeeCode || "",
     payload.employeeName || "",
-    (payload.storeIds || []).join(",")
+    (payload.storeIds || []).join(","),
+    payload.groupId || "",
+    payload.groupName || "",
+    payload.userName || ""
   ]);
   return { ok: true };
 }

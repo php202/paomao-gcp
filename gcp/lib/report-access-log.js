@@ -1,7 +1,7 @@
 /**
  * 神美日報開啟紀錄：寫入試算表「神美日報_開啟紀錄」（與 GAS ReportHelpers writeDailyReportAccessLog 對齊）
  * 試算表：LINE_HQ_SS_ID 或 REPORT_ACCESS_LOG_SS_ID（泡泡貓 門市資料 1-t4KPVK...）
- * 欄位：Timestamp, Date, Role, UserId, EmployeeCode, EmployeeName, StoreIds
+ * 欄位：Timestamp, Date, Role, UserId, EmployeeCode, EmployeeName, StoreIds, GroupId, GroupName, UserName
  */
 
 import { appendSheet } from './sheets.js';
@@ -44,7 +44,7 @@ function nowStr() {
 
 /**
  * @param {object} auth - Google Auth client
- * @param {{ dateStr?: string, role?: string, userId?: string, employeeCode?: string, employeeName?: string, storeIds?: string[] }} payload
+ * @param {{ dateStr?: string, role?: string, userId?: string, employeeCode?: string, employeeName?: string, storeIds?: string[], groupId?: string, groupName?: string, userName?: string }} payload
  * @returns {Promise<{ ok: boolean, message?: string }>}
  */
 export async function writeDailyReportAccessLog(auth, payload) {
@@ -65,6 +65,9 @@ export async function writeDailyReportAccessLog(auth, payload) {
       toSheetText(payload?.employeeCode || ''),
       toSheetText(payload?.employeeName || ''),
       Array.isArray(payload?.storeIds) ? payload.storeIds.map((s) => String(s || '').trim()).filter(Boolean).join(',') : toSheetText(payload?.storeIds || ''),
+      toSheetText(payload?.groupId || ''),
+      toSheetText(payload?.groupName || ''),
+      toSheetText(payload?.userName || ''),
     ];
     await appendSheet(auth, ssId, SHEET_NAME, row);
     return { ok: true };

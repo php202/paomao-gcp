@@ -4,14 +4,27 @@
  * 確認試算表綁定的附加專案為本專案；並執行 clasp push 部署最新版。
  *
  * 指令碼屬性：
- * - PAO_CAT_CORE_API_URL：PaoMao_Core「網路應用程式」部署網址（結尾 /exec）
+ * - PAO_CAT_CORE_API_URL：必須是 PaoMao_Core「管理部署」裡「網路應用程式」那筆的網址（結尾 /exec）
  * - PAO_CAT_SECRET_KEY：與 Core 相同的密鑰
  */
+var CORE_API_URL_MUST_BE = 'https://script.google.com/macros/s/AKfycby5ibTcUxvPD-Xj1-lOHOJ5oI27CbyyaHv2K3cvNd1PwMiPvwGCpjlzi6UbW4fwip2UaA/exec';
+
 function getCoreApiParams() {
   const p = PropertiesService.getScriptProperties();
   const url = (p.getProperty('PAO_CAT_CORE_API_URL') || '').trim();
   const key = (p.getProperty('PAO_CAT_SECRET_KEY') || '').trim();
   return { url, key, useApi: url.length > 0 && key.length > 0 };
+}
+
+/** 選單用：顯示 Core API 網址設定說明（若日報一直 0 筆或 getCoreConfig 未回傳，請把此網址設到指令碼屬性） */
+function showCoreApiUrlHelp() {
+  const p = PropertiesService.getScriptProperties();
+  const current = (p.getProperty('PAO_CAT_CORE_API_URL') || '').trim();
+  const ok = (current === CORE_API_URL_MUST_BE);
+  SpreadsheetApp.getUi().alert(
+    ok ? 'Core API 網址已正確' : '請設定 Core API 網址',
+    (ok ? '目前 PAO_CAT_CORE_API_URL 已與 PaoMao_Core 部署一致。\n\n' : '若日報出現「0 筆店家」或「未回傳 DAILY_ACCOUNT_REPORT_SS_ID」，請在「日報表 產出」專案：\n\n1. 擴充功能 → Apps Script → 左側 ⚙️ 專案設定\n2. 指令碼屬性 → 新增或編輯 PAO_CAT_CORE_API_URL\n3. 值貼上以下網址（整段複製）：\n\n') + CORE_API_URL_MUST_BE + (ok ? '' : '\n\n另需 PAO_CAT_SECRET_KEY（與 PaoMao_Core 相同密鑰）。')
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -199,13 +212,18 @@ function runAccNeed(options) {
     throw new Error('請在指令碼屬性設定 PAO_CAT_CORE_API_URL 與 PAO_CAT_SECRET_KEY，本專案改由 Core API 取得資料（不再使用 Core 程式庫）。');
   }
 
-  // --- 從 Core API 取得日報試算表 ID ---
+  // --- 從 Core API 取得日報試算表 ID（與 PaoMao_Core Config.js 一致；API 未回傳時用後備）---
+  const DAILY_REPORT_SS_ID_FALLBACK = '1ZMutegYTLZ51XQHCbfFZ7-iAj1qTZGgSo5VTThXPQ5U';
   const configRes = callCoreApi(coreApiUrl, coreApiKey, 'getCoreConfig', {});
-  const ssId = (configRes && configRes.status === 'ok' && configRes.data && configRes.data.DAILY_ACCOUNT_REPORT_SS_ID)
+  let ssId = (configRes && configRes.status === 'ok' && configRes.data && configRes.data.DAILY_ACCOUNT_REPORT_SS_ID)
     ? String(configRes.data.DAILY_ACCOUNT_REPORT_SS_ID).trim()
     : '';
   if (!ssId) {
-    throw new Error('Core API getCoreConfig 未回傳 DAILY_ACCOUNT_REPORT_SS_ID，請確認 PaoMao_Core 專案設定。');
+    ssId = DAILY_REPORT_SS_ID_FALLBACK;
+    console.warn('Core API getCoreConfig 未回傳 DAILY_ACCOUNT_REPORT_SS_ID，使用後備試算表 ID。目前呼叫的 API 網址：' + (coreApiUrl || '(未設定)') + ' → 請在「日報表 產出」專案「專案設定」→「指令碼屬性」將 PAO_CAT_CORE_API_URL 設為：' + CORE_API_URL_MUST_BE);
+  }
+  if (!ssId) {
+    throw new Error('Core API getCoreConfig 未回傳 DAILY_ACCOUNT_REPORT_SS_ID，請確認 PaoMao_Core 專案設定並重新部署。');
   }
 
   const externalSs = SpreadsheetApp.openById(ssId);
@@ -243,9 +261,15 @@ function runAccNeed(options) {
     if (lastRowCheck > 1) {
       const dates = sheetAll.getRange('B2:B' + lastRowCheck).getValues().flat().filter(String);
       if (dates.length > 0) {
-        const lastDate = new Date(dates[dates.length - 1]);
+        // 用「B 欄最大日期」決定起始日，避免部分寫入或錯位時漏跑整天（例如 02/22）
+        const maxDateStr = dates.reduce(function (max, d) {
+          const t = new Date(d).getTime();
+          if (isNaN(t)) return max;
+          return t > new Date(max).getTime() ? d : max;
+        }, dates[0]);
+        const lastDate = new Date(maxDateStr);
         startDate = new Date(lastDate);
-        startDate.setDate(startDate.getDate() + 1); // 從最後一筆的"明天"開始
+        startDate.setDate(startDate.getDate() + 1); // 從最大日期的「明天」開始
       }
     }
     endDate = new Date(); // 抓到今天（含今日業績）
@@ -260,29 +284,46 @@ function runAccNeed(options) {
   console.log(`本次預計處理區間: ${getFormattedDate(startDate)} ~ ${getFormattedDate(endDate)}`);
 
   // --- 2. 從 Core API 取得門店列表 ---
-  const storeRes = callCoreApi(coreApiUrl, coreApiKey, 'getLineSayDouInfoMap', {});
-  const storeMap = (storeRes && storeRes.status === 'ok' && storeRes.data && typeof storeRes.data === 'object') ? storeRes.data : {};
-  let stores = [];
-  for (const info of Object.values(storeMap)) {
-    if (info && info.saydouId) {
-      stores.push({
-        storid: info.saydouId,
-        alias: info.name || '',
-        isDirect: info.isDirect === true
-      });
+  function parseStoresFromStoreMap(storeMap) {
+    const list = [];
+    for (const info of Object.values(storeMap || {})) {
+      if (info && info.saydouId) {
+        list.push({
+          storid: info.saydouId,
+          alias: info.name || '',
+          isDirect: info.isDirect === true
+        });
+      }
     }
+    return list;
+  }
+  let storeRes = callCoreApi(coreApiUrl, coreApiKey, 'getLineSayDouInfoMap', {});
+  let storeMap = (storeRes && storeRes.status === 'ok' && storeRes.data && typeof storeRes.data === 'object') ? storeRes.data : {};
+  let stores = parseStoresFromStoreMap(storeMap);
+  if (stores.length === 0) {
+    callCoreApi(coreApiUrl, coreApiKey, 'clearLineStoreMapCache', {});
+    storeRes = callCoreApi(coreApiUrl, coreApiKey, 'getLineSayDouInfoMap', {});
+    storeMap = (storeRes && storeRes.status === 'ok' && storeRes.data && typeof storeRes.data === 'object') ? storeRes.data : {};
+    stores = parseStoresFromStoreMap(storeMap);
+  }
+  if (stores.length === 0) {
+    var urlHint = (coreApiUrl && coreApiUrl.indexOf('/exec') !== -1) ? coreApiUrl.replace(/\?.*$/, '') : coreApiUrl || '(未設定)';
+    throw new Error(
+      'Core API getLineSayDouInfoMap 回傳 0 筆店家，無法產出日報。目前呼叫的 API：' + urlHint + '\n\n請在「日報表 產出」專案「專案設定」→「指令碼屬性」將 PAO_CAT_CORE_API_URL 設為（與 PaoMao_Core 管理部署一致）：\n' + CORE_API_URL_MUST_BE + '\n\n若已正確仍為 0 筆，請在 PaoMao_Core 專案執行 clearMyCache 清除快取，並確認「店家基本資料」試算表 F 欄有 SayDou 店號。'
+    );
   }
   console.log(`取得店家數: ${stores.length}`);
 
   /**
    * 建立「日期|店家」-> 列號(1-based) 對照表，用於重複時更新
-   * B 欄：日期、C 欄：店家
+   * B 欄：日期、C 欄：店家。getRange(row, column, numRows, numColumns)
    */
   function buildDateStoreRowMap(sheet) {
     const map = {};
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) return map;
-    const data = sheet.getRange(2, 2, lastRow, 3).getValues(); // B 欄=日期, C 欄=店家
+    const numRows = lastRow - 2 + 1; // 第 2 列～lastRow 共幾列
+    const data = sheet.getRange(2, 2, numRows, 2).getValues(); // B、C 兩欄（numColumns=2）
     for (let r = 0; r < data.length; r++) {
       const dateVal = data[r][0];   // B 欄：日期
       const storeVal = data[r][1];  // C 欄：店家
@@ -374,7 +415,9 @@ function runAccNeed(options) {
 
     // --- 4. 寫入當天資料：日期+店家重複則更新，否則新增 ---
     
-    const numCols = 11; // B~L：日期、店家、9 個數值欄
+    // B~L 共 11 欄：日期、店家、9 個數值欄（與標題列對齊）。getRange(row, column, numRows, numColumns)
+    const startCol = 2;   // B 欄
+    const numCols = 11;   // B~L
 
     // (A) 全門市：拆成「要更新」與「要新增」
     if (dailyAllRows.length > 0) {
@@ -390,12 +433,12 @@ function runAccNeed(options) {
         }
       }
       for (const { rowIndex, row } of toUpdateAll) {
-        sheetAll.getRange(rowIndex, 2, 1, numCols).setValues([row]);
+        sheetAll.getRange(rowIndex, startCol, 1, numCols).setValues([row]);
       }
       if (toAppendAll.length > 0) {
         const lastRowAll = sheetAll.getLastRow();
         const startRow = lastRowAll + 1;
-        sheetAll.getRange(startRow, 2, toAppendAll.length, numCols).setValues(toAppendAll);
+        sheetAll.getRange(startRow, startCol, toAppendAll.length, numCols).setValues(toAppendAll);
         for (let i = 0; i < toAppendAll.length; i++) {
           rowMapAll[toAppendAll[i][0] + '|' + (toAppendAll[i][1] != null ? String(toAppendAll[i][1]).trim() : '')] = startRow + i;
         }
@@ -416,12 +459,12 @@ function runAccNeed(options) {
         }
       }
       for (const { rowIndex, row } of toUpdateDirect) {
-        sheetDirect.getRange(rowIndex, 2, 1, numCols).setValues([row]);
+        sheetDirect.getRange(rowIndex, startCol, 1, numCols).setValues([row]);
       }
       if (toAppendDirect.length > 0) {
         const lastRowDirect = sheetDirect.getLastRow();
         const startRow = lastRowDirect + 1;
-        sheetDirect.getRange(startRow, 2, toAppendDirect.length, numCols).setValues(toAppendDirect);
+        sheetDirect.getRange(startRow, startCol, toAppendDirect.length, numCols).setValues(toAppendDirect);
         for (let i = 0; i < toAppendDirect.length; i++) {
           rowMapDirect[toAppendDirect[i][0] + '|' + (toAppendDirect[i][1] != null ? String(toAppendDirect[i][1]).trim() : '')] = startRow + i;
         }
@@ -450,6 +493,11 @@ var STORE_DAILY_REPORT_CONFIG = [
   { storeNameMatch: '楊梅金山', sheetName: '營收報表_楊梅金山' }
 ];
 
+/** 選單用：只補跑 2026-02-22 當天日報 */
+function runAccNeedDate20260222() {
+  runAccNeed({ date: '2026-02-22' });
+}
+
 /**
  * 單店日帳報表（可多店）
  * 用「店家名稱」比對（storeNameMatch 對 getLineSayDouInfoMap 的 name 做 indexOf）。
@@ -473,10 +521,12 @@ function runYangmeiJinshanDailyReport() {
     throw new Error('請在指令碼屬性設定 PAO_CAT_CORE_API_URL 與 PAO_CAT_SECRET_KEY。');
   }
 
+  const DAILY_REPORT_SS_ID_FALLBACK = '1ZMutegYTLZ51XQHCbfFZ7-iAj1qTZGgSo5VTThXPQ5U';
   const configRes = callCoreApi(coreApiUrl, coreApiKey, 'getCoreConfig', {});
-  const ssId = (configRes && configRes.status === 'ok' && configRes.data && configRes.data.DAILY_ACCOUNT_REPORT_SS_ID)
+  let ssId = (configRes && configRes.status === 'ok' && configRes.data && configRes.data.DAILY_ACCOUNT_REPORT_SS_ID)
     ? String(configRes.data.DAILY_ACCOUNT_REPORT_SS_ID).trim()
     : '';
+  if (!ssId) ssId = DAILY_REPORT_SS_ID_FALLBACK;
   if (!ssId) {
     throw new Error('Core API getCoreConfig 未回傳 DAILY_ACCOUNT_REPORT_SS_ID。');
   }
