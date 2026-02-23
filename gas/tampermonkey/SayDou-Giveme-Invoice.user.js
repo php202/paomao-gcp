@@ -73,7 +73,7 @@
         return origSend.apply(this, arguments);
     };
 
-    /** 發票圖：開新分頁顯示並自動帶出 Chrome 列印視窗 */
+    /** 發票圖：開新分頁顯示並自動帶出列印視窗，僅列印發票本體（去頭尾留白、請關閉頁首頁尾） */
     function openInvoicePrintTab(title, base64, contentType, printUrl, searchInvoiceUrl) {
         const mime = (contentType && contentType.split(';')[0].trim()) || 'image/png';
         const dataUrl = 'data:' + mime + ';base64,' + base64;
@@ -84,9 +84,11 @@
             return;
         }
         w.document.write(
-            '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + (title || '發票列印').replace(/</g, '&lt;') + '</title></head>' +
-            '<body style="margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;">' +
-            '<img src="' + dataUrl.replace(/"/g, '&quot;') + '" alt="發票" style="max-width:100%;height:auto;" onload="window.focus();window.print();">' +
+            '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + (title || '發票列印').replace(/</g, '&lt;') + '</title>' +
+            '<style>@page{margin:0;size:80mm auto;}body{margin:0;padding:0;background:#fff;}@media print{body{margin:0;padding:0;}.print-hide{display:none!important;}img{display:block;margin:0 auto;max-width:100%;height:auto;}}</style></head>' +
+            '<body>' +
+            '<p class="print-hide" style="margin:8px;font-size:12px;color:#666;">列印時請關閉「頁首與頁尾」，只列印發票本體。</p>' +
+            '<img src="' + dataUrl.replace(/"/g, '&quot;') + '" alt="發票" onload="window.focus();window.print();">' +
             '</body></html>'
         );
         w.document.close();
