@@ -7,6 +7,8 @@ import { createCustomerInfoToken } from '../lib/customer-token.js';
 
 const INTEGRATED_SHEET_SS_ID = (process.env.INTEGRATED_SHEET_SS_ID || process.env.LINE_STORE_SS_ID || '').trim();
 const LEGACY_GAS_STORES_API_URL = (process.env.LEGACY_GAS_STORES_API_URL || '').trim();
+/** 若設定，GET /stores 需帶 X-Store-Api-Key 與此值相同（供 GAS 代轉查詢空位等） */
+const STORE_API_KEY = (process.env.STORE_API_KEY || process.env.GCP_CORE_SECRET_KEY || '').trim();
 const TOMORROW_REPORT_CLOSED_DATES = String(process.env.TOMORROW_REPORT_CLOSED_DATES || '')
   .split(/[,、，]/)
   .map((s) => s.trim())
@@ -401,7 +403,14 @@ export async function handleStores(req, res, { authClient, url, bodyJson }) {
     return;
   }
 
-  // GET routing: Chrome extension APIs
+  // GET routing: Chrome extension APIs（GAS 代轉時帶 X-Store-Api-Key）
+  if (STORE_API_KEY) {
+    const key = (req.headers['x-store-api-key'] || req.headers['X-Store-Api-Key'] || '').trim();
+    if (key !== STORE_API_KEY) {
+      sendJson(res, 401, { status: 'error', message: 'Unauthorized' });
+      return;
+    }
+  }
   const action = String(url.searchParams.get('action') || '').trim();
   try {
     switch (action) {

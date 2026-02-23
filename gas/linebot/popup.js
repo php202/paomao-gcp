@@ -612,7 +612,7 @@ document.addEventListener('DOMContentLoaded', () => {
             txtResult.value = '⚠️ 回傳格式異常，請稍後再試。';
           }
         } else {
-          var errMsg = "錯誤: " + (json.error || "未知錯誤");
+          var errMsg = "錯誤: " + (json.error || json.message || "未知錯誤");
           if (json.details) errMsg += "\n" + json.details;
           txtResult.value = errMsg;
         }

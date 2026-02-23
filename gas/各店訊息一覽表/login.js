@@ -68,17 +68,9 @@ function doGet(e) {
       case 'replyMessage':
         return replyMessage(e);
       case 'getSlots':
-        // 查詢空位已改由 GCP 提供（LINE 線上預約、stores-api 皆走 GCP），GAS 入口停用
-        // return getSlots(e);
-        return Core.jsonResponse({ status: 'moved', message: '查詢空位已改由 GCP 提供，請使用各店 LINE 或 GCP API。' });
-      case 'checkMember':
-        return checkMember(e);
-      case 'createBooking':
-        return createBooking(e);
       case 'searchAvailability':
-        // 查詢空位已改由 GCP 提供，GAS 入口停用
-        // return searchAvailability(e);
-        return Core.jsonResponse({ status: 'moved', message: '查詢空位已改由 GCP 提供，請使用各店 LINE 或 GCP API。' });
+        // 若已設定 GCP_STORES_API_URL，代轉至 GCP /stores；否則走本機 getSlots
+        return proxySearchAvailabilityToGcpOrLocal(e);
       case 'getTomorrowBriefing':
         return getTomorrowBriefingAction(e);
       case 'getTomorrowReservationList':
@@ -111,6 +103,53 @@ function doGet(e) {
     var msg = (error && error.message) ? error.message : String(error);
     try { appendErrorLog(msg, "doGet " + (e && e.parameter && e.parameter.action || "")); } catch (logErr) {}
     return Core.jsonResponse({ status: "error", message: "API 執行錯誤", details: msg });
+  }
+}
+
+/**
+ * 取得 GCP Stores API 網址與金鑰（指令碼屬性：GCP_STORES_API_URL、GCP_CORE_SECRET_KEY 或 STORE_API_KEY）
+ */
+function getGcpStoresApiParams() {
+  var p = typeof PropertiesService !== "undefined" ? PropertiesService.getScriptProperties() : null;
+  if (!p) return { url: "", key: "" };
+  var url = (p.getProperty("GCP_STORES_API_URL") || "").trim();
+  if (!url && typeof getGcpCoreApiParams === "function") {
+    var core = getGcpCoreApiParams();
+    if (core && core.url) url = (core.url + "").replace(/\/core\/?$/, "") + "/stores";
+  }
+  if (!url && p.getProperty("GCP_CORE_API_URL")) {
+    url = (p.getProperty("GCP_CORE_API_URL") + "").trim().replace(/\/core\/?$/, "") + "/stores";
+  }
+  var key = (p.getProperty("STORE_API_KEY") || p.getProperty("GCP_CORE_SECRET_KEY") || "").trim();
+  return { url: url, key: key };
+}
+
+/**
+ * 查詢空位：若已設定 GCP_STORES_API_URL 則代轉至 GCP /stores，否則走本機 getSlots(e)
+ */
+function proxySearchAvailabilityToGcpOrLocal(e) {
+  var gcp = getGcpStoresApiParams();
+  if (!gcp.url) {
+    return typeof getSlots === "function" ? getSlots(e) : Core.jsonResponse({ status: "moved", message: "查詢空位請設定 GCP_STORES_API_URL 或使用本機 getSlots。" });
+  }
+  var params = e.parameter || {};
+  var parts = [];
+  for (var k in params) if (params.hasOwnProperty(k)) parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(params[k])));
+  var qs = parts.join("&");
+  var fullUrl = gcp.url + (qs ? "?" + qs : "");
+  var options = { method: "get", muteHttpExceptions: true };
+  if (gcp.key) options.headers = { "X-Store-Api-Key": gcp.key };
+  try {
+    var resp = UrlFetchApp.fetch(fullUrl, options);
+    var code = resp.getResponseCode();
+    var text = resp.getContentText();
+    var json = null;
+    try { json = JSON.parse(text); } catch (parseErr) { json = { status: "error", message: "GCP 回傳非 JSON", details: text.slice(0, 200) }; }
+    return ContentService.createTextOutput(JSON.stringify(json)).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    var msg = (err && err.message) ? err.message : String(err);
+    try { appendErrorLog("proxySearchAvailabilityToGcp: " + msg, "doGet"); } catch (logErr) {}
+    return Core.jsonResponse({ status: "error", message: "查詢空位連線失敗", details: msg });
   }
 }
 
