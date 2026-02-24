@@ -36,6 +36,8 @@ cd "$(dirname "$0")"
 : "${GAS_WEBHOOK_URL:=}"
 : "${FORWARD_UNKNOWN_TO_GAS:=0}"
 : "${WEBHOOK_LOG_VERBOSE:=1}"
+# 查空位／SayDou：設定可減少 Sheets API 讀取、避免「Read requests」配額超限（見 set-env.sh 註解）
+: "${SAYDOU_BEARER_TOKEN:=}"
 # Token 異常／查空位除錯時 LINE Push 通知管理員（需 ADMIN_LINE_USER_ID；使用 LINE_TOKEN_PAOSTAFF 推播）
 : "${ADMIN_LINE_USER_ID:=}"
 # 選填：若仍要寄信可設 GMAIL_*
@@ -113,6 +115,7 @@ append_env "ADS_SS_ID" "$ADS_SS_ID"
 append_env "GAS_WEBHOOK_URL" "$GAS_WEBHOOK_URL"
 append_env "FORWARD_UNKNOWN_TO_GAS" "$FORWARD_UNKNOWN_TO_GAS"
 append_env "WEBHOOK_LOG_VERBOSE" "$WEBHOOK_LOG_VERBOSE"
+append_env "SAYDOU_BEARER_TOKEN" "$SAYDOU_BEARER_TOKEN"
 append_env "ADMIN_LINE_USER_ID" "$ADMIN_LINE_USER_ID"
 append_env "ADMIN_EMAIL" "$ADMIN_EMAIL"
 append_env "GMAIL_USER" "$GMAIL_USER"

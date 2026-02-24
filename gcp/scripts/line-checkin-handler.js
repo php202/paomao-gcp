@@ -117,7 +117,10 @@ export async function handleCheckInRequest(auth, replyToken, userId) {
   }
   const authResult = await isUserAuthorized(auth, LINE_STAFF_SS_ID, userId);
   if (!authResult.isAuthorized) {
-    await noAuthorized(replyToken);
+    const msg = authResult.sheetError
+      ? '⚠️ 系統暫時無法驗證權限，請稍後再試。若持續出現請通知泡泡貓負責顧問。'
+      : '⚠️ 你的帳號尚未開通，麻煩通知泡泡貓負責顧問！';
+    await sendLineReplyText(replyToken, msg, LINE_TOKEN_PAOSTAFF);
     return;
   }
   const uuid = crypto.randomUUID();

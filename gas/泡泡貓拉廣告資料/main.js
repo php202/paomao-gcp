@@ -46,12 +46,22 @@ function gcp_appointmentLists() {
   const ui = SpreadsheetApp.getUi();
   const res = callGcpAdmin_('ads_appointmentLists', {});
   if (!res) return ui.alert('尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY，或 GCP 尚未提供此 action。');
-  ui.alert(res.status === 'ok' ? '已送出 GCP 工作（請至 Cloud Run Logs/Jobs 查看進度）' : ('GCP 執行失敗：' + (res.message || 'unknown')));
+  if (res.status === 'ok') {
+    const msg = (res.rowCount != null) ? '已寫入 ' + res.rowCount + ' 筆（預約清單動態）' : (res.message || '已完成');
+    ui.alert(msg);
+  } else {
+    ui.alert('GCP 執行失敗：' + (res.message || 'unknown'));
+  }
 }
 
 function gcp_todayReservation() {
   const ui = SpreadsheetApp.getUi();
   const res = callGcpAdmin_('ads_todayReservation', {});
   if (!res) return ui.alert('尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY，或 GCP 尚未提供此 action。');
-  ui.alert(res.status === 'ok' ? '已送出 GCP 工作（請至 Cloud Run Logs/Jobs 查看進度）' : ('GCP 執行失敗：' + (res.message || 'unknown')));
+  if (res.status === 'ok') {
+    const msg = (res.rowCount != null) ? '已寫入 ' + res.rowCount + ' 筆（今日建立動態）' : (res.message || '已完成');
+    ui.alert(msg);
+  } else {
+    ui.alert('GCP 執行失敗：' + (res.message || 'unknown'));
+  }
 }

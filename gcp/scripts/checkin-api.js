@@ -211,7 +211,10 @@ async function handleCheckIn(req, res, auth, body) {
   const authResult = await isUserAuthorized(auth, LINE_STAFF_SS_ID, userId);
   if (!authResult.isAuthorized) {
     await updateWrongByUuid(auth, uuid, userId, lat, lon);
-    sendJson(res, 200, { status: 'failed', text: '⚠️ 你的帳號尚未開通，麻煩通知泡泡貓負責顧問！' });
+    const text = authResult.sheetError
+      ? '⚠️ 系統暫時無法驗證權限，請稍後再試。若持續出現請通知泡泡貓負責顧問。'
+      : '⚠️ 你的帳號尚未開通，麻煩通知泡泡貓負責顧問！';
+    sendJson(res, 200, { status: 'failed', text });
     return;
   }
   const ticket = await getUuidRowData(auth, uuid);

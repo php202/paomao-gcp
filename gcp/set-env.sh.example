@@ -11,6 +11,8 @@ export LINE_CHANNEL_SECRET=   # LINE 頻道 → Basic settings → Channel secre
 export LINE_TOKEN_PAOSTAFF=  # LINE 頻道 → Messaging API → Channel access token
 
 # ----- 選填（試算表／日報等）-----
+# 查空位／SayDou：建議設 SAYDOU_BEARER_TOKEN 以減少 Sheets API 讀取、避免「Read requests」配額超限
+# export SAYDOU_BEARER_TOKEN=   # 填入後部署時會傳入 Cloud Run
 export TOKEN_SHEET_SS_ID=
 export LINE_STORE_SS_ID=
 export OUTPUT_SS_ID=
