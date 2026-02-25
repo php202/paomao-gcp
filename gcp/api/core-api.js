@@ -3,7 +3,7 @@ import fetch from 'node-fetch';
 import { google } from 'googleapis';
 import { readSheet } from '../lib/sheets.js';
 import { getDirectStoreReplyStatusText } from '../lib/store-reply-status.js';
-import { getBearerToken } from '../lib/saydou.js';
+import { getBearerToken, invalidateTokenCache } from '../lib/saydou.js';
 import { safeJsonParse, sendJson, sendRedirect, sendText } from './http-utils.js';
 
 const CORE_KEY = (process.env.PAO_CAT_SECRET_KEY || '').trim();
@@ -86,6 +86,7 @@ async function saydouFetchJson(url, token, init = {}) {
   const text = await res.text();
   const json = safeJsonParse(text);
   if (!res.ok) {
+    if (res.status === 401) invalidateTokenCache();
     throw new Error(`SayDou HTTP ${res.status}: ${(text || '').slice(0, 120)}`);
   }
   return json;

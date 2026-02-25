@@ -8,6 +8,11 @@ const TOKEN_CELL = 'C2';
 const TOKEN_FROM_SHEET_CACHE_TTL_MS = 5 * 60 * 1000;
 let tokenFromSheetCache = { value: '', expiresAt: 0 };
 
+/** 清除試算表 Token 快取（例如收到 401 後讓下次請求重新讀取）。env SAYDOU_BEARER_TOKEN 不受影響。 */
+export function invalidateTokenCache() {
+  tokenFromSheetCache = { value: '', expiresAt: 0 };
+}
+
 /** 從 env 或試算表取得 Bearer Token。若從試算表讀取會短期快取以降低 Sheets API Read 配額。 */
 export async function getBearerToken(auth) {
   if (process.env.SAYDOU_BEARER_TOKEN?.trim()) return process.env.SAYDOU_BEARER_TOKEN.trim();
