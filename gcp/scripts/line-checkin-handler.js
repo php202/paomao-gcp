@@ -13,6 +13,11 @@ import { createCheckinTicket } from './checkin-api.js';
 const CHECK_IN_LINK = process.env.CHECK_IN_LINK || 'https://www.paopaomao.tw/checkin';
 const LINE_TOKEN_PAOSTAFF = process.env.LINE_TOKEN_PAOSTAFF;
 
+// Debounce：防止同一員工短時間內重複觸發「我要打卡」
+// Map<userId, timestamp>
+const lastCheckinRequest = new Map();
+const CHECKIN_REQUEST_COOLDOWN_MS = 30 * 1000; // 30 秒內不重複產生 ticket
+
 /** 送出一則文字回覆到 LINE */
 async function sendLineReplyText(replyToken, text, token) {
   const res = await fetch('https://api.line.me/v2/bot/message/reply', {
@@ -67,6 +72,14 @@ export async function handleCheckInRequest(auth, replyToken, userId) {
     await sendLineReplyText(replyToken, msg, LINE_TOKEN_PAOSTAFF);
     return;
   }
+
+  // Debounce：30 秒內重複「我要打卡」直接提醒，不產新 ticket
+  const lastReq = lastCheckinRequest.get(userId);
+  if (lastReq && (Date.now() - lastReq) < CHECKIN_REQUEST_COOLDOWN_MS) {
+    await sendLineReplyText(replyToken, '⏳ 你剛剛已申請打卡，請直接點擊上方連結開啟打卡頁面。', LINE_TOKEN_PAOSTAFF);
+    return;
+  }
+  lastCheckinRequest.set(userId, Date.now());
 
   const uuid = crypto.randomUUID();
   // 在 checkin-api 的記憶體 ticket store 建立 ticket

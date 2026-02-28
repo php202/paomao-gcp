@@ -126,15 +126,17 @@ async function checkLocation(lat, lon) {
   return data.sort((a, b) => a.distance - b.distance);
 }
 
-/** 今日該員工最後一筆打卡（從 DB 查） */
+/** 今日該員工最後一筆「實際」打卡（從 DB 查，排除 attempt） */
 async function getEmployeeHistoryToday(userId) {
-  const todayStr = toTaipeiDateStr(new Date());
+  // 用 AT TIME ZONE 確保日期比對以台北時區為準，不依賴 Node.js TZ 設定
   try {
     const { rows } = await pool.query(
       `SELECT checked_at, check_type FROM checkin_records
-       WHERE line_user_id = $1 AND checked_at::date = $2::date
+       WHERE line_user_id = $1
+         AND check_type IN ('in', 'out')
+         AND (checked_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
        ORDER BY checked_at DESC LIMIT 1`,
-      [userId, todayStr]
+      [userId]
     );
     if (rows.length === 0) return { hasRecord: false };
     return {
@@ -241,9 +243,13 @@ async function handleCheckIn(req, res, body) {
 
   if (history.hasRecord) {
     const lastPunchTime = new Date(history.lastTime);
-    const timeDiff = (timestamp - lastPunchTime) / 1000 / 60;
-    if (timeDiff < COOLDOWN_MINUTES) {
-      sendJson(res, 200, { status: 'failed', text: '⚠️ 你已於 10分鐘內打卡，請稍後再試！' });
+    // 用 DB 的 timestamptz 和 JS Date 比較，兩邊都是 UTC epoch，不受 TZ 影響
+    const timeDiffMs = timestamp.getTime() - lastPunchTime.getTime();
+    const timeDiffMin = timeDiffMs / 1000 / 60;
+    console.log(`[checkin-api] cooldown check: last=${lastPunchTime.toISOString()} now=${timestamp.toISOString()} diff=${timeDiffMin.toFixed(1)}min`);
+    if (timeDiffMin < COOLDOWN_MINUTES) {
+      const remainMin = Math.ceil(COOLDOWN_MINUTES - timeDiffMin);
+      sendJson(res, 200, { status: 'failed', text: `⚠️ 你已於 10分鐘內打卡，請 ${remainMin} 分鐘後再試！` });
       return;
     }
     const lastWasClockIn = history.lastType.indexOf('上班') !== -1;

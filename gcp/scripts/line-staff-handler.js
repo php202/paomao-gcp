@@ -336,8 +336,8 @@ function buildAttendanceMessage(records, employeeMap, storeNameMap = new Map()) 
       const onStr = onItems.length ? fmtTimeHHmmss(onItems[0].time) : '';
       const offStr = offItems.length ? fmtTimeHHmmss(offItems[offItems.length - 1].time) : '';
       lines.push(`🔹 ${date} 出勤紀錄`);
-      lines.push(`✅ 上班: ${onStr}`);
-      lines.push(`✅ 下班: ${offStr}`);
+      lines.push(onStr ? `✅ 上班: ${onStr}` : `⏳ 上班: 未打卡`);
+      lines.push(offStr ? `✅ 下班: ${offStr}` : `⏳ 下班: 未打卡`);
     }
     lines.push('');
   }
