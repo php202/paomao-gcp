@@ -1015,41 +1015,40 @@ async function handleAttendanceCommand({
 }
 
 async function handleLineQuestion(replyText, authClient, sheetReader) {
-  if (!LINE_HQ_SS_ID) {
-    await replyText('系統尚未設定 LINE_HQ_SS_ID。');
-    return true;
-  }
-  const rows = await sheetReader(authClient, LINE_HQ_SS_ID, "'問題集'!A:H");
-  const pending = [];
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const returnDate = String(row[7] || '').trim();
-    if (returnDate) continue;
-    pending.push({
-      date: row[1] ? fmtDateTime(normalizeDate(row[1]) || new Date()).slice(5, 10) : '--/--',
-      store: String(row[2] || ''),
-      content: String(row[3] || '').replace(/[\n\r]/g, ' ').slice(0, 24),
-      owner: String(row[4] || ''),
+  // 改讀 PostgreSQL API（api.paopaomao.tw）
+  try {
+    const resp = await fetch('https://api.paopaomao.tw/api/issues/pending?key=paomao-issues-2026&limit=50');
+    if (!resp.ok) throw new Error(`API ${resp.status}`);
+    const data = await resp.json();
+    const pending = (data.issues || []).map(i => ({
+      date: i.created_at ? new Date(i.created_at).toISOString().slice(5, 10) : '--/--',
+      store: String(i.store_name || ''),
+      content: String(i.description || '').replace(/[\n\r]/g, ' ').slice(0, 24),
+      owner: String(i.assignee || ''),
+    }));
+    if (!pending.length) {
+      await replyText('✅ 目前所有問題皆已處理完畢，辛苦了！');
+      return true;
+    }
+    const top = pending.slice(0, 10);
+    const lines = ['📝 【待處理問題清單】', '==============='];
+    top.forEach((t, idx) => {
+      lines.push(`${idx + 1}. [${t.date}] ${t.store}`);
+      lines.push(`👤 ${t.owner}：${t.content}`);
+      lines.push('---------------');
     });
-  }
-  if (!pending.length) {
-    await replyText('✅ 目前所有問題皆已處理完畢，辛苦了！');
+    if (pending.length > 10) {
+      lines.push(`⚠️ 還有 ${pending.length - 10} 筆未顯示，請至後台查看。`);
+    } else {
+      lines.push(`共計 ${pending.length} 筆未回傳。`);
+    }
+    await replyText(lines.join('\n'));
+    return true;
+  } catch (err) {
+    console.error('[handleLineQuestion] API error:', err.message);
+    await replyText('⚠️ 問題集查詢暫時無法使用，請稍後再試。');
     return true;
   }
-  const top = pending.slice(0, 10);
-  const lines = ['📝 【待處理問題清單】', '==============='];
-  top.forEach((t, idx) => {
-    lines.push(`${idx + 1}. [${t.date}] ${t.store}`);
-    lines.push(`👤 ${t.owner}：${t.content}`);
-    lines.push('---------------');
-  });
-  if (pending.length > 10) {
-    lines.push(`⚠️ 還有 ${pending.length - 10} 筆未顯示，請至後台查看。`);
-  } else {
-    lines.push(`共計 ${pending.length} 筆未回傳。`);
-  }
-  await replyText(lines.join('\n'));
-  return true;
 }
 
 /** 依關鍵字從「公司流程」試算表取得連結（與 GAS Core.getWorkflowLink 一致）；無設定或無匹配回 null */

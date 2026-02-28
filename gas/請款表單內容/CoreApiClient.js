@@ -36,7 +36,7 @@ var CoreApi = (function () {
     var code = res.getResponseCode();
     var text = res.getContentText();
     if (code !== 200) {
-      var hint = (code === 403) ? " 【解法】請在「專案設定」→「指令碼屬性」新增兩筆：① GCP_CORE_API_URL = https://pao-checkin-api-vkffbzouva-de.a.run.app/core  ② GCP_CORE_SECRET_KEY = 與 PAO_CAT_SECRET_KEY 相同（或與 GCP 專案 PAO_CAT_SECRET_KEY 一致）。儲存後重新執行。" : "";
+      var hint = (code === 403) ? " 【解法】請在「專案設定」→「指令碼屬性」新增兩筆：① GCP_CORE_API_URL = https://gcp.paopaomao.tw/core  ② GCP_CORE_SECRET_KEY = 與 PAO_CAT_SECRET_KEY 相同（或與 GCP 專案 PAO_CAT_SECRET_KEY 一致）。儲存後重新執行。" : "";
       throw new Error("Core API 錯誤: " + code + (text && text.indexOf("<html") === -1 ? " " + text.slice(0, 120) : "") + hint);
     }
     try {

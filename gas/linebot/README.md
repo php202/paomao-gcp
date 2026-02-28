@@ -55,3 +55,17 @@ npm run ship-with-linebot
    （Windows CMD 請改為先手動設定環境變數或使用 cross-env。）
 
 若曾把憑證 push 到 GitHub，請在 Google Cloud Console 撤銷並重新建立 OAuth 憑證，並用 `git rebase -i` 改寫歷史移除該 commit 中的憑證後再 push。
+
+## 訊息跑不出來／列表空白
+
+**狀況**：紅字顯示「未處理 69 則」但底下訊息列表是空的。
+
+1. **先清空搜尋框**  
+   搜尋「名字或訊息」會篩選列表；若關鍵字沒有符合任何一則，全部會被隱藏，就會變成「69 則但列表空白」。  
+   請點搜尋欄右側的 **✖** 清空搜尋，或把搜尋框清空後重新整理。現在版本會在篩選時顯示「未處理 N 則（顯示 M 則）」，若看到「顯示 0 則」即代表是搜尋篩掉全部。
+
+2. **確認 GCP 有收到 Webhook（新訊息沒進來時）**  
+   各店 LINE 的 Webhook 應指向 GCP：`https://<Cloud Run 網址>/store-line-webhook`。  
+   - 到 **LINE Developers** → 該店頻道 → **Messaging API** → **Webhook URL** 是否為上述網址。  
+   - GCP 寫入失敗會記在試算表「錯誤紀錄」工作表；可開 **泡泡貓｜line@訊息回覆一覽表** → 工作表「錯誤紀錄」查看是否有 `store-line-webhook` 的錯誤。  
+   - Cloud Run 日誌可看 `[store-line-webhook] append 訊息一覽 failed` 等錯誤。

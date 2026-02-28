@@ -1,9 +1,18 @@
 import fetch from 'node-fetch';
-import { readSheet, writeSheet } from '../lib/sheets.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { readSheet, writeSheet, appendSheet } from '../lib/sheets.js';
 import { sendJson } from './http-utils.js';
 import { findAvailableSlotsAction, getLineSayDouInfoMap } from './core-api.js';
 import { getBearerToken } from '../lib/saydou.js';
 import { createCustomerInfoToken } from '../lib/customer-token.js';
+
+/** member-linker DB (read-only from auto-reply system) */
+const MEMBER_LINKS_PATH = path.join(process.env.HOME || '/tmp', '.openclaw/workspace/泡泡貓/auto-reply/.member-links.json');
+function loadMemberLinks() {
+  try { return JSON.parse(fs.readFileSync(MEMBER_LINKS_PATH, 'utf8')); }
+  catch { return {}; }
+}
 
 const INTEGRATED_SHEET_SS_ID = (process.env.INTEGRATED_SHEET_SS_ID || process.env.LINE_STORE_SS_ID || '').trim();
 const LEGACY_GAS_STORES_API_URL = (process.env.LEGACY_GAS_STORES_API_URL || '').trim();
@@ -264,6 +273,18 @@ async function getList(auth, botId) {
     }
   }
   out.reverse();
+
+  // Enrich with member-linker data
+  const memberLinks = loadMemberLinks();
+  for (const item of out) {
+    const m = item.userId ? memberLinks[item.userId] : null;
+    if (m) {
+      item.memberName = m.memnam || '';
+      item.memberPhone = m.phone || '';
+      item.memberId = m.membid || '';
+    }
+  }
+
   return { status: 'success', storeName: store.name, data: out };
 }
 
@@ -432,6 +453,143 @@ export async function handleStores(req, res, { authClient, url, bodyJson }) {
       case 'searchAvailability': {
         const botId = String(url.searchParams.get('botId') || '').trim();
         const out = await getSlots(authClient, botId, url.searchParams);
+        sendJson(res, 200, out);
+        return;
+      }
+      case 'checkMember': {
+        const phone = String(url.searchParams.get('phone') || '').trim().replace(/[-\s]/g, '');
+        if (!phone) { sendJson(res, 200, { status: 'error', message: '未提供手機號碼' }); return; }
+        try {
+          const token = await getBearerToken(authClient);
+          const apiUrl = `https://saywebdatafeed.saydou.com/api/management/unearn/memberStorecash?page=0&limit=20&sort=stcash&order=desc&keyword=${encodeURIComponent(phone)}&showGroup=0&tabIndex=0`;
+          const resp = await fetch(apiUrl, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000) });
+          const data = await resp.json();
+          const items = data?.data?.items || [];
+          if (items.length > 0) {
+            sendJson(res, 200, { status: 'success', name: items[0].memnam, phone: items[0].phone_ || phone, membid: items[0].membid });
+          } else {
+            sendJson(res, 200, { status: 'not_found', error: '查無此會員' });
+          }
+        } catch (e) {
+          sendJson(res, 200, { status: 'error', message: '查詢失敗: ' + (e.message || e) });
+        }
+        return;
+      }
+      case 'delete': {
+        const row = parseInt(url.searchParams.get('row'));
+        if (!row || row <= 1) { sendJson(res, 200, { status: 'error', message: '無效的列號' }); return; }
+        const operator = url.searchParams.get('operator_name') || '未知人員';
+        const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).replace('T', ' ');
+        await writeSheet(authClient, INTEGRATED_SHEET_SS_ID, `'訊息一覽'!F${row}:G${row}`, [[now, operator]]);
+        sendJson(res, 200, { status: 'marked_done', row, by: operator, time: now });
+        return;
+      }
+      case 'getWaitlist': {
+        const botId = String(url.searchParams.get('botId') || '').trim();
+        const store = await loadStoreByBotId(authClient, botId);
+        if (!store?.sayId) { sendJson(res, 200, { status: 'error', message: '找不到店家' }); return; }
+        const rows = await readSheet(authClient, INTEGRATED_SHEET_SS_ID, `'候補清單'!A:K`);
+        const list = [];
+        for (let i = 1; i < rows.length; i++) {
+          const r = rows[i];
+          const storeId = String(r[0] || '').trim();
+          const status = String(r[3] || '').trim();
+          if (storeId !== String(store.sayId) || status !== 'pending') continue;
+          const userId = String(r[2] || '').trim();
+          const dateVal = String(r[1] || '').trim();
+          const timeVal = String(r[5] || '').trim();
+          const people = Math.max(1, parseInt(r[6]) || 1);
+          const handler = String(r[7] || '').trim();
+          const displayName = String(r[8] || '').trim() || userId;
+          const remark = String(r[10] || '').trim();
+          const ds = dateVal.replace(/\//g, '-');
+          const datePart = ds.length >= 10 ? ds.substring(5, 10) : ds;
+          const timePart = timeVal && /^\d{1,2}:\d{2}/.test(timeVal) ? timeVal.substring(0, 5) : '';
+          const displayDate = timePart ? datePart + ' ' + timePart : datePart;
+          const sk = (ds.length >= 10 ? ds.substring(0, 10) : ds) + ' ' + (timePart || '00:00');
+          list.push({ rowIndex: i + 1, userId, displayName, displayDate, sortKey: sk, status, handler, remark, people, slotAvailable: null });
+        }
+        list.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+        sendJson(res, 200, { status: 'success', data: list });
+        return;
+      }
+      case 'addWaitlist': {
+        const botId = String(url.searchParams.get('botId') || '').trim();
+        const dateStr = String(url.searchParams.get('date') || '').trim().replace(/\//g, '-');
+        const userId = String(url.searchParams.get('userId') || '').trim();
+        const timeStr = String(url.searchParams.get('time') || '').trim();
+        const people = Math.max(1, parseInt(url.searchParams.get('people')) || 1);
+        const nameStr = String(url.searchParams.get('name') || '').trim();
+        const remarkStr = String(url.searchParams.get('remark') || '').trim();
+        if (!botId || !dateStr || !userId) { sendJson(res, 200, { status: 'error', message: '缺少必要參數' }); return; }
+        const store = await loadStoreByBotId(authClient, botId);
+        if (!store?.sayId) { sendJson(res, 200, { status: 'error', message: '找不到店家' }); return; }
+        const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).replace('T', ' ');
+        await appendSheet(authClient, INTEGRATED_SHEET_SS_ID, `'候補清單'!A:K`, [[String(store.sayId), dateStr, userId, 'pending', now, timeStr, people, '', nameStr, '', remarkStr]]);
+        sendJson(res, 200, { status: 'success', message: '已加入候補清單' });
+        return;
+      }
+      case 'markWaitlistDone':
+      case 'markWaitlistHandled': {
+        const rowIndex = parseInt(url.searchParams.get('rowIndex'));
+        const operatorName = String(url.searchParams.get('operator_name') || '').trim();
+        if (!rowIndex || rowIndex < 2) { sendJson(res, 200, { status: 'error', message: '請提供有效的 rowIndex' }); return; }
+        const newStatus = action === 'markWaitlistDone' ? 'done' : 'handled';
+        const now2 = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).replace('T', ' ');
+        await writeSheet(authClient, INTEGRATED_SHEET_SS_ID, `'候補清單'!D${rowIndex}`, [[newStatus]]);
+        if (operatorName) await writeSheet(authClient, INTEGRATED_SHEET_SS_ID, `'候補清單'!H${rowIndex}`, [[operatorName]]);
+        await writeSheet(authClient, INTEGRATED_SHEET_SS_ID, `'候補清單'!J${rowIndex}`, [[now2]]);
+        sendJson(res, 200, { status: 'success', message: action === 'markWaitlistDone' ? '已標記為已完成預約' : '已標記為已處理' });
+        return;
+      }
+      case 'markWaitlistPushed': {
+        const botId2 = String(url.searchParams.get('botId') || '').trim();
+        const rowIdx = parseInt(url.searchParams.get('rowIndex'));
+        if (!botId2 || !rowIdx || rowIdx < 2) { sendJson(res, 200, { status: 'error', message: '缺少參數' }); return; }
+        // Read waitlist row
+        const wlRow = await readSheet(authClient, INTEGRATED_SHEET_SS_ID, `'候補清單'!A${rowIdx}:K${rowIdx}`);
+        if (!wlRow?.length) { sendJson(res, 200, { status: 'error', message: '找不到該筆資料' }); return; }
+        const r2 = wlRow[0];
+        const wlUserId = String(r2[2] || '').trim();
+        if (!wlUserId) { sendJson(res, 200, { status: 'error', message: '該筆缺少 userId' }); return; }
+        // Get store LINE token
+        const store2 = await loadStoreByBotId(authClient, botId2);
+        if (!store2?.channelId || !store2?.channelSecret) { sendJson(res, 200, { status: 'error', message: '無法取得 LINE 憑證' }); return; }
+        const lineToken = await getLineAccessToken(store2.channelId, store2.channelSecret);
+        // Build message with slots
+        const dateVal2 = String(r2[1] || '').trim();
+        const timeVal2 = String(r2[5] || '').trim();
+        const ds2 = dateVal2.replace(/\//g, '-');
+        const mmdd = ds2.length >= 10 ? ds2.substring(5, 7) + '/' + ds2.substring(8, 10) : ds2;
+        const hhmm = timeVal2 && /^\d{1,2}:\d{2}/.test(timeVal2) ? timeVal2.substring(0, 5) : '';
+        const part = hhmm ? mmdd + ' ' + hhmm : mmdd;
+        const prefix = '真是抱歉今天的候補（' + part + '）沒有補位上，提供近三天，還有下 1–2 週同一時間的可預約時段：\n\n';
+        // Get slots text
+        let slotsText = '（請直接聯繫店家查詢空位）';
+        try {
+          const slotsOut = await getSlots(authClient, botId2, new URLSearchParams({ botId: botId2, startDate: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }), endDate: (() => { const d = new Date(); d.setDate(d.getDate() + 2); return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }); })(), people: String(Math.max(1, parseInt(r2[6]) || 1)), duration: '1.5' }));
+          if (slotsOut?.text) slotsText = slotsOut.text;
+        } catch (e) { /* fallback */ }
+        const message = prefix + slotsText;
+        // Send LINE push
+        await fetch('https://api.line.me/v2/bot/message/push', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${lineToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: wlUserId, messages: [{ type: 'text', text: message }] }),
+          signal: AbortSignal.timeout(15000),
+        });
+        // Update sheet
+        const now3 = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).replace('T', ' ');
+        await writeSheet(authClient, INTEGRATED_SHEET_SS_ID, `'候補清單'!D${rowIdx}`, [['pushed']]);
+        const op = String(url.searchParams.get('operator_name') || '').trim();
+        if (op) await writeSheet(authClient, INTEGRATED_SHEET_SS_ID, `'候補清單'!H${rowIdx}`, [[op]]);
+        await writeSheet(authClient, INTEGRATED_SHEET_SS_ID, `'候補清單'!J${rowIdx}`, [[now3]]);
+        sendJson(res, 200, { status: 'success', message: '已傳送提醒' });
+        return;
+      }
+      case 'createBooking': {
+        // createBooking 依賴大量 Core.* GAS 函式，暫時 fallback 到 GAS
+        const out = await delegateToLegacy(action, url.searchParams);
         sendJson(res, 200, out);
         return;
       }

@@ -1,17 +1,29 @@
 /**
- * GCP 打卡 API：bind / check_in，與 GAS BE-HandleCheckIn.js 邏輯對齊
- * 試算表：LINE_STAFF_SS_ID，工作表「員工打卡紀錄」A=userId,B=時間,C=類型,D=店名,E=uuid,F=frontUuid,G=失敗位置
- * 公司列表：id,name,address,經緯度(欄位4為 "lat,lon")
+ * GCP 打卡 API：bind / check_in — PostgreSQL 版
+ * 完全脫離 Google Sheets，使用本機 DB (paomao)
  */
 
-import { readSheet, writeSheet, batchUpdateValues, findRowByColumnValue } from '../lib/sheets.js';
-import { isUserAuthorized } from './line-checkin-handler.js';
+import pool, { isUserAuthorizedDB, logCheckInDB, saveBindingDB } from '../lib/db.js';
 
-const LINE_STAFF_SS_ID = process.env.LINE_STAFF_SS_ID;
-const LOG_SHEET = '員工打卡紀錄';
-const COMPANY_SHEET = '公司列表';
 const MAX_DISTANCE_KM = 0.1; // 100 公尺
 const COOLDOWN_MINUTES = 10;
+
+// ─── In-memory UUID ticket store (取代 Sheet 的 uuid row) ───
+// Map<uuid, { userId, frontUuid, action, createdAt }>
+const uuidTickets = new Map();
+
+// 每小時清理過期 ticket（超過 24h）
+setInterval(() => {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [k, v] of uuidTickets) {
+    if (v.createdAt < cutoff) uuidTickets.delete(k);
+  }
+}, 60 * 60 * 1000);
+
+/** 建立 ticket（從 line-checkin-handler 呼叫） */
+export function createCheckinTicket(uuid, userId) {
+  uuidTickets.set(uuid, { userId, frontUuid: '', action: '', createdAt: Date.now() });
+}
 
 function toTaipeiDateStr(d) {
   if (!d) return '';
@@ -25,14 +37,6 @@ function toTaipeiTimeStr(d) {
   return date.toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false, hour: '2-digit', minute: '2-digit' });
 }
 
-/** 台北時間 YYYY-MM-DD HH:mm:ss，寫入試算表用，避免 ISO Z 造成時區／解析問題 */
-function toTaipeiDateTimeStr(d) {
-  if (!d) return '';
-  const date = d instanceof Date ? d : new Date(d);
-  return date.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 19);
-}
-
-/** 回傳 JSON 給前端 */
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -41,53 +45,6 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
-/** 在員工打卡紀錄 E 欄搜尋 uuid，回傳 1-based 列號 */
-async function findRowByUuid(auth, uuid) {
-  if (!LINE_STAFF_SS_ID || !uuid) return null;
-  return findRowByColumnValue(auth, LINE_STAFF_SS_ID, `'${LOG_SHEET}'!E2:E`, String(uuid).trim());
-}
-
-/** 取得該 uuid 列資料：userId, action, frontUuid */
-async function getUuidRowData(auth, uuid) {
-  const row = await findRowByUuid(auth, uuid);
-  if (!row) return null;
-  const rows = await readSheet(auth, LINE_STAFF_SS_ID, `'${LOG_SHEET}'!A${row}:F${row}`);
-  if (!rows || !rows[0]) return null;
-  const r = rows[0];
-  return {
-    row,
-    userId: r[0],
-    action: r[2],
-    frontUuid: r[5],
-  };
-}
-
-/** 寫入 frontUuid 到 F 欄 */
-async function bindFrontUuidToSheet(auth, uuid, frontUuid) {
-  const row = await findRowByUuid(auth, uuid);
-  if (!row) return false;
-  await writeSheet(auth, LINE_STAFF_SS_ID, `'${LOG_SHEET}'!F${row}`, [[String(frontUuid).trim()]]);
-  return true;
-}
-
-/** 更新該列 A~D：userId, timestamp, punchType, storeName */
-async function updateRowData(auth, uuid, valuesArray) {
-  const row = await findRowByUuid(auth, uuid);
-  if (!row) return;
-  await writeSheet(auth, LINE_STAFF_SS_ID, `'${LOG_SHEET}'!A${row}:D${row}`, [valuesArray]);
-}
-
-/** 寫入失敗位置到 A、G */
-async function updateWrongByUuid(auth, uuid, userId, lat, lon) {
-  const row = await findRowByUuid(auth, uuid);
-  if (!row) return;
-  await batchUpdateValues(auth, LINE_STAFF_SS_ID, [
-    { range: `'${LOG_SHEET}'!A${row}`, values: [[userId]] },
-    { range: `'${LOG_SHEET}'!G${row}`, values: [[`失敗位置: ${lat}, ${lon}`]] },
-  ]);
-}
-
-/** 公司列表：讀取經緯度，計算距離 (km)，回傳 [{ name, distance }] 由近到遠 */
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -99,70 +56,100 @@ function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-async function checkLocation(auth, lat, lon) {
-  if (!LINE_STAFF_SS_ID) return [];
-  const rows = await readSheet(auth, LINE_STAFF_SS_ID, `'${COMPANY_SHEET}'!A:D`);
-  if (!rows || rows.length < 2) return [];
-  const storeMap = [];
-  for (let i = 1; i < rows.length; i++) {
-    const item = rows[i];
-    if (!item[3]) continue;
-    const parts = String(item[3]).split(',');
-    const latS = parseFloat(parts[0]);
-    const lonS = parseFloat(parts[1]);
-    if (Number.isFinite(latS) && Number.isFinite(lonS)) {
-      storeMap.push({
-        id: item[0],
-        name: item[1] || '',
-        lat: latS,
-        lon: lonS,
-      });
+// ─── 公司列表：從 DB 讀取（需要建 stores 表，暫時先用記憶體 + 一次性從 Sheet 載入或硬編碼） ───
+let storeLocations = null;
+
+async function loadStoreLocations() {
+  // 先試 DB
+  try {
+    const { rows } = await pool.query(
+      "SELECT store_name, latitude, longitude FROM store_locations WHERE latitude IS NOT NULL"
+    );
+    if (rows.length > 0) {
+      storeLocations = rows.map(r => ({ name: r.store_name, lat: parseFloat(r.latitude), lon: parseFloat(r.longitude) }));
+      return;
     }
+  } catch (e) {
+    // store_locations 表可能還沒建，fallback
   }
-  const data = storeMap.map((s) => ({
+
+  // Fallback: 從 Sheet 的公司列表讀取一次（如果可以的話）
+  try {
+    const { readSheet } = await import('../lib/sheets.js');
+    const { getAuth } = await import('../lib/auth.js');
+    const auth = await getAuth();
+    const LINE_STAFF_SS_ID = process.env.LINE_STAFF_SS_ID;
+    if (LINE_STAFF_SS_ID) {
+      const rows = await readSheet(auth, LINE_STAFF_SS_ID, "'公司列表'!A:D");
+      storeLocations = [];
+      for (let i = 1; i < rows.length; i++) {
+        const item = rows[i];
+        if (!item[3]) continue;
+        const parts = String(item[3]).split(',');
+        const lat = parseFloat(parts[0]);
+        const lon = parseFloat(parts[1]);
+        if (Number.isFinite(lat) && Number.isFinite(lon)) {
+          storeLocations.push({ name: item[1] || '', lat, lon });
+        }
+      }
+      console.log('[checkin-api] Loaded', storeLocations.length, 'store locations from Sheet');
+
+      // 同時寫入 DB 以便下次不用再讀 Sheet
+      try {
+        await pool.query(`CREATE TABLE IF NOT EXISTS store_locations (
+          id SERIAL PRIMARY KEY, store_name VARCHAR(100), latitude DECIMAL(10,7), longitude DECIMAL(10,7)
+        )`);
+        for (const s of storeLocations) {
+          await pool.query(
+            'INSERT INTO store_locations (store_name, latitude, longitude) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+            [s.name, s.lat, s.lon]
+          );
+        }
+        console.log('[checkin-api] Cached store locations to DB');
+      } catch (e) {
+        console.warn('[checkin-api] Failed to cache store locations:', e.message);
+      }
+    }
+  } catch (e) {
+    console.warn('[checkin-api] Cannot load store locations from Sheet:', e.message);
+    storeLocations = [];
+  }
+}
+
+async function checkLocation(lat, lon) {
+  if (!storeLocations) await loadStoreLocations();
+  if (!storeLocations || !storeLocations.length) return [];
+  const data = storeLocations.map((s) => ({
     name: s.name,
     distance: getDistanceFromLatLonInKm(s.lat, s.lon, lat, lon),
   }));
   return data.sort((a, b) => a.distance - b.distance);
 }
 
-/**
- * 今日該員工「依時間排序」的最後一筆打卡（用於判斷下一筆是上班或下班）。
- * 依 B 欄時間取最後一筆，避免多人交錯打卡時依列順序取到錯列，導致下班被誤寫成上班。
- */
-async function getEmployeeHistoryToday(auth, userId) {
-  if (!LINE_STAFF_SS_ID) return { hasRecord: false };
-  const lastRow = await getLastRowNum(auth, LOG_SHEET, 'A');
-  if (lastRow < 2) return { hasRecord: false };
-  const startRow = Math.max(2, lastRow - 200);
-  const range = `'${LOG_SHEET}'!A${startRow}:C${lastRow}`;
-  const data = await readSheet(auth, LINE_STAFF_SS_ID, range);
-  if (!data || !data.length) return { hasRecord: false };
+/** 今日該員工最後一筆打卡（從 DB 查） */
+async function getEmployeeHistoryToday(userId) {
   const todayStr = toTaipeiDateStr(new Date());
-  const todayRows = [];
-  for (let i = 0; i < data.length; i++) {
-    const row = data[i];
-    if (String(row[0] || '').trim() !== String(userId).trim() || !row[1] || !row[2]) continue;
-    const rowDate = toTaipeiDateStr(row[1]);
-    if (rowDate === todayStr) todayRows.push({ time: row[1], type: String(row[2]).trim() });
+  try {
+    const { rows } = await pool.query(
+      `SELECT checked_at, check_type FROM checkin_records
+       WHERE line_user_id = $1 AND checked_at::date = $2::date
+       ORDER BY checked_at DESC LIMIT 1`,
+      [userId, todayStr]
+    );
+    if (rows.length === 0) return { hasRecord: false };
+    return {
+      hasRecord: true,
+      lastTime: rows[0].checked_at,
+      lastType: rows[0].check_type === 'in' ? '上班打卡' : '下班打卡',
+    };
+  } catch (e) {
+    console.error('[checkin-api] getEmployeeHistoryToday error:', e.message);
+    return { hasRecord: false };
   }
-  if (todayRows.length === 0) return { hasRecord: false };
-  todayRows.sort((a, b) => new Date(a.time) - new Date(b.time));
-  const last = todayRows[todayRows.length - 1];
-  return { hasRecord: true, lastTime: last.time, lastType: last.type };
-}
-
-async function getLastRowNum(auth, sheetName, columnLetter = 'A') {
-  const rows = await readSheet(auth, LINE_STAFF_SS_ID, `'${sheetName}'!${columnLetter}:${columnLetter}`);
-  if (!rows || !rows.length) return 0;
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (rows[i][0] != null && String(rows[i][0]).trim() !== '') return i + 1;
-  }
-  return 0;
 }
 
 // --- Bind ---
-async function handleBind(req, res, auth, body) {
+async function handleBind(req, res, body) {
   const uuid = body.uuid;
   const frontUuid = body.frontUuid;
   if (!uuid || !frontUuid) {
@@ -170,27 +157,23 @@ async function handleBind(req, res, auth, body) {
     return;
   }
   console.log('[checkin-api] Bind uuid=%s frontUuid=%s', String(uuid).slice(-8), String(frontUuid).slice(-8));
-  const ticket = await getUuidRowData(auth, uuid);
+
+  const ticket = uuidTickets.get(uuid);
   if (!ticket) {
     sendJson(res, 200, { status: 'failed', text: '無效的連結 (找不到 UUID)' });
     return;
   }
-  if (ticket.action && String(ticket.action).trim() !== '') {
+  if (ticket.action && ticket.action !== '') {
     sendJson(res, 200, { status: 'failed', text: '此連結已打卡完成' });
     return;
   }
-  const sheetFront = String(ticket.frontUuid || '').trim();
-  const reqFront = String(frontUuid).trim();
-  if (sheetFront === '') {
-    const ok = await bindFrontUuidToSheet(auth, uuid, frontUuid);
-    if (ok) {
-      sendJson(res, 200, { status: 'success', text: '連線建立成功' });
-    } else {
-      sendJson(res, 200, { status: 'failed', text: '系統錯誤 (寫入失敗)' });
-    }
+  if (ticket.frontUuid === '') {
+    ticket.frontUuid = frontUuid;
+    await saveBindingDB(ticket.userId, uuid, frontUuid);
+    sendJson(res, 200, { status: 'success', text: '連線建立成功' });
     return;
   }
-  if (sheetFront === reqFront) {
+  if (ticket.frontUuid === frontUuid) {
     sendJson(res, 200, { status: 'success', text: '連線恢復' });
     return;
   }
@@ -198,17 +181,20 @@ async function handleBind(req, res, auth, body) {
 }
 
 // --- Check_in ---
-async function handleCheckIn(req, res, auth, body) {
+async function handleCheckIn(req, res, body) {
   const lat = parseFloat(body.latitude);
   const lon = parseFloat(body.longitude);
   const userId = body.userId;
   const uuid = body.uuid;
   const frontUuid = body.frontUuid;
+
   if (!userId || !uuid || !frontUuid || !Number.isFinite(lat) || !Number.isFinite(lon)) {
     sendJson(res, 200, { status: 'failed', text: '資料不完整，無法打卡' });
     return;
   }
-  const authResult = await isUserAuthorized(auth, LINE_STAFF_SS_ID, userId);
+
+  // 驗證員工權限 — 從 DB
+  const authResult = await isUserAuthorizedDB(userId);
   if (!authResult.isAuthorized) {
     await updateWrongByUuid(auth, uuid, userId, lat, lon);
     const text = authResult.sheetError
@@ -217,37 +203,42 @@ async function handleCheckIn(req, res, auth, body) {
     sendJson(res, 200, { status: 'failed', text });
     return;
   }
-  const ticket = await getUuidRowData(auth, uuid);
+
+  // 驗證 ticket
+  const ticket = uuidTickets.get(uuid);
   if (!ticket) {
     sendJson(res, 200, { status: 'failed', text: '連結無效 (找不到 UUID)' });
     return;
   }
-  const sheetFrontUuid = String(ticket.frontUuid || '').trim();
-  const reqFrontUuid = String(frontUuid).trim();
-  if (sheetFrontUuid === '') {
+  if (ticket.frontUuid === '') {
     sendJson(res, 200, { status: 'failed', text: '驗證失敗：請重新整理網頁 (未完成連線綁定)' });
     return;
   }
-  if (sheetFrontUuid !== reqFrontUuid) {
+  if (ticket.frontUuid !== frontUuid) {
     sendJson(res, 200, { status: 'failed', text: '驗證失敗：此連結已被其他裝置綁定！' });
     return;
   }
-  if (ticket.action && String(ticket.action).trim() !== '') {
+  if (ticket.action && ticket.action !== '') {
     sendJson(res, 200, { status: 'failed', text: '⚠️ 此連結已使用過，請重新申請！' });
     return;
   }
-  const checkResult = await checkLocation(auth, lat, lon);
+
+  // 檢查位置
+  const checkResult = await checkLocation(lat, lon);
   if (!checkResult.length || checkResult[0].distance > MAX_DISTANCE_KM) {
-    await updateWrongByUuid(auth, uuid, userId, lat, lon);
     const distMsg = checkResult.length
       ? `(距離 ${checkResult[0].name} ${(checkResult[0].distance * 1000).toFixed(0)}公尺)`
       : '(附近無店家)';
     sendJson(res, 200, { status: 'failed', text: `📍 距離太遠 \n${distMsg}` });
     return;
   }
-  const history = await getEmployeeHistoryToday(auth, userId);
+
+  // 冷卻 + 上下班判斷 — 從 DB
+  const history = await getEmployeeHistoryToday(userId);
   const timestamp = new Date();
   let punchType = '上班打卡';
+  let checkType = 'in';
+
   if (history.hasRecord) {
     const lastPunchTime = new Date(history.lastTime);
     const timeDiff = (timestamp - lastPunchTime) / 1000 / 60;
@@ -255,12 +246,15 @@ async function handleCheckIn(req, res, auth, body) {
       sendJson(res, 200, { status: 'failed', text: '⚠️ 你已於 10分鐘內打卡，請稍後再試！' });
       return;
     }
-    const lastTypeStr = String(history.lastType || '').trim();
-    const lastWasClockIn = lastTypeStr.indexOf('上班') !== -1;
+    const lastWasClockIn = history.lastType.indexOf('上班') !== -1;
     punchType = lastWasClockIn ? '下班打卡' : '上班打卡';
+    checkType = lastWasClockIn ? 'out' : 'in';
   }
-  const resultValues = [userId, toTaipeiDateTimeStr(timestamp), punchType, checkResult[0].name];
-  await updateRowData(auth, uuid, resultValues);
+
+  // 寫入 DB
+  await logCheckInDB(userId, uuid, frontUuid, checkType, lat, lon);
+  ticket.action = punchType; // 標記已使用
+
   const dateStr = toTaipeiDateStr(timestamp);
   const timeStr = toTaipeiTimeStr(timestamp);
   sendJson(res, 200, {
@@ -270,21 +264,17 @@ async function handleCheckIn(req, res, auth, body) {
 }
 
 /**
- * 處理 POST /checkin：bodyJson 為 { action: "bind"|"check_in", ... }
+ * 處理 POST /checkin
  */
 export async function handleCheckinApi(req, res, { auth, bodyJson }) {
-  if (!LINE_STAFF_SS_ID) {
-    sendJson(res, 500, { status: 'failed', text: '伺服器未設定試算表' });
-    return;
-  }
   const body = bodyJson || {};
   const action = body.action;
   if (action === 'bind') {
-    await handleBind(req, res, auth, body);
+    await handleBind(req, res, body);
     return;
   }
   if (action === 'check_in') {
-    await handleCheckIn(req, res, auth, body);
+    await handleCheckIn(req, res, body);
     return;
   }
   sendJson(res, 400, { status: 'failed', text: '不支援的 action' });

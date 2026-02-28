@@ -1,7 +1,7 @@
 /**
  * 選單「產出動態預約 / 取得今日預約（改由 GCP 執行）」會呼叫 GCP /admin。
  * 請在「專案設定」→「指令碼屬性」新增：
- * - GCP_ADMIN_URL = Cloud Run 服務網址 + /admin（例：https://pao-checkin-api-vkffbzouva-de.a.run.app/admin）
+ * - GCP_ADMIN_URL = Cloud Run 服務網址 + /admin（例：https://gcp.paopaomao.tw/admin）
  * - GCP_ADMIN_KEY = 與 PAO_CAT_SECRET_KEY / ADMIN_KEY 相同
  * 若未設定，選單會提示「尚未設定 GCP_ADMIN_URL / GCP_ADMIN_KEY」。
  * 目前 ads_appointmentLists / ads_todayReservation 尚未在 GCP 實作，設定後會回傳「請在 Apps Script 直接執行 appointmentLists / todayReservation」。

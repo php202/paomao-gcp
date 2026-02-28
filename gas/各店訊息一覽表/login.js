@@ -89,6 +89,10 @@ function doGet(e) {
         return markWaitlistDone(e);
       case 'markWaitlistHandled':
         return markWaitlistHandled(e);
+      case 'checkMember':
+        return checkMember(e);
+      case 'createBooking':
+        return createBooking(e);
       case 'updateAiAdjustmentSuggestion':
         return updateAiAdjustmentSuggestionAction({
           token: (e.parameter && e.parameter.token) ? e.parameter.token : "",
@@ -107,7 +111,7 @@ function doGet(e) {
 }
 
 /** 查詢空位 GCP /stores 預設網址（與 gcp/set-env.sh、請款表單 GCP_CORE 同服務） */
-var GCP_STORES_API_URL_FALLBACK = "https://pao-checkin-api-vkffbzouva-de.a.run.app/stores";
+var GCP_STORES_API_URL_FALLBACK = "https://gcp.paopaomao.tw/stores";
 
 /**
  * 取得 GCP Stores API 網址與金鑰（指令碼屬性：GCP_STORES_API_URL、GCP_CORE_SECRET_KEY 或 STORE_API_KEY）

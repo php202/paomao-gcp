@@ -188,7 +188,7 @@ function cleanupTempSheets() {
 }
 
 /** GCP /core 預設網址（僅在未設 GCP_CORE_API_URL 且 PAO_CAT_CORE_API_URL 為 GAS 時使用，與 gcp/set-env.sh GCP_CORE_PUBLIC_URL 一致） */
-var GCP_CORE_API_URL_FALLBACK = 'https://pao-checkin-api-vkffbzouva-de.a.run.app/core';
+var GCP_CORE_API_URL_FALLBACK = 'https://gcp.paopaomao.tw/core';
 
 /**
  * 開發票與 getOdooInvoice：優先 GCP_CORE_API_URL + GCP_CORE_SECRET_KEY；

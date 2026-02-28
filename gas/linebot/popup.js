@@ -1,5 +1,5 @@
-// ▼▼▼ 請將這裡換成您剛剛部署 GAS 產生的網址 (exec 結尾) ▼▼▼
-const GAS_API_URL = "https://script.google.com/macros/s/AKfycbzY1xtm_Y6JKDTgf_qDXHJHDCs5ucrLk0qqX0J4Do2_y8A4JO7VJ_aBiL_HbzLk_ZkN/exec";
+// ▼▼▼ API endpoint (GCP local server) ▼▼▼
+const GAS_API_URL = "https://gcp.paopaomao.tw/stores";
 
 /** 未處理訊息超過此數量即顯示紅字「客人正在看著你」 */
 const UNREAD_WARNING_THRESHOLD = 5;
@@ -12,10 +12,16 @@ const DEFAULT_QUICK_REPLY = `🔸近期人氣No.1 👉 活氧泡泡課程 🔸
 
 let currentBotId = null;
 
-function updateMsgStatus(unprocessedCount) {
+/**
+ * @param {number} unprocessedCount - 未處理總筆數
+ * @param {number} [visibleCount] - 篩選後可見筆數；若有且與總數不同則顯示「未處理 N 則（顯示 M 則）」避免搜尋導致列表空白卻仍顯示 69 則
+ */
+function updateMsgStatus(unprocessedCount, visibleCount) {
   const el = document.getElementById('msg-status');
   if (!el) return;
   el.classList.remove('msg-status--danger', 'msg-status--success', 'msg-status--neutral');
+  const showVisible = visibleCount !== undefined && visibleCount !== unprocessedCount;
+  const suffix = showVisible ? `（顯示 ${visibleCount} 則）` : '';
   if (unprocessedCount === 0) {
     el.style.display = 'block';
     el.className = 'msg-status msg-status--success';
@@ -23,11 +29,11 @@ function updateMsgStatus(unprocessedCount) {
   } else if (unprocessedCount >= UNREAD_WARNING_THRESHOLD) {
     el.style.display = 'block';
     el.className = 'msg-status msg-status--danger';
-    el.textContent = `未處理 ${unprocessedCount} 則 · 客人正在看著你`;
+    el.textContent = `未處理 ${unprocessedCount} 則 · 客人正在看著你${suffix}`;
   } else {
     el.style.display = 'block';
     el.className = 'msg-status msg-status--neutral';
-    el.textContent = `未處理的訊息：${unprocessedCount} 則`;
+    el.textContent = `未處理的訊息：${unprocessedCount} 則${suffix}`;
   }
 }
 
@@ -169,11 +175,15 @@ async function fetchMsgList(botId) {
       const hasReplyToken = !!(item.replyToken && item.replyToken.trim());
       const replyTokenEsc = (item.replyToken || '').replace(/"/g, '&quot;');
       const replyPlaceholder = hasReplyToken ? '回覆此則（不佔 Push）' : '回覆此則（無 token 時請改用手動傳送）';
+      const memberBadge = item.memberPhone
+        ? `<span class="member-badge" title="會員: ${(item.memberName||'').replace(/"/g,'&quot;')} / ${item.memberPhone}">📱 ${item.memberPhone}</span>`
+        : (item.userId ? `<span class="member-badge member-unknown" style="cursor:pointer" title="點擊請客戶輸入手機" data-reply-token="${replyTokenEsc}" data-user-id="${item.userId}">❓ 未配對</span>` : '');
       div.innerHTML = `
         <div class="msg-header">
           <span>${item.time}</span>
           <span style="margin:0 5px; color:#ddd;">|</span>
           <span class="msg-name" title="點擊複製">${item.name}</span>
+          ${memberBadge}
           <button class="btn-copy-name" title="用此名字篩選訊息">🔍</button>
         </div>
         <div class="msg-content">${item.msg}</div>
@@ -194,6 +204,34 @@ async function fetchMsgList(botId) {
           setTimeout(() => { nameSpan.textContent = item.name; nameSpan.style.color = "#0066cc"; }, 1500);
         });
       });
+
+      // ❓ 未配對：點擊後彈出輸入框讓員工輸入手機號碼查會員
+      const unknownBadge = div.querySelector('.member-unknown');
+      if (unknownBadge) {
+        unknownBadge.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const phone = prompt('請輸入此客人的手機號碼：');
+          if (!phone || phone.trim().length < 10) return;
+          const cleanPhone = phone.trim().replace(/[-\s]/g, '');
+          unknownBadge.textContent = '🔍 查詢中...';
+          try {
+            const resp = await fetch(`${GAS_API_URL}?action=checkMember&botId=${currentBotId}&phone=${cleanPhone}`);
+            const data = await resp.json();
+            if (data.status === 'success' && data.name) {
+              unknownBadge.textContent = `📱 ${cleanPhone}`;
+              unknownBadge.className = 'member-badge';
+              unknownBadge.title = `會員: ${data.name} / ${cleanPhone}`;
+              alert(`✅ 已配對會員：${data.name}（${cleanPhone}）`);
+            } else {
+              unknownBadge.textContent = '❓ 未配對';
+              alert(`查無此會員（${cleanPhone}），請確認號碼是否正確`);
+            }
+          } catch (err) {
+            unknownBadge.textContent = '❓ 未配對';
+            alert('查詢失敗：' + err.message);
+          }
+        });
+      }
 
       // 放大鏡：將名字填入搜尋框並觸發過濾
       div.querySelector('.btn-copy-name').addEventListener('click', (e) => {
@@ -763,15 +801,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 搜尋過濾
+  // 搜尋過濾：篩選後更新狀態為「可見筆數」，避免顯示「69 則」但列表空白（搜尋無符合）
   const searchInputEl = document.getElementById('input-search');
   if (searchInputEl) {
     searchInputEl.addEventListener('input', (e) => {
       const keyword = e.target.value.toLowerCase().trim();
-      document.querySelectorAll('.msg-item').forEach(item => {
-        const text = item.getAttribute('data-search');
-        item.style.display = text.includes(keyword) ? '' : 'none';
+      const items = document.querySelectorAll('.msg-item');
+      let visibleCount = 0;
+      items.forEach(item => {
+        const text = item.getAttribute('data-search') || '';
+        const show = !keyword || text.includes(keyword);
+        item.style.display = show ? '' : 'none';
+        if (show) visibleCount++;
       });
+      const total = items.length;
+      if (total > 0) updateMsgStatus(total, visibleCount);
     });
   }
 

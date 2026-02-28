@@ -15,7 +15,7 @@
     'use strict';
 
     // 請改成你的 GCP Cloud Run 網址（與 set-env.sh REPORT_API_BASE 同服務、不含路徑）
-    const GCP_BASE = "https://pao-checkin-api-vkffbzouva-de.a.run.app";
+    const GCP_BASE = "https://gcp.paopaomao.tw";
 
     function tryOpenInvoiceFromResponse(text) {
         try {
