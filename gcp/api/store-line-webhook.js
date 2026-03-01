@@ -51,6 +51,11 @@ const MESS_FILTER_RULES = [
   { keyword: '我的會員', type: 'MEMBER', desc: '會員權益', useAI: false, template: '${name} 您好！想查詢點數嗎？請點擊選單下方的「會員中心」即可查看喔！' },
   { keyword: '課程介紹', type: 'INTRO', desc: '了解課程', useAI: false, template: '${name} 您好，我們的熱門課程都在選單裡囉！如果需要專人解說，請直接留言，我們稍後回覆您。' },
   { keyword: '送出預約', type: 'IGNORE', desc: '系統操作', useAI: false, template: null },
+  { keyword: '【我想預約】', type: 'IGNORE', desc: 'Flex按鈕觸發', useAI: false, template: null },
+  { keyword: '【確認預約】', type: 'IGNORE', desc: 'Flex確認按鈕', useAI: false, template: null },
+  { keyword: '確認預約', type: 'IGNORE', desc: 'Flex確認按鈕', useAI: false, template: null },
+  { keyword: '38女神節', type: 'TICKET_38', desc: '38女神節限定方案', useAI: false, template: null },
+  { keyword: '女神節', type: 'TICKET_38', desc: '38女神節限定方案', useAI: false, template: null },
   { keyword: '線上預約', type: 'BOOKING', desc: '查詢空位', useAI: false, template: 'Hi ${name}，想預約嗎？系統查到最近還有空位：\n${slots}\n\n有哪一個時段對妳來說比較方便嗎？\n如果想預約的話，再麻煩留下你的【姓名、電話】，稍後為妳登記保留喔。' },
   { keyword: '您已取消預約', type: 'BOOKING', desc: '取消挽回', useAI: true, prompt: '客人剛取消了預約。請產生一段貼心、不給壓力的文案，表示遺憾，並主動列出系統查到的最近空位(${slots})，詢問是否改約。' },
 ];
@@ -384,6 +389,65 @@ export async function handleStoreLineWebhook(req, res, { authClient, rawBody }) 
       const skipRetentionList = filterResult.desc === '會員權益' || filterResult.desc === '了解課程';
       let finalContent = '';
       let rowStatus = 'Pending';
+
+      // ── 38女神節限定方案（3/1 - 3/16） ──
+      if (filterResult.type === 'TICKET_38') {
+        const now = new Date();
+        const start = new Date('2026-03-01T00:00:00+08:00');
+        const end = new Date('2026-03-16T23:59:59+08:00');
+        if (now >= start && now <= end && accessToken && replyToken) {
+          const ticketUrl = `https://book.paopaomao.tw/ticket?id=869889&u=${userId}&n=${encodeURIComponent(displayName || '')}`;
+          const ticketFlex = {
+            type: 'flex',
+            altText: '🎀 38女神節限定方案',
+            contents: {
+              type: 'bubble', size: 'mega',
+              hero: {
+                type: 'box', layout: 'vertical', paddingAll: '20px',
+                backgroundColor: '#FFF0F5',
+                contents: [
+                  { type: 'text', text: '🎀 38女神節限定', weight: 'bold', size: 'xl', color: '#5a3e2b', align: 'center' },
+                  { type: 'text', text: '雙重升級方案', size: 'md', color: '#8b6f5e', align: 'center', margin: 'sm' },
+                ]
+              },
+              body: {
+                type: 'box', layout: 'vertical', spacing: 'md', paddingAll: '20px',
+                contents: [
+                  { type: 'box', layout: 'horizontal', contents: [
+                    { type: 'text', text: '非會員價', size: 'sm', color: '#aaa', flex: 1 },
+                    { type: 'text', text: '$660', size: 'sm', color: '#ccc', decoration: 'line-through', align: 'end' },
+                  ]},
+                  { type: 'box', layout: 'horizontal', contents: [
+                    { type: 'text', text: '會員價', size: 'md', color: '#5a3e2b', weight: 'bold', flex: 1 },
+                    { type: 'text', text: '$380', size: 'xl', color: '#e74c3c', weight: 'bold', align: 'end' },
+                  ]},
+                  { type: 'separator', margin: 'lg' },
+                  { type: 'text', text: '✨ 儲值金直接扣款\n📅 有效期限 2026/08/31\n💆 可用於全台泡泡貓門市', size: 'xs', color: '#888', wrap: true, margin: 'md' },
+                ]
+              },
+              footer: {
+                type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '16px',
+                contents: [
+                  { type: 'button', style: 'primary', color: '#5a3e2b', height: 'md',
+                    action: { type: 'uri', label: '🛒 立即購買', uri: ticketUrl } },
+                ]
+              }
+            }
+          };
+          try {
+            const rr = await fetch('https://api.line.me/v2/bot/message/reply', {
+              method: 'post',
+              headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ replyToken, messages: [ticketFlex] }),
+              signal: AbortSignal.timeout(10000),
+            });
+            if (rr.ok) console.log(`[ticket38] ${store.storeName} | ${displayName} | replied`);
+          } catch (e) {
+            console.error(`[ticket38] reply error:`, e.message);
+          }
+        }
+        continue;
+      }
 
       if (filterResult.desc === '查詢空位') {
         const result = await replyOnlineBookingOnly(authClient, {
