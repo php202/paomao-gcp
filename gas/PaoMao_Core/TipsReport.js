@@ -160,6 +160,25 @@ function getTipsFormRowsWithRawAM(startDate, endDate) {
   }
 }
 
+/**
+ * 從 obj（header-keyed）建立與統整表 A:M 對應的 13 欄列（按 TIPS_FORM_KEYS 順序）。
+ * 不再依賴 rawRow 的位置，因為表單欄位順序可能跟 TIPS_FORM_KEYS 不一致。
+ * @param {Object} obj - header name → value 的鍵值對
+ * @returns {Array<string>} 13 欄的陣列，順序同 TIPS_FORM_KEYS[0..12]
+ */
+function buildRow13FromObj(obj) {
+  var row = [];
+  for (var i = 0; i < 13; i++) {
+    var key = TIPS_FORM_KEYS[i];
+    if (key && obj[key] != null) {
+      row.push(String(obj[key]).trim());
+    } else {
+      row.push('');
+    }
+  }
+  return row;
+}
+
 /** 每輪同步最多處理筆數（避免逾時／API 過多），處理完會存進度，下次依「上一筆 時間、手機」續跑 */
 var TIPS_SYNC_BATCH_SIZE = 80;
 /** Script 屬性鍵：目前同步的月份 YYYY-MM */
@@ -346,20 +365,13 @@ function syncLastMonthQuestionnaireToConsolidated() {
   for (var i = startIndex; i < batchLimit; i++) {
     var r = form.rows[i];
     var obj = r.obj;
-    var rawRow = r.rawRow.slice();
-    if (rawRow.length > 2) {
-      var cVal = rawRow[2];
-      while (rawRow.length < 13) rawRow.push('');
-      rawRow[12] = cVal;
-      rawRow[2] = '';
-    }
+    // [FIX] 用 obj（header-keyed）建立 row13，不再用位置式 rawRow（表單欄位順序與 TIPS_FORM_KEYS 不一致會導致錯位）
+    var row13 = buildRow13FromObj(obj);
     var phone = normalizePhoneForTips((obj['您的手機號碼'] || '').trim());
     var qtTime = parseFormTimestamp(obj['時間戳記']);
     var qtMs = qtTime ? qtTime.getTime() : 0;
     var member = phone ? (getMemApiBatchFn ? membersMap[phone] : getMemApiFn(phone)) : null;
-    if (memberNameCol >= 0 && member && member.memnam != null && String(member.memnam).trim() !== '') {
-      rawRow[memberNameCol] = String(member.memnam).trim();
-    }
+    // 會員姓名寫入 row13 對應位置（TIPS_FORM_KEYS index 15 = '會員姓名'，但 row13 只有 0-12，姓名在 append 段處理）
     var consumption = null;
     if (member && member.membid && qtMs) {
       if (findLatestFromListFn && transactionsByMembid[member.membid]) {
@@ -407,7 +419,7 @@ function syncLastMonthQuestionnaireToConsolidated() {
     }
     var intervalText = (intervalDays != null && !isNaN(intervalDays)) ? (String(intervalDays) + '天') : '';
     var itemsCombined = [consumptionTimeText, intervalText, itemsText].filter(function (s) { return s && String(s).trim() !== ''; }).join(' | ');
-    var outRow = rawRow.concat([itemsCombined, remarkText, amount, storeName, stcash, storId, memberName]);
+    var outRow = row13.concat([itemsCombined, remarkText, amount, storeName, stcash, storId, memberName]);
     outRows.push(outRow);
     if (intervalDays != null && intervalDays > 10) {
       redRowOffsets.push(i - startIndex);
@@ -591,8 +603,8 @@ function syncSingleTipsResponseToConsolidated(obj, rawRow) {
   }
   var intervalText = (intervalDays != null && !isNaN(intervalDays)) ? (String(intervalDays) + '天') : '';
   var itemsCombined = [consumptionTimeText, intervalText, itemsText].filter(function (s) { return s && String(s).trim() !== ''; }).join(' | ');
-  var row13 = (rawRow && rawRow.length >= 13) ? rawRow.slice(0, 13) : [];
-  while (row13.length < 13) row13.push('');
+  // [FIX] 用 obj 建立 row13，不依賴位置式 rawRow（防止表單欄位順序變動導致錯位）
+  var row13 = buildRow13FromObj(obj);
   var outRow = row13.concat([itemsCombined, remarkText, amount, storeName, stcash, storId]);
   var writeRow = sheet.getLastRow() + 1;
   sheet.getRange(writeRow, 1, 1, outRow.length).setValues([outRow]);
@@ -609,13 +621,25 @@ function syncSingleTipsResponseToConsolidated(obj, rawRow) {
  */
 function onTipsFormSubmit(e) {
   if (!e || !e.values || !e.values.length) return;
-  var headerKeys = TIPS_FORM_HEADER_13;
+  // [FIX] 從觸發的試算表讀取實際表頭，用 header name 建 obj，不依賴固定順序
   var obj = {};
-  for (var i = 0; i < headerKeys.length && i < e.values.length; i++) {
-    obj[headerKeys[i]] = e.values[i] != null ? String(e.values[i]).trim() : '';
+  try {
+    var sheet = e.source ? e.source.getActiveSheet() : null;
+    if (sheet) {
+      var headers = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 13)).getValues()[0];
+      for (var i = 0; i < headers.length && i < e.values.length; i++) {
+        var h = (headers[i] != null ? String(headers[i]).trim() : '');
+        if (h) obj[h] = e.values[i] != null ? String(e.values[i]).trim() : '';
+      }
+    }
+  } catch (ex) {
+    // Fallback: 若無法讀取表頭，仍用 TIPS_FORM_HEADER_13（舊行為）
+    var headerKeys = TIPS_FORM_HEADER_13;
+    for (var i = 0; i < headerKeys.length && i < e.values.length; i++) {
+      obj[headerKeys[i]] = e.values[i] != null ? String(e.values[i]).trim() : '';
+    }
   }
-  var rawRow = e.values.slice(0, 13);
-  syncSingleTipsResponseToConsolidated(obj, rawRow);
+  syncSingleTipsResponseToConsolidated(obj, null);
 }
 
 /**
