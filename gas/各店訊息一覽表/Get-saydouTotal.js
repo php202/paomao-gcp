@@ -12,9 +12,19 @@ function totalMoney() {
   };
 
   const response = UrlFetchApp.fetch(url, options);
-  const data = JSON.parse(response.getContentText());
+  const httpCode = response.getResponseCode();
+  const text = response.getContentText();
+  if (httpCode === 401 || httpCode === 403) {
+    console.error(`[totalMoney] SayDou Token 失效 (HTTP ${httpCode})，請更新預約表單 C2 的 token`);
+    return;
+  }
+  const data = JSON.parse(text);
+  if (!data?.data?.performanceData) {
+    console.error(`[totalMoney] API 回傳格式異常: ${text.substring(0, 200)}`);
+    return;
+  }
   const stores = data.data.performanceData;
-  console.log(stores)
+  console.log(`[totalMoney] 取得 ${stores.length} 間門市資料`)
 
   var ssId = typeof CONFIG !== "undefined" && CONFIG.INTEGRATED_SHEET_SS_ID ? CONFIG.INTEGRATED_SHEET_SS_ID : null;
   var ss = ssId ? SpreadsheetApp.openById(ssId) : null;
