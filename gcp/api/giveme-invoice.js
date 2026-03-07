@@ -120,16 +120,37 @@ function getTotalFromOrder(order) {
 }
 
 /**
- * 發票應開金額（實際收款）：優先 options.invoiceAmount，其次 order.bmod.cash + order.bmod.card（SayDou 實際收款），否則用訂單總額
+ * 發票應開金額：儲值金(card) + 現金(cash) + 信用卡(creditcard) + LINE Pay(linepay) + 其他實付
+ * 不含：優惠券(voucher)、商品券(ticket)、贈送(give)、免費(free)
+ * 優先 options.invoiceAmount（手動覆蓋），其次從 SayDou order 付款欄位計算
  */
 function getInvoiceTotal(order, options) {
+  // 1. 手動指定金額最優先
   const fromOpt = options?.invoiceAmount != null ? Number(options.invoiceAmount) : NaN;
   if (!Number.isNaN(fromOpt) && fromOpt >= 0) return Math.round(fromOpt);
+
+  // 2. SayDou order 根層級付款欄位（結帳 response 直接帶）
+  //    card = 儲值金扣款, cash = 現金, creditcard = 信用卡刷卡
+  //    cashpay/rpcash = 其他現金類, linepay/taiwanpay/applepay/googlepay/jkopay/wechatpay/alipay = 第三方
+  //    不含: voucher(優惠券), ticket(商品券/票券), give(贈送), free(免費)
+  const payFields = ['cash', 'card', 'creditcard', 'cashpay', 'rpcash',
+    'linepay', 'taiwanpay', 'applepay', 'googlepay', 'jkopay', 'wechatpay', 'alipay',
+    'cpay_1', 'cpay_2', 'cpay_3', 'cpay_4', 'cpay_5'];
+  // 偵測 SayDou 格式：有 cash/card/ticket/voucher 任一欄位即為 SayDou order
+  const isSaydouOrder = ['cash', 'card', 'ticket', 'voucher'].some(f => order?.[f] != null);
+  if (isSaydouOrder) {
+    const sum = payFields.reduce((acc, f) => acc + Math.max(0, Number(order?.[f] ?? 0)), 0);
+    return Math.round(sum);  // 可能是 0（全用優惠券/票券 → 不開發票）
+  }
+
+  // 3. Legacy: order.bmod (舊格式備援)
   const bmod = order?.bmod;
   if (bmod && (bmod.cash != null || bmod.card != null)) {
     const sum = Number(bmod.cash ?? 0) + Number(bmod.card ?? 0);
     if (sum >= 0) return Math.round(sum);
   }
+
+  // 4. 其他 fallback
   const fromOrder =
     Number(order?.actualAmount ?? order?.invoiceAmount ?? order?.realTotal ?? order?.payamt ?? NaN);
   if (!Number.isNaN(fromOrder) && fromOrder >= 0) return Math.round(fromOrder);
@@ -369,7 +390,8 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
   const totalFee = getInvoiceTotal(order, options);
   const ordrsn = order?.ordrsn || order?.ordcid || '';
 
-  console.log('[giveme-invoice]', reqId, 'start', { storid, type, totalFee, ordrsn: String(ordrsn).slice(0, 30) });
+  const payBreakdown = { cash: order?.cash, card: order?.card, creditcard: order?.creditcard, voucher: order?.voucher, ticket: order?.ticket, give: order?.give, free: order?.free, rprice: order?.rprice };
+  console.log('[giveme-invoice]', reqId, 'start', { storid, type, totalFee, ordrsn: String(ordrsn).slice(0, 30), payBreakdown });
 
   // 驗證 Cloud Run 出站 IP（VPC egress 須為「將所有流量路由至 VPC」+ Cloud NAT 固定 IP）
   try {

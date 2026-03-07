@@ -1,9 +1,22 @@
 import fetch from 'node-fetch';
+import { Pool } from 'pg';
 import { verifyLineSignature } from '../lib/line-webhook.js';
 import { appendSheet, readSheet, writeSheet, batchUpdateValues } from '../lib/sheets.js';
 import { getDirectStoreReplyStatusText } from '../lib/store-reply-status.js';
 import { sendAdminLinePush } from '../lib/line-push.js';
 import { sendJson } from './http-utils.js';
+
+import fs from 'fs';
+
+// PostgreSQL connection for delete orders
+const pgPool = new Pool({ database: 'paomao', host: 'localhost', port: 5432, max: 3 });
+
+// SayDou API
+const SAYDOU_API = 'https://saywebdatafeed.saydou.com';
+function getSaydouToken() {
+  try { return fs.readFileSync('/Users/paopaomao/.openclaw/workspace/booking-site/.saydou-token', 'utf8').trim(); }
+  catch { return ''; }
+}
 
 /** 管理員級錯誤只推給 Robby，客戶只收到通用訊息 */
 const CUSTOMER_FALLBACK_MSG = '暫時無法處理，請稍後再試。';
@@ -169,76 +182,345 @@ async function pushFlexReceipt(targetId, storeName, odooId, operatorName) {
   });
 }
 
-/** 請款「正確」按鈕 postback：寫入 ACH 試算表 G 欄並回覆＋推播收據（與 GAS handleConfirmPostback_ 對齊） */
+/** 解析刪單請求文字 */
+function parseDeleteOrderText(text) {
+  const lines = text.split('\n').map(line => line.trim()).filter(line => line);
+  const data = {};
+  
+  for (const line of lines) {
+    if (line.includes('客人姓名')) {
+      data.customerName = line.replace(/.*客人姓名[：:]\s*/, '').trim();
+    } else if (line.includes('訂單編號')) {
+      data.orderId = line.replace(/.*訂單編號[：:]\s*/, '').trim();
+    } else if (line.includes('電話')) {
+      data.phone = line.replace(/.*電話[：:]\s*/, '').trim();
+    } else if (line.includes('需刪除的原因')) {
+      data.reason = line.replace(/.*需刪除的原因[：:]\s*/, '').trim();
+    } else if (line.includes('金額')) {
+      const amountStr = line.replace(/.*金額[：:]\s*/, '').replace(/[^\d.-]/g, '');
+      data.amount = parseFloat(amountStr) || 0;
+    }
+  }
+  
+  return data;
+}
+
+/** 查詢 SayDou 會員和訂單 */
+async function searchSayDouOrder(phone, customerName, orderId) {
+  try {
+    const token = getSaydouToken();
+    if (!token) {
+      return { found: false, reason: 'api_error', error: 'SayDou token not available' };
+    }
+    const headers = { Authorization: `Bearer ${token}` };
+    console.log('[delete-order] 查詢 SayDou, phone:', phone, 'name:', customerName, 'orderId:', orderId);
+    
+    // 先用電話查會員
+    const memberRes = await fetch(`${SAYDOU_API}/api/management/crm/members?page=0&limit=10&keyword=${encodeURIComponent(phone)}`, {
+      headers, signal: AbortSignal.timeout(20000)
+    });
+    const memberData = await memberRes.json();
+    const members = memberData?.data?.items || memberData?.data || [];
+    
+    if (!members.length) {
+      return { found: false, reason: 'member_not_found' };
+    }
+    
+    const member = members[0];
+    const memberId = member.id || member._id || '';
+    
+    // 查交易記錄（用姓名）
+    const transRes = await fetch(`${SAYDOU_API}/api/management/finance/transaction?keyword=${encodeURIComponent(customerName)}`, {
+      headers, signal: AbortSignal.timeout(20000)
+    });
+    const transData = await transRes.json();
+    const transactions = transData?.data?.items || transData?.data || [];
+    
+    // 找符合的消費訂單（門市傳的是 ordrsn，刪除用 ordcid）
+    if (transactions.length) {
+      const matchingTrans = transactions.find(trans => 
+        (trans.ordrsn && String(trans.ordrsn) === String(orderId)) ||
+        (trans.ordcid && String(trans.ordcid) === String(orderId))
+      );
+      
+      if (matchingTrans) {
+        console.log('[delete-order] 找到消費訂單 ordrsn:', matchingTrans.ordrsn, 'ordcid:', matchingTrans.ordcid);
+        return {
+          found: true,
+          type: 'transaction',
+          memberId,
+          ordcid: String(matchingTrans.ordcid),
+          ordrsn: String(matchingTrans.ordrsn || ''),
+          transactionData: matchingTrans,
+          actualAmount: parseFloat(matchingTrans.rprice || matchingTrans.price_ || matchingTrans.total || matchingTrans.amount || 0)
+        };
+      }
+      console.log('[delete-order] 消費訂單不符, 搜尋到', transactions.length, '筆, ordrsn:', transactions.map(t => t.ordrsn).join(','));
+    }
+    
+    // 消費找不到，查儲值紀錄
+    const membid = member.membid || member.id || member._id || '';
+    if (membid) {
+      console.log('[delete-order] 消費找不到，查儲值紀錄 membid:', membid);
+      const scRes = await fetch(`${SAYDOU_API}/api/management/unearn/storecashAddRecord?page=0&limit=50&sort=rectim&order=desc&keyword=&membid=${membid}&type=0&tabIndex=1`, {
+        headers, signal: AbortSignal.timeout(20000)
+      });
+      const scData = await scRes.json();
+      const scItems = scData?.data?.items || scData?.data || [];
+      
+      if (scItems.length) {
+        // 用訂單編號比對（ordrsn 或 scitid）
+        const matchingSc = scItems.find(sc =>
+          (sc.ordrsn && String(sc.ordrsn) === String(orderId)) ||
+          (sc.scitid && String(sc.scitid) === String(orderId))
+        );
+        
+        if (matchingSc) {
+          console.log('[delete-order] 找到儲值紀錄 scitid:', matchingSc.scitid);
+          return {
+            found: true,
+            type: 'storecash',
+            memberId: String(membid),
+            scitid: String(matchingSc.scitid),
+            ordrsn: String(matchingSc.ordrsn || orderId),
+            transactionData: matchingSc,
+            actualAmount: parseFloat(matchingSc.amount || matchingSc.cash || 0)
+          };
+        }
+        
+        // 沒有精確比對到，但有紀錄 — 找最近一筆金額符合的
+        console.log('[delete-order] 儲值紀錄 ordrsn 不符, 共', scItems.length, '筆');
+      }
+    }
+    
+    return { found: false, reason: 'order_not_matched' };
+    
+  } catch (error) {
+    console.error('[delete-order] searchSayDouOrder error:', error.message);
+    return { found: false, reason: 'api_error', error: error.message };
+  }
+}
+
+/** 處理刪單請求 */
+async function handleDeleteOrder(event) {
+  const text = String(event?.message?.text || '').trim();
+  
+  if (!text.includes('【泡泡貓協助刪單paodelete】')) {
+    return false; // 不是刪單請求
+  }
+  console.log('[delete-order] 收到刪單請求:', text.substring(0, 100));
+  
+  const deleteData = parseDeleteOrderText(text);
+  
+  if (!deleteData.customerName || !deleteData.phone || !deleteData.orderId) {
+    await replyText(event.replyToken, '⚠️ 刪單資訊不完整，請確認格式：\n客人姓名、訂單編號、電話 必填');
+    return true;
+  }
+  
+  const source = event.source || {};
+  const userId = source.userId || '';
+  const requestedBy = await fetchDisplayNameInSource(userId, source);
+  const sourceGroupId = source.groupId || source.roomId || '';
+  let sourceGroupName = '';
+  if (sourceGroupId) {
+    sourceGroupName = await fetchGroupName(sourceGroupId) || sourceGroupId;
+  } else {
+    sourceGroupName = `私訊（${requestedBy || 'unknown'}）`;
+  }
+  
+  // 查詢 SayDou
+  const searchResult = await searchSayDouOrder(deleteData.phone, deleteData.customerName, deleteData.orderId);
+  
+  if (!searchResult.found) {
+    // 查不到，回覆請重新提供資料
+    await replyText(event.replyToken, '❌ 查無此筆訂單，麻煩再提供正確資料。');
+    return true;
+  }
+  
+  // 金額僅記錄，不擋審核
+  if (deleteData.amount && searchResult.actualAmount && deleteData.amount !== searchResult.actualAmount) {
+    console.log('[delete-order] 金額不符但不擋: 提供=', deleteData.amount, '系統=', searchResult.actualAmount);
+  }
+  
+  // 檢查是否已有相同訂單的刪單請求（防重複）
+  try {
+    const { rows: existing } = await pgPool.query(
+      "SELECT id, status FROM delete_orders WHERE order_id = $1 AND status IN ('pending', 'deleted')",
+      [deleteData.orderId]
+    );
+    if (existing.length > 0) {
+      const e = existing[0];
+      if (e.status === 'deleted') {
+        await replyText(event.replyToken, `ℹ️ 訂單 ${deleteData.orderId} 已刪除完成，無需重複處理。`);
+      } else {
+        await replyText(event.replyToken, `ℹ️ 訂單 ${deleteData.orderId} 已在審核中，請勿重複提交。`);
+      }
+      return true;
+    }
+  } catch (e) {
+    console.error('[delete-order] duplicate check error:', e.message);
+  }
+
+  // 查到，寫入 DB 等待會計確認
+  const orderType = searchResult.type || 'transaction'; // 'transaction' or 'storecash'
+  const deleteId = orderType === 'storecash' ? searchResult.scitid : searchResult.ordcid;
+  try {
+    await pgPool.query(`
+      INSERT INTO delete_orders (
+        customer_name, phone, order_id, amount, reason, 
+        saydou_member_id, saydou_ordcid, order_type,
+        source_group_id, source_group_name, 
+        requested_by, requested_by_user_id, 
+        status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending')
+    `, [
+      deleteData.customerName,
+      deleteData.phone, 
+      deleteData.orderId,
+      deleteData.amount || searchResult.actualAmount,
+      deleteData.reason,
+      searchResult.memberId,
+      deleteId,
+      orderType,
+      sourceGroupId,
+      sourceGroupName,
+      requestedBy,
+      userId
+    ]);
+    
+    await replyText(event.replyToken, '泡泡貓會計正在審核中，請稍後。');
+    
+  } catch (dbError) {
+    await replyText(event.replyToken, '❌ 系統錯誤，請稍後再試。');
+    console.error('[delete-order] DB insert failed:', dbError.message);
+  }
+  
+  return true;
+}
+
+/** 請款「正確」按鈕 postback：寫入 ACH 試算表 G 欄 + DB 並回覆＋推播收據
+ *  支援兩種模式：
+ *  - 新版 (Dashboard): action=confirm&dbId=xxx&sheetRow=xxx → 直接用 DB id + sheet_row
+ *  - 舊版 (GAS):       action=confirm&odoo=xxx&storeName=xxx → 搜尋 P+B 欄比對
+ */
 async function handleConfirmPostback(authClient, event) {
   const params = parsePostbackParams(event?.postback?.data);
   if (params.action !== 'confirm') return;
-  const odooId = params.odoo != null ? String(params.odoo).trim() : '';
-  const storeNameFromPostback = params.storeName != null ? String(params.storeName).trim() : '';
-  if (!odooId) {
-    await replyText(event.replyToken, '⚠️ 無法取得單號，請重試。');
-    return;
-  }
-  if (!EXTERNAL_SS_ID) {
-    await sendAdminLinePush('[PAOPAO 請款] 伺服器未設定 ACH 試算表 (EXTERNAL_SS_ID)，請聯絡管理員設定。').catch(() => {});
-    await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
-    return;
-  }
+
   const source = event.source || {};
   const targetId = source.groupId || source.roomId || source.userId;
   const userId = source.userId;
   let userName = await fetchDisplayNameInSource(userId, source);
   if (!userName) userName = '操作者';
 
-  let rows;
-  try {
-    rows = await readSheet(authClient, EXTERNAL_SS_ID, `'${ACH_SHEET_NAME}'!A:P`);
-  } catch (err) {
-    const errMsg = err?.message || String(err);
-    console.error('[paopao-webhook] readSheet ACH 失敗:', errMsg, 'sheet=', ACH_SHEET_NAME);
-    await sendAdminLinePush(`[PAOPAO 請款] 無法讀取工作表「${ACH_SHEET_NAME}」。請確認：\n1. 試算表底部是否有此名稱的分頁\n2. Cloud Run 服務帳號是否有編輯權限\n\n錯誤: ${errMsg}`).catch(() => {});
+  const dbId = params.dbId ? String(params.dbId).trim() : '';
+  const sheetRow = params.sheetRow ? parseInt(params.sheetRow) : 0;
+  const odooId = params.odoo != null ? String(params.odoo).trim() : '';
+  const storeNameFromPostback = params.storeName != null ? String(params.storeName).trim() : '';
+
+  // Must have either dbId or odooId
+  if (!dbId && !odooId) {
+    await replyText(event.replyToken, '⚠️ 無法取得單號，請重試。');
+    return;
+  }
+  if (!EXTERNAL_SS_ID) {
     await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
     return;
   }
-  const colP = 16;
-  const colB = 2;
-  const colG = 7;
+
   let rowIndex = -1;
   let resolvedStoreName = storeNameFromPostback;
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const pVal = row[colP - 1] != null ? String(row[colP - 1]).trim() : '';
-    const bVal = row[colB - 1] != null ? String(row[colB - 1]).trim() : '';
-    if (pVal === odooId && (bVal === storeNameFromPostback || !storeNameFromPostback)) {
-      rowIndex = i + 1;
-      resolvedStoreName = bVal || storeNameFromPostback;
-      break;
+  let resolvedDbId = dbId;
+
+  if (dbId && sheetRow) {
+    // ─── 新版：直接用 DB id + sheet_row ───
+    rowIndex = sheetRow;
+    // 從 DB 取 store_name 做收據用
+    try {
+      const { Pool } = await import('pg');
+      const dbPool = new Pool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
+      const { rows: dbRows } = await dbPool.query(
+        'SELECT store_name, customer_confirmed FROM ach_records WHERE id = $1 AND year = 2026', [dbId]
+      );
+      await dbPool.end();
+      if (dbRows.length === 0) {
+        await replyText(event.replyToken, `⚠️ 找不到單號 ${dbId} 的資料。`);
+        return;
+      }
+      if (dbRows[0].customer_confirmed && String(dbRows[0].customer_confirmed).trim()) {
+        await replyText(event.replyToken, `⚠️ ${userName} 您好，\n這筆資料已經確認過囉！\n\n紀錄：\n${dbRows[0].customer_confirmed}`);
+        return;
+      }
+      resolvedStoreName = dbRows[0].store_name || storeNameFromPostback;
+    } catch (dbErr) {
+      console.error('[paopao-webhook] DB lookup failed:', dbErr?.message);
+    }
+  } else {
+    // ─── 舊版：搜尋 Sheet P+B 欄 ───
+    let rows;
+    try {
+      rows = await readSheet(authClient, EXTERNAL_SS_ID, `'${ACH_SHEET_NAME}'!A:P`);
+    } catch (err) {
+      console.error('[paopao-webhook] readSheet ACH 失敗:', err?.message);
+      await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
+      return;
+    }
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const pVal = row[15] != null ? String(row[15]).trim() : '';
+      const bVal = row[1] != null ? String(row[1]).trim() : '';
+      if (pVal === odooId && (!storeNameFromPostback || bVal === storeNameFromPostback || bVal.includes(storeNameFromPostback) || storeNameFromPostback.includes(bVal))) {
+        rowIndex = i + 1;
+        resolvedStoreName = bVal || storeNameFromPostback;
+        break;
+      }
+    }
+    if (rowIndex < 0) {
+      await replyText(event.replyToken, `⚠️ 找不到符合的資料列（單號: ${odooId}${storeNameFromPostback ? '，店名: ' + storeNameFromPostback : ''}）`);
+      return;
+    }
+    // Check existing G column from Sheet
+    let sheetRows;
+    try { sheetRows = await readSheet(authClient, EXTERNAL_SS_ID, `'${ACH_SHEET_NAME}'!G${rowIndex}`); } catch {}
+    const existingG = sheetRows?.[0]?.[0];
+    if (existingG && String(existingG).trim()) {
+      await replyText(event.replyToken, `⚠️ ${userName} 您好，\n這筆資料已經確認過囉！\n\n紀錄：\n${existingG}`);
+      return;
     }
   }
-  if (rowIndex < 0) {
-    await replyText(event.replyToken, `⚠️ 找不到符合的資料列（單號: ${odooId}${storeNameFromPostback ? '，店名: ' + storeNameFromPostback : ''}），請確認試算表內 P 欄與 B 欄。`);
-    return;
-  }
-  const existingStatus = rows[rowIndex - 1][colG - 1];
-  if (existingStatus != null && String(existingStatus).trim() !== '') {
-    await replyText(event.replyToken, `⚠️ ${userName} 您好，\n這筆資料已經確認過囉！\n\n紀錄：\n${existingStatus}`);
-    return;
-  }
+
+  // ─── 寫入確認 (DB only — DB is source of truth, Sheet G 欄不再同步) ───
   const now = formatTaiwanDateTime(new Date());
+  const confirmText = `${now} 由 ${userName} 確認`;
+
   try {
-    await batchUpdateValues(authClient, EXTERNAL_SS_ID, [
-      { range: `'${ACH_SHEET_NAME}'!G${rowIndex}`, values: [[`${now} 由 ${userName} 確認`]] },
-    ]);
-  } catch (err) {
-    await sendAdminLinePush(`[PAOPAO 請款] 寫入試算表失敗（單號: ${odooId}）\n\n${err?.message || err}`).catch(() => {});
+    const { Pool } = await import('pg');
+    const dbPool = new Pool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
+    if (resolvedDbId) {
+      await dbPool.query(
+        'UPDATE ach_records SET customer_confirmed = $1 WHERE id = $2 AND year = 2026',
+        [confirmText, resolvedDbId]
+      );
+    } else {
+      await dbPool.query(
+        'UPDATE ach_records SET customer_confirmed = $1 WHERE sheet_row = $2 AND year = 2026',
+        [confirmText, rowIndex]
+      );
+    }
+    await dbPool.end();
+    console.log(`[paopao-webhook] ✅ ACH confirmed: dbId=${resolvedDbId || '?'} sheetRow=${rowIndex} by ${userName}`);
+  } catch (dbErr) {
+    console.error('[paopao-webhook] DB write failed:', dbErr?.message);
     await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
     return;
   }
-  await replyText(event.replyToken, '✅ 已確認，請稍候收據。');
+
+  // 3. Reply + receipt
+  await replyText(event.replyToken, '✅ 已確認，謝謝！');
   try {
-    await pushFlexReceipt(targetId, resolvedStoreName, odooId, userName);
+    await pushFlexReceipt(targetId, resolvedStoreName, resolvedDbId || odooId, userName);
   } catch (e) {
-    console.error('[paopao-webhook] pushFlexReceipt failed:', e?.message || e);
+    console.error('[paopao-webhook] pushFlexReceipt failed:', e?.message);
   }
 }
 
@@ -270,9 +552,11 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
 
   const signature = String(req.headers['x-line-signature'] || '');
   if (!PAOPAO_CHANNEL_SECRET || !verifyLineSignature(rawBody, signature, PAOPAO_CHANNEL_SECRET)) {
+    console.log('[paopao-webhook] signature verification failed, secret set:', !!PAOPAO_CHANNEL_SECRET);
     sendJson(res, 401, { status: 'unauthorized' });
     return;
   }
+  console.log('[paopao-webhook] received events:', body?.events?.length || 0);
 
   const events = Array.isArray(body?.events) ? body.events : [];
   for (const event of events) {
@@ -285,6 +569,44 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     }
     if (event?.type === 'message' && event?.message?.type === 'text') {
       const text = String(event.message.text || '').trim();
+      
+      // 處理群組綁定請求：在 LINE 群組輸入「綁定群組」，自動抓 groupId 寫入 payees
+      if (text.includes('綁定群組') && event.source?.type === 'group') {
+        const groupId = event.source.groupId || '';
+        const groupName = await fetchGroupName(groupId);
+        if (groupId) {
+          try {
+            // 用群組名稱模糊匹配 payees（去掉「泡泡貓｜」前綴比對）
+            const shortName = (groupName || '').replace(/^泡泡貓[｜|]/, '').replace(/店$/, '').trim();
+            const { rows } = await pgPool.query(
+              `SELECT p.id, p.payee_name, p.line_group_id, s.store_name
+               FROM payees p LEFT JOIN stores s ON p.store_id = s.id
+               WHERE s.store_name ILIKE $1 OR p.payee_name ILIKE $1
+               LIMIT 5`,
+              [`%${shortName}%`]
+            );
+            if (rows.length === 1) {
+              await pgPool.query('UPDATE payees SET line_group_id = $1 WHERE id = $2', [groupId, rows[0].id]);
+              await replyText(event.replyToken, `✅ 已綁定群組\n\n群組名稱：${groupName}\n群組 ID：${groupId}\n對應代付戶：${rows[0].payee_name}\n門市：${rows[0].store_name || '-'}`);
+            } else if (rows.length > 1) {
+              const list = rows.map(r => `• ${r.payee_name} (${r.store_name || '-'})`).join('\n');
+              await replyText(event.replyToken, `⚠️ 找到多個匹配的代付戶，請手動在 Dashboard 設定：\n\n${list}\n\n群組 ID：${groupId}`);
+            } else {
+              await replyText(event.replyToken, `⚠️ 找不到匹配的代付戶\n\n群組名稱：${groupName}\n群組 ID：${groupId}\n\n請在 Dashboard 門市管理 → 代收代付 手動設定此 ID`);
+            }
+          } catch (e) {
+            console.error('[bind-group] DB error:', e.message);
+            await replyText(event.replyToken, `群組 ID：${groupId}\n（DB 寫入失敗，請手動設定）`);
+          }
+        }
+        continue;
+      }
+
+      // 處理刪單請求
+      if (await handleDeleteOrder(event)) {
+        continue; // 已處理刪單，跳過其他處理
+      }
+      
       if (text.includes('店家回覆狀態')) {
         try {
           if (!LINE_STORE_SS_ID) {
