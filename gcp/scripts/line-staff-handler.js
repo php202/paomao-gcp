@@ -1611,17 +1611,15 @@ export async function handleStaffCommand({
     return true;
   }
 
-  // 8. 上月小費（完全或包含，與 GAS 一致）— 本機直接呼叫
+  // 8. 上月小費 — 導向 Dashboard 個人頁面 + Excel 下載（不再產 Google Sheet）
   if (text.trim() === '上月小費' || text.indexOf('上月小費') >= 0) {
     try {
-      const managedStoreIds = splitStoreIds(authResult.managedStores);
-      const empCode = (!managedStoreIds.length && authResult.employeeCode) ? authResult.employeeCode : '';
-      const r = await lastMonthTipsReport({ userId, managedStoreIds, employeeCode: empCode });
-      if (!r || !r.ok || !r.url) {
-        await replyText(`上月小費報告失敗：${(r && r.message) || '未知錯誤'}`);
-        return true;
-      }
-      await replyText(`✅ 上月小費\n\n開啟報表：\n${r.url}`);
+      const now = new Date();
+      const lastM = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const ym = `${lastM.getFullYear()}-${String(lastM.getMonth() + 1).padStart(2, '0')}`;
+      const dashboardUrl = 'https://dashboard.paopaomao.tw/my#tips';
+      const downloadUrl = `https://dashboard.paopaomao.tw/api/tips/my/excel?month=${ym}`;
+      await replyText(`✅ 上月小費（${ym}）\n\n📊 線上查看：\n${dashboardUrl}\n\n📥 下載 Excel：\n${downloadUrl}\n\n💡 需先用 LINE 登入儀表板`);
     } catch (e) {
       console.error('[上月小費] error:', e.message);
       await replyText(`上月小費報告失敗：${e.message}`);
