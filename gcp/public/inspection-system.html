@@ -1,0 +1,1472 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>泡泡貓巡店考核系統</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-blue: #18BAE1;
+            --secondary-blue: #008BD5;
+            --light-gray: #EBEDDF;
+            --dark-gray: #3E3A39;
+            --success: #28a745;
+            --warning: #ffc107;
+            --danger: #dc3545;
+            --info: #17a2b8;
+            --light: #f8f9fa;
+            --dark: #343a40;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--light-gray);
+            color: var(--dark-gray);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary-blue), var(--secondary-blue));
+            color: white;
+            padding: 2rem 0;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            text-align: center;
+            font-size: 2.5rem;
+            font-weight: 300;
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            text-align: center;
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+
+        /* Navigation */
+        .nav-tabs {
+            background: white;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+        }
+
+        .nav-tabs .container {
+            display: flex;
+            justify-content: center;
+            gap: 0;
+        }
+
+        .nav-tab {
+            padding: 1rem 2rem;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+            color: var(--dark-gray);
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+        }
+
+        .nav-tab:hover {
+            background-color: var(--light);
+            color: var(--primary-blue);
+        }
+
+        .nav-tab.active {
+            color: var(--primary-blue);
+            border-bottom-color: var(--primary-blue);
+            background-color: rgba(24, 186, 225, 0.05);
+        }
+
+        /* Dashboard Cards */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+        }
+
+        .card-icon {
+            width: 60px;
+            height: 60px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.8rem;
+            margin-bottom: 1rem;
+            color: white;
+        }
+
+        .card-primary { background-color: var(--primary-blue); }
+        .card-success { background-color: var(--success); }
+        .card-warning { background-color: var(--warning); }
+        .card-danger { background-color: var(--danger); }
+        .card-info { background-color: var(--info); }
+
+        .card-title {
+            font-size: 0.9rem;
+            color: #6c757d;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .card-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--dark-gray);
+            margin-bottom: 0.5rem;
+        }
+
+        .card-change {
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .card-change.positive { color: var(--success); }
+        .card-change.negative { color: var(--danger); }
+
+        /* Form Styles */
+        .form-section {
+            background: white;
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+        }
+
+        .form-section h2 {
+            color: var(--primary-blue);
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--light-gray);
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: var(--dark-gray);
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary-blue);
+            box-shadow: 0 0 0 3px rgba(24, 186, 225, 0.1);
+        }
+
+        /* Inspection Items */
+        .inspection-category {
+            background: white;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+        }
+
+        .category-header {
+            background: linear-gradient(135deg, var(--primary-blue), var(--secondary-blue));
+            color: white;
+            padding: 1rem 2rem;
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+
+        .inspection-item {
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--light-gray);
+            transition: background-color 0.3s ease;
+        }
+
+        .inspection-item:last-child {
+            border-bottom: none;
+        }
+
+        .inspection-item:hover {
+            background-color: rgba(24, 186, 225, 0.02);
+        }
+
+        .item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+        }
+
+        .item-title {
+            font-weight: 600;
+            color: var(--dark-gray);
+            flex: 1;
+            margin-right: 1rem;
+        }
+
+        .item-description {
+            font-size: 0.9rem;
+            color: #6c757d;
+            margin-bottom: 1rem;
+        }
+
+        .score-buttons {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .score-btn {
+            padding: 0.5rem 1rem;
+            border: 2px solid #e9ecef;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            min-width: 50px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .score-btn:hover {
+            background-color: var(--light);
+        }
+
+        .score-btn.active {
+            background-color: var(--primary-blue);
+            border-color: var(--primary-blue);
+            color: white;
+        }
+
+        .score-btn.negative {
+            border-color: var(--danger);
+            color: var(--danger);
+        }
+
+        .score-btn.negative.active {
+            background-color: var(--danger);
+            color: white;
+        }
+
+        .item-controls {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 1rem;
+            align-items: start;
+        }
+
+        .item-notes {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .upload-area {
+            border: 2px dashed var(--primary-blue);
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background-color: rgba(24, 186, 225, 0.05);
+        }
+
+        .upload-area:hover {
+            background-color: rgba(24, 186, 225, 0.1);
+        }
+
+        .upload-area.dragover {
+            border-color: var(--secondary-blue);
+            background-color: rgba(24, 186, 225, 0.15);
+        }
+
+        .photo-preview {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .photo-item {
+            position: relative;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .photo-item img {
+            width: 100%;
+            height: 80px;
+            object-fit: cover;
+        }
+
+        .photo-remove {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            background: var(--danger);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 0.75rem 2rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-blue);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--secondary-blue);
+        }
+
+        .btn-success {
+            background-color: var(--success);
+            color: white;
+        }
+
+        .btn-warning {
+            background-color: var(--warning);
+            color: var(--dark);
+        }
+
+        .btn-danger {
+            background-color: var(--danger);
+            color: white;
+        }
+
+        .btn-outline {
+            background-color: transparent;
+            border: 2px solid var(--primary-blue);
+            color: var(--primary-blue);
+        }
+
+        .btn-outline:hover {
+            background-color: var(--primary-blue);
+            color: white;
+        }
+
+        /* Tables */
+        .table-container {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .table th,
+        .table td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--light-gray);
+        }
+
+        .table th {
+            background-color: var(--light);
+            font-weight: 600;
+            color: var(--dark-gray);
+        }
+
+        .table tbody tr:hover {
+            background-color: rgba(24, 186, 225, 0.02);
+        }
+
+        /* Status badges */
+        .badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .badge-success { background-color: rgba(40, 167, 69, 0.1); color: var(--success); }
+        .badge-warning { background-color: rgba(255, 193, 7, 0.1); color: #856404; }
+        .badge-danger { background-color: rgba(220, 53, 69, 0.1); color: var(--danger); }
+        .badge-info { background-color: rgba(23, 162, 184, 0.1); color: var(--info); }
+
+        /* Score indicator */
+        .score-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .score-circle {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: white;
+        }
+
+        .grade-a { background-color: var(--success); }
+        .grade-b { background-color: var(--info); }
+        .grade-c { background-color: var(--warning); }
+        .grade-d { background-color: var(--danger); }
+
+        /* Alert styles */
+        .alert {
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            border-left: 4px solid;
+        }
+
+        .alert-warning {
+            background-color: rgba(255, 193, 7, 0.1);
+            border-left-color: var(--warning);
+            color: #856404;
+        }
+
+        .alert-danger {
+            background-color: rgba(220, 53, 69, 0.1);
+            border-left-color: var(--danger);
+            color: var(--danger);
+        }
+
+        .alert-info {
+            background-color: rgba(23, 162, 184, 0.1);
+            border-left-color: var(--info);
+            color: var(--info);
+        }
+
+        /* Mobile responsiveness */
+        @media (max-width: 768px) {
+            .container {
+                padding: 0 10px;
+            }
+
+            .header h1 {
+                font-size: 1.8rem;
+            }
+
+            .nav-tabs .container {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+                padding: 0.5rem;
+            }
+
+            .nav-tab {
+                padding: 0.75rem 1rem;
+                font-size: 0.9rem;
+            }
+
+            .dashboard-grid {
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 1rem;
+            }
+
+            .card {
+                padding: 1.5rem;
+            }
+
+            .form-section {
+                padding: 1.5rem;
+            }
+
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .score-buttons {
+                justify-content: center;
+            }
+
+            .item-controls {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Hidden utility */
+        .hidden {
+            display: none !important;
+        }
+
+        /* Loading animation */
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Floating action button */
+        .fab {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background-color: var(--primary-blue);
+            color: white;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            transition: all 0.3s ease;
+            z-index: 1000;
+        }
+
+        .fab:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="container">
+            <h1><i class="fas fa-clipboard-check"></i> 泡泡貓巡店考核系統</h1>
+            <p>專業品牌督導 · 季度考核 · 持續改善</p>
+        </div>
+    </div>
+
+    <div class="nav-tabs">
+        <div class="container">
+            <button class="nav-tab active" onclick="showTab('dashboard')">
+                <i class="fas fa-tachometer-alt"></i> 巡店儀表板
+            </button>
+            <button class="nav-tab" onclick="showTab('schedule')">
+                <i class="fas fa-calendar-alt"></i> 巡店計劃
+            </button>
+            <button class="nav-tab" onclick="showTab('inspection')">
+                <i class="fas fa-clipboard-check"></i> 執行巡店
+            </button>
+            <button class="nav-tab" onclick="showTab('improvement')">
+                <i class="fas fa-tools"></i> 改善追蹤
+            </button>
+            <button class="nav-tab" onclick="showTab('reports')">
+                <i class="fas fa-chart-bar"></i> 統計報告
+            </button>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Dashboard Tab -->
+        <div id="dashboard-tab" class="tab-content">
+            <div class="dashboard-grid">
+                <div class="card">
+                    <div class="card-icon card-primary">
+                        <i class="fas fa-store"></i>
+                    </div>
+                    <div class="card-title">本季已巡店</div>
+                    <div class="card-value" id="completed-count">-</div>
+                    <div class="card-change positive">
+                        <i class="fas fa-arrow-up"></i> 季度進度
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-icon card-warning">
+                        <i class="fas fa-clock"></i>
+                    </div>
+                    <div class="card-title">待巡店</div>
+                    <div class="card-value" id="pending-count">-</div>
+                    <div class="card-change">
+                        <i class="fas fa-calendar"></i> 近期計劃
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-icon card-danger">
+                        <i class="fas fa-exclamation-triangle"></i>
+                    </div>
+                    <div class="card-title">逾期未巡</div>
+                    <div class="card-value" id="overdue-count">-</div>
+                    <div class="card-change negative">
+                        <i class="fas fa-arrow-down"></i> 需立即處理
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-icon card-success">
+                        <i class="fas fa-trophy"></i>
+                    </div>
+                    <div class="card-title">平均得分</div>
+                    <div class="card-value" id="avg-score">-</div>
+                    <div class="card-change positive">
+                        <i class="fas fa-chart-line"></i> 品質提升
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-icon card-info">
+                        <i class="fas fa-image"></i>
+                    </div>
+                    <div class="card-title">待審核照片</div>
+                    <div class="card-value" id="pending-photos">-</div>
+                    <div class="card-change">
+                        <i class="fas fa-eye"></i> 改善追蹤
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-section">
+                <h2>近期巡店提醒</h2>
+                <div id="alerts-container">
+                    <!-- 動態載入提醒內容 -->
+                </div>
+            </div>
+
+            <div class="table-container">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>門市名稱</th>
+                            <th>類型</th>
+                            <th>最後巡店</th>
+                            <th>得分</th>
+                            <th>等級</th>
+                            <th>狀態</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recent-inspections">
+                        <!-- 動態載入最近巡店記錄 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Schedule Tab -->
+        <div id="schedule-tab" class="tab-content hidden">
+            <div class="form-section">
+                <h2>季度巡店計劃</h2>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="quarter-select">選擇季度</label>
+                        <select id="quarter-select" class="form-control">
+                            <option value="2026Q1">2026年第一季</option>
+                            <option value="2025Q4">2025年第四季</option>
+                            <option value="2025Q3">2025年第三季</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <button class="btn btn-primary" onclick="generateQuarterlySchedule()">
+                            <i class="fas fa-plus"></i> 產生季度計劃
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>門市名稱</th>
+                            <th>類型</th>
+                            <th>預計巡店日期</th>
+                            <th>負責督導</th>
+                            <th>優先級</th>
+                            <th>狀態</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="schedule-list">
+                        <!-- 動態載入計劃 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Inspection Tab -->
+        <div id="inspection-tab" class="tab-content hidden">
+            <div class="form-section">
+                <h2>巡店基本資訊</h2>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="store-select">選擇門市</label>
+                        <select id="store-select" class="form-control">
+                            <option value="">請選擇門市</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="inspection-date">巡店日期</label>
+                        <input type="date" id="inspection-date" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label for="inspector-name">督導姓名</label>
+                        <input type="text" id="inspector-name" class="form-control" value="圓圓" readonly>
+                    </div>
+                </div>
+            </div>
+
+            <div id="inspection-categories">
+                <!-- 動態載入檢核項目 -->
+            </div>
+
+            <div class="form-section">
+                <h2>總體備註</h2>
+                <textarea id="overall-notes" class="form-control" rows="4" 
+                    placeholder="請填寫本次巡店的總體觀察、建議或其他需要記錄的內容..."></textarea>
+                
+                <div style="margin-top: 2rem; text-align: center;">
+                    <button class="btn btn-success" onclick="submitInspection()" style="font-size: 1.2rem; padding: 1rem 3rem;">
+                        <i class="fas fa-check"></i> 提交巡店記錄
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Improvement Tab -->
+        <div id="improvement-tab" class="tab-content hidden">
+            <div class="form-section">
+                <h2>待改善項目追蹤</h2>
+                <div id="improvement-items">
+                    <!-- 動態載入待改善項目 -->
+                </div>
+            </div>
+
+            <div class="form-section">
+                <h2>待審核改善照片</h2>
+                <div class="table-container">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>門市</th>
+                                <th>項目</th>
+                                <th>上傳時間</th>
+                                <th>照片</th>
+                                <th>說明</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pending-photos-list">
+                            <!-- 動態載入待審核照片 -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Reports Tab -->
+        <div id="reports-tab" class="tab-content hidden">
+            <div class="form-section">
+                <h2>巡店統計報告</h2>
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <div class="card-title">總巡店次數</div>
+                        <div class="card-value" id="report-total">-</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">平均得分</div>
+                        <div class="card-value" id="report-avg-score">-</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">優秀門市 (A級以上)</div>
+                        <div class="card-value" id="report-excellent">-</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">需改善門市 (D級)</div>
+                        <div class="card-value" id="report-poor">-</div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <h3 style="margin-bottom: 1rem;">門市得分排名</h3>
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>排名</th>
+                                <th>門市名稱</th>
+                                <th>類型</th>
+                                <th>得分</th>
+                                <th>等級</th>
+                                <th>巡店日期</th>
+                            </tr>
+                        </thead>
+                        <tbody id="store-rankings">
+                            <!-- 動態載入排名 -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="table-container" style="margin-top: 2rem;">
+                    <h3 style="margin-bottom: 1rem;">常見問題項目</h3>
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>檢核項目</th>
+                                <th>失敗次數</th>
+                                <th>平均扣分</th>
+                                <th>改善建議</th>
+                            </tr>
+                        </thead>
+                        <tbody id="common-issues">
+                            <!-- 動態載入常見問題 -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button class="fab" onclick="quickAction()">
+        <i class="fas fa-plus"></i>
+    </button>
+
+    <script>
+        // 全域變數
+        let currentTab = 'dashboard';
+        let currentInspection = {};
+        let inspectionData = {};
+        
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            loadDashboardData();
+            setTodayDate();
+            loadStores();
+        });
+
+        // Tab切換
+        function showTab(tabName) {
+            // 隱藏所有tab content
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.add('hidden');
+            });
+            
+            // 移除所有nav-tab active
+            document.querySelectorAll('.nav-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // 顯示選中的tab
+            document.getElementById(tabName + '-tab').classList.remove('hidden');
+            event.target.classList.add('active');
+            
+            currentTab = tabName;
+            
+            // 載入對應數據
+            switch(tabName) {
+                case 'dashboard':
+                    loadDashboardData();
+                    break;
+                case 'schedule':
+                    loadScheduleData();
+                    break;
+                case 'inspection':
+                    loadInspectionForm();
+                    break;
+                case 'improvement':
+                    loadImprovementData();
+                    break;
+                case 'reports':
+                    loadReportsData();
+                    break;
+            }
+        }
+
+        // 載入儀表板數據
+        async function loadDashboardData() {
+            try {
+                showLoading('dashboard');
+                const response = await fetch('/api/inspection/dashboard');
+                const result = await response.json();
+                
+                if (result.success) {
+                    const { overview, alerts, recentInspections } = result.data;
+                    
+                    // 更新統計卡片
+                    document.getElementById('completed-count').textContent = overview.completed_this_quarter;
+                    document.getElementById('pending-count').textContent = overview.pending_inspections;
+                    document.getElementById('overdue-count').textContent = overview.overdue_inspections;
+                    document.getElementById('avg-score').textContent = '85.2'; // 暫時固定值
+                    document.getElementById('pending-photos').textContent = '3'; // 暫時固定值
+                    
+                    // 更新提醒
+                    displayAlerts(alerts);
+                    
+                    // 更新最近記錄
+                    displayRecentInspections(recentInspections);
+                }
+            } catch (error) {
+                console.error('載入儀表板數據失敗:', error);
+                showError('載入數據失敗，請重試');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // 載入門市列表
+        async function loadStores() {
+            try {
+                // 模擬門市數據（實際從DB載入）
+                const stores = [
+                    { id: '3677', name: '新竹公道店', type: 'franchise' },
+                    { id: '3151', name: '桃園南崁店', type: 'direct' },
+                    { id: '3152', name: '楊梅金山店', type: 'franchise' },
+                    { id: '3153', name: '竹北光明店', type: 'direct' },
+                    { id: '3154', name: '蘆洲集賢店', type: 'franchise' },
+                ];
+                
+                const storeSelect = document.getElementById('store-select');
+                storeSelect.innerHTML = '<option value="">請選擇門市</option>';
+                
+                stores.forEach(store => {
+                    const option = document.createElement('option');
+                    option.value = store.id;
+                    option.textContent = `${store.name} (${store.type === 'direct' ? '直營' : '加盟'})`;
+                    storeSelect.appendChild(option);
+                });
+                
+            } catch (error) {
+                console.error('載入門市列表失敗:', error);
+            }
+        }
+
+        // 載入巡店表單
+        async function loadInspectionForm() {
+            try {
+                // 載入檢核項目分類
+                const categories = await loadInspectionCategories();
+                displayInspectionCategories(categories);
+                
+            } catch (error) {
+                console.error('載入巡店表單失敗:', error);
+            }
+        }
+
+        // 載入檢核項目分類
+        async function loadInspectionCategories() {
+            // 模擬檢核項目數據（基於現有Google Sheets）
+            return [
+                {
+                    id: 1,
+                    category_name: '法規遵循與安全',
+                    items: [
+                        { id: 1, item_name: '病媒防制措施記錄完整', item_code: 'LEGAL_001', description: '三個月清潔一次，需有完整填寫記錄單' },
+                        { id: 2, item_name: '中央空調冷卻水塔清潔記錄', item_code: 'LEGAL_002', description: '定期清潔保養記錄' },
+                        { id: 3, item_name: '工具消毒設備及急救箱', item_code: 'LEGAL_003', description: '急救箱需整理並放在固定位置' },
+                        { id: 4, item_name: '營業場所滅火器配備', item_code: 'LEGAL_004', description: '滅火器需定期檢查，保持清潔' },
+                        { id: 5, item_name: '員工健康檢查記錄', item_code: 'LEGAL_005', description: '員工需定期健康檢查，記錄完整' },
+                    ]
+                },
+                {
+                    id: 2,
+                    category_name: '環境清潔與衛生',
+                    items: [
+                        { id: 11, item_name: '客人接待區整潔', item_code: 'CLEAN_001', description: '不可有私人物品，需保持整潔' },
+                        { id: 12, item_name: '收銀櫃台整潔', item_code: 'CLEAN_002', description: '檯面整潔，無私人用品或雜物' },
+                        { id: 13, item_name: '廁所清潔記錄表落實', item_code: 'CLEAN_003', description: '清潔表需貼在廁所門後，確實記錄' },
+                        { id: 14, item_name: '廁所垃圾桶加蓋', item_code: 'CLEAN_004', description: '垃圾桶需有蓋子並確實蓋上' },
+                        { id: 15, item_name: '地板清潔度', item_code: 'CLEAN_005', description: '地板無髒污、無積水、無雜物' },
+                    ]
+                },
+                {
+                    id: 3,
+                    category_name: '設備維護與保養',
+                    items: [
+                        { id: 21, item_name: '負氫離子機清潔度', item_code: 'EQUIP_001', description: '無水垢、無泛黃，保持乾淨' },
+                        { id: 22, item_name: '泡沖機清潔狀況', item_code: 'EQUIP_002', description: '內部無發霉，定期清潔' },
+                        { id: 23, item_name: '殺菌消毒箱清潔', item_code: 'EQUIP_003', description: '鐵架無生鏽，無水垢積累' },
+                        { id: 24, item_name: '台車清潔與防鏽', item_code: 'EQUIP_004', description: '台車無生鏽，保持清潔' },
+                        { id: 25, item_name: '小氣泡機定期清洗', item_code: 'EQUIP_005', description: '確認無黃垢，定期清洗保養' },
+                    ]
+                },
+                {
+                    id: 4,
+                    category_name: '服務區域管理',
+                    items: [
+                        { id: 31, item_name: '肌膚檢測區整潔度', item_code: 'SERVICE_001', description: '檢測區整齊，無灰塵' },
+                        { id: 32, item_name: '工作站清潔整理', item_code: 'SERVICE_002', description: '工作區不可雜亂，保持整潔' },
+                        { id: 33, item_name: '潔面刷清潔無發霉', item_code: 'SERVICE_003', description: '潔面刷不可有發霉或變黑情況' },
+                        { id: 34, item_name: '電視開啟狀況', item_code: 'SERVICE_004', description: '營業時間電視需開啟' },
+                        { id: 35, item_name: '酒精配置充足', item_code: 'SERVICE_005', description: '各區域酒精充足，隨時可用' },
+                    ]
+                },
+                {
+                    id: 5,
+                    category_name: '員工規範與服務',
+                    items: [
+                        { id: 41, item_name: '服裝儀容清潔消毒', item_code: 'STAFF_001', description: '員工服裝整潔，事前清潔消毒' },
+                        { id: 42, item_name: '指甲長度顏色清潔度', item_code: 'STAFF_002', description: '指甲長度適中，顏色自然，保持清潔' },
+                        { id: 43, item_name: '口罩配戴規範', item_code: 'STAFF_003', description: '正確配戴口罩，覆蓋口鼻' },
+                        { id: 44, item_name: '寵物入內防範措施', item_code: 'STAFF_004', description: '告知客人寵物不落地原則' },
+                    ]
+                },
+                {
+                    id: 6,
+                    category_name: '專業用品管理',
+                    items: [
+                        { id: 51, item_name: '專用針管標示與保存', item_code: 'SUPPLIES_001', description: '針管需有標示，無卡頓現象' },
+                        { id: 52, item_name: '凍晶粉保存期限標示', item_code: 'SUPPLIES_002', description: '需寫明保存期限在瓶身' },
+                        { id: 53, item_name: '營養液正常存放', item_code: 'SUPPLIES_003', description: '營養液存放整齊，在有效期內' },
+                        { id: 54, item_name: '刮棒平整光滑', item_code: 'SUPPLIES_004', description: '刮棒表面光滑平整，無損傷' },
+                    ]
+                }
+            ];
+        }
+
+        // 顯示檢核項目分類
+        function displayInspectionCategories(categories) {
+            const container = document.getElementById('inspection-categories');
+            container.innerHTML = '';
+            
+            categories.forEach(category => {
+                const categoryDiv = document.createElement('div');
+                categoryDiv.className = 'inspection-category';
+                
+                let categoryHTML = `
+                    <div class="category-header">
+                        ${category.category_name} (${category.items.length}項)
+                    </div>
+                `;
+                
+                category.items.forEach(item => {
+                    categoryHTML += `
+                        <div class="inspection-item" data-item-id="${item.id}">
+                            <div class="item-header">
+                                <div class="item-title">${item.item_name}</div>
+                            </div>
+                            <div class="item-description">${item.description || ''}</div>
+                            
+                            <div class="score-buttons">
+                                ${[3, 2, 1, 0, -1, -2, -3].map(score => `
+                                    <button class="score-btn ${score < 0 ? 'negative' : ''}" 
+                                        data-score="${score}" 
+                                        onclick="selectScore('${item.item_code}', ${score}, this)">
+                                        ${score > 0 ? '+' : ''}${score}
+                                    </button>
+                                `).join('')}
+                            </div>
+                            
+                            <div class="item-controls">
+                                <textarea class="item-notes" 
+                                    placeholder="檢核說明、發現問題或改善建議..."
+                                    data-item-code="${item.item_code}"></textarea>
+                                
+                                <div class="upload-area" onclick="triggerFileUpload('${item.item_code}')">
+                                    <i class="fas fa-camera"></i><br>
+                                    點擊上傳照片<br>
+                                    <small>(可選)</small>
+                                    <input type="file" id="upload-${item.item_code}" 
+                                        accept="image/*" multiple style="display:none"
+                                        onchange="handleFileUpload('${item.item_code}', this)">
+                                    <div class="photo-preview" id="preview-${item.item_code}"></div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                categoryDiv.innerHTML = categoryHTML;
+                container.appendChild(categoryDiv);
+            });
+        }
+
+        // 選擇分數
+        function selectScore(itemCode, score, button) {
+            // 移除同組其他按鈕的active狀態
+            const item = button.closest('.inspection-item');
+            item.querySelectorAll('.score-btn').forEach(btn => btn.classList.remove('active'));
+            
+            // 設置當前按鈕為active
+            button.classList.add('active');
+            
+            // 儲存分數
+            if (!inspectionData[itemCode]) {
+                inspectionData[itemCode] = {};
+            }
+            inspectionData[itemCode].score = score;
+            
+            console.log(`項目 ${itemCode} 評分: ${score}分`);
+        }
+
+        // 觸發檔案上傳
+        function triggerFileUpload(itemCode) {
+            document.getElementById(`upload-${itemCode}`).click();
+        }
+
+        // 處理檔案上傳
+        function handleFileUpload(itemCode, input) {
+            const files = Array.from(input.files);
+            const previewContainer = document.getElementById(`preview-${itemCode}`);
+            
+            if (!inspectionData[itemCode]) {
+                inspectionData[itemCode] = {};
+            }
+            if (!inspectionData[itemCode].photos) {
+                inspectionData[itemCode].photos = [];
+            }
+            
+            files.forEach(file => {
+                if (file.type.startsWith('image/')) {
+                    // 創建預覽
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const photoDiv = document.createElement('div');
+                        photoDiv.className = 'photo-item';
+                        photoDiv.innerHTML = `
+                            <img src="${e.target.result}" alt="檢核照片">
+                            <button class="photo-remove" onclick="removePhoto('${itemCode}', '${file.name}')">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        `;
+                        previewContainer.appendChild(photoDiv);
+                    };
+                    reader.readAsDataURL(file);
+                    
+                    // 儲存檔案
+                    inspectionData[itemCode].photos.push(file);
+                }
+            });
+        }
+
+        // 移除照片
+        function removePhoto(itemCode, fileName) {
+            // 從數據中移除
+            if (inspectionData[itemCode] && inspectionData[itemCode].photos) {
+                inspectionData[itemCode].photos = inspectionData[itemCode].photos.filter(
+                    photo => photo.name !== fileName
+                );
+            }
+            
+            // 重新渲染預覽
+            const previewContainer = document.getElementById(`preview-${itemCode}`);
+            previewContainer.innerHTML = '';
+            
+            if (inspectionData[itemCode] && inspectionData[itemCode].photos) {
+                inspectionData[itemCode].photos.forEach(file => {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const photoDiv = document.createElement('div');
+                        photoDiv.className = 'photo-item';
+                        photoDiv.innerHTML = `
+                            <img src="${e.target.result}" alt="檢核照片">
+                            <button class="photo-remove" onclick="removePhoto('${itemCode}', '${file.name}')">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        `;
+                        previewContainer.appendChild(photoDiv);
+                    };
+                    reader.readAsDataURL(file);
+                });
+            }
+        }
+
+        // 提交巡店記錄
+        async function submitInspection() {
+            try {
+                const storeId = document.getElementById('store-select').value;
+                const inspectionDate = document.getElementById('inspection-date').value;
+                const inspectorName = document.getElementById('inspector-name').value;
+                const overallNotes = document.getElementById('overall-notes').value;
+                
+                if (!storeId) {
+                    showError('請選擇門市');
+                    return;
+                }
+                
+                if (!inspectionDate) {
+                    showError('請選擇巡店日期');
+                    return;
+                }
+                
+                // 收集所有檢核項目的數據
+                const items = [];
+                let totalScore = 0;
+                let itemCount = 0;
+                
+                // 收集所有備註
+                document.querySelectorAll('.item-notes').forEach(textarea => {
+                    const itemCode = textarea.dataset.itemCode;
+                    if (inspectionData[itemCode]) {
+                        inspectionData[itemCode].notes = textarea.value;
+                    }
+                });
+                
+                // 整理檢核數據
+                for (const [itemCode, data] of Object.entries(inspectionData)) {
+                    if (data.score !== undefined) {
+                        items.push({
+                            item_code: itemCode,
+                            score: data.score,
+                            notes: data.notes || '',
+                            photos: data.photos || []
+                        });
+                        totalScore += data.score;
+                        itemCount++;
+                    }
+                }
+                
+                if (items.length === 0) {
+                    showError('請至少完成一個檢核項目');
+                    return;
+                }
+                
+                // 計算最終得分
+                const finalScore = Math.max(0, 100 + totalScore); // 基準100分 + 各項得分
+                let grade = 'D';
+                if (finalScore >= 95) grade = 'A+';
+                else if (finalScore >= 85) grade = 'A';
+                else if (finalScore >= 75) grade = 'B';
+                else if (finalScore >= 65) grade = 'C';
+                
+                const inspectionRecord = {
+                    storeId: storeId,
+                    storeName: document.getElementById('store-select').selectedOptions[0].text,
+                    inspectionDate: inspectionDate,
+                    inspectorName: inspectorName,
+                    items: items,
+                    finalScore: finalScore,
+                    grade: grade,
+                    overallNotes: overallNotes,
+                    totalItems: itemCount,
+                    needsImprovement: items.some(item => item.score < 0)
+                };
+                
+                // 顯示確認對話框
+                const confirmed = confirm(`
+巡店記錄摘要：
+門市：${inspectionRecord.storeName}
+檢核項目：${itemCount} 項
+最終得分：${finalScore} 分
+等級：${grade}
+${inspectionRecord.needsImprovement ? '⚠️ 有項目需要改善' : '✅ 所有項目合格'}
+
+確定要提交這份巡店記錄嗎？
+                `);
+                
+                if (!confirmed) return;
+                
+                showLoading('inspection');
+                
+                // 這裡應該調用 API 提交數據
+                // const response = await fetch('/api/inspection/record', {
+                //     method: 'POST',
+                //     headers: { 'Content-Type': 'application/json' },
+                //     body: JSON.stringify(inspectionRecord)
+                // });
+                
+                // 模擬API響應
+                setTimeout(() => {
+                    hideLoading();
+                    showSuccess('巡店記錄已成功提交！');
+                    
+                    // 清空表單
+                    inspectionData = {};
+                    document.getElementById('store-select').value = '';
+                    document.getElementById('overall-notes').value = '';
+                    document.querySelectorAll('.score-btn').forEach(btn => btn.classList.remove('active'));
+                    document.querySelectorAll('.item-notes').forEach(textarea => textarea.value = '');
+                    document.querySelectorAll('.photo-preview').forEach(preview => preview.innerHTML = '');
+                    
+                    // 切換到儀表板
+                    showTab('dashboard');
+                }, 1500);
+                
+            } catch (error) {
+                console.error('提交巡店記錄失敗:', error);
+                showError('提交失敗，請重試');
+                hideLoading();
+            }
+        }
+
+        // 快速操作
+        function quickAction() {
+            const actions = [
+                { text: '新增巡店', action: () => showTab('inspection') },
+                { text: '查看計劃', action: () => showTab('schedule') },
+                { text: '改善追蹤', action: () => showTab('improvement') },
+                { text: '統計報告', action: () => showTab('reports') }
+            ];
+            
+            // 簡單的快速選單（可以改用更好的UI組件）
+            const action = prompt('請選擇操作:\n1. 新增巡店\n2. 查看計劃\n3. 改善追蹤\n4. 統計報告');
+            const actionIndex = parseInt(action) - 1;
+            
+            if (actionIndex >= 0 && actionIndex < actions.length) {
+                actions[actionIndex].action();
+            }
+        }
+
+        // 設置今日日期
+        function setTodayDate() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('inspection-date').value = today;
+        }
+
+        // 其他模擬函數（實際開發時需要替換成真實API調用）
+        function loadScheduleData() {
+            console.log('載入巡店計劃數據');
+        }
+
+        function loadImprovementData() {
+            console.log('載入改善追蹤數據');
+        }
+
+        function loadReportsData() {
+            console.log('載入統計報告數據');
+        }
+
+        function generateQuarterlySchedule() {
+            alert('功能開發中：產生季度巡店計劃');
+        }
+
+        function displayAlerts(alerts) {
+            const container = document.getElementById('alerts-container');
+            if (!alerts || alerts.length === 0) {
+                container.innerHTML = '<p style="color: #6c757d;">目前無需要特別關注的事項</p>';
+                return;
+            }
+            
+            let alertsHTML = '';
+            alerts.forEach(alert => {
+                const alertType = alert.is_overdue ? 'danger' : 'warning';
+                const icon = alert.is_overdue ? 'fas fa-exclamation-triangle' : 'fas fa-clock';
+                const message = alert.is_overdue ? 
+                    `${alert.store_name} 已逾期 ${alert.days_diff} 天未巡店` :
+                    `${alert.store_name} 預計 ${alert.days_diff} 天後巡店`;
+                    
+                alertsHTML += `
+                    <div class="alert alert-${alertType}">
+                        <i class="${icon}"></i> ${message}
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = alertsHTML;
+        }
+
+        function displayRecentInspections(inspections) {
+            const tbody = document.getElementById('recent-inspections');
+            if (!inspections || inspections.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #6c757d;">暫無巡店記錄</td></tr>';
+                return;
+            }
+            
+            let rowsHTML = '';
+            inspections.forEach(inspection => {
+                const badgeClass = inspection.grade === 'A+' || inspection.grade === 'A' ? 'success' :
+                                 inspection.grade === 'B' ? 'info' :
+                                 inspection.grade === 'C' ? 'warning' : 'danger';
+                                 
+                rowsHTML += `
+                    <tr>
+                        <td>${inspection.store_name}</td>
+                        <td><span class="badge badge-info">${inspection.store_type === 'direct' ? '直營' : '加盟'}</span></td>
+                        <td>${inspection.inspection_date}</td>
+                        <td>
+                            <div class="score-indicator">
+                                <span class="score-circle grade-${inspection.grade.toLowerCase()}">${inspection.final_score}</span>
+                            </div>
+                        </td>
+                        <td><span class="badge badge-${badgeClass}">${inspection.grade}</span></td>
+                        <td><span class="badge badge-${inspection.status === 'completed' ? 'success' : 'warning'}">${inspection.status}</span></td>
+                        <td>
+                            <button class="btn btn-outline" style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">
+                                查看詳情
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+            
+            tbody.innerHTML = rowsHTML;
+        }
+
+        // 工具函數
+        function showLoading(context) {
+            console.log(`顯示載入動畫: ${context}`);
+        }
+
+        function hideLoading() {
+            console.log('隱藏載入動畫');
+        }
+
+        function showError(message) {
+            alert(`❌ ${message}`);
+        }
+
+        function showSuccess(message) {
+            alert(`✅ ${message}`);
+        }
+    </script>
+</body>
+</html>

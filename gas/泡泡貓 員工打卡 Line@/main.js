@@ -683,84 +683,21 @@ function routeMessageEvent(event) {
         }
       }
 
-      // 3.5a 上月小費：僅已開通帳號可檢視（須在員工清單／管理者清單）；管理者看負責店家、員工看備註含自己員工編號。
+      // 3.5a 上月小費：導向 Dashboard 個人頁面（不再產 Google Sheet 連結）
       if (text.trim() === "上月小費" || text.indexOf("上月小費") >= 0) {
         if (!auth.isAuthorized) {
           reply(replyToken, "⚠️ 你的帳號尚未開通，請等待管理員開通後再使用「上月小費」。");
           return;
         }
         try {
-          var isManager = auth.identity && auth.identity.indexOf("manager") !== -1;
-          var isEmployee = auth.identity && auth.identity.indexOf("employee") !== -1;
-          var managedStoreIds = [];
-          if (isManager && (auth.managedStores || []).length > 0) {
-            (auth.managedStores || []).forEach(function (s) {
-              String(s).split(/[,、，]/).forEach(function (id) {
-                var t = id.trim();
-                if (t) managedStoreIds.push(t);
-              });
-            });
-          }
-          var employeeCode = (auth.employeeCode != null && String(auth.employeeCode).trim() !== "") ? String(auth.employeeCode).trim() : "";
-          var url = "";
-          var key = "";
-          try {
-            url = PropertiesService.getScriptProperties().getProperty("PAO_CAT_CORE_API_URL") || "";
-            key = PropertiesService.getScriptProperties().getProperty("PAO_CAT_SECRET_KEY") || "";
-          } catch (eConf) {}
-          if (!url || !key) {
-            reply(replyToken, "上月小費報告失敗：未設定 Core API（請在本專案指令碼屬性設定 PAO_CAT_CORE_API_URL、PAO_CAT_SECRET_KEY）。");
-            return;
-          }
-          url = url.trim();
-          key = key.trim();
-          var sep = url.indexOf("?") >= 0 ? "&" : "?";
-          var fullUrl = url + sep + "key=" + encodeURIComponent(key) + "&action=lastMonthTipsReport&userId=" + encodeURIComponent(userId);
-          if (managedStoreIds.length > 0) {
-            fullUrl += "&managedStoreIds=" + encodeURIComponent(managedStoreIds.join(","));
-          } else if (employeeCode) {
-            fullUrl += "&employeeCode=" + encodeURIComponent(employeeCode);
-          }
-          try {
-            var res = UrlFetchApp.fetch(fullUrl, { muteHttpExceptions: true });
-            var code = res.getResponseCode();
-            var body = res.getContentText();
-            if (code !== 200) {
-              if (code === 404) {
-                reply(replyToken, "上月小費報告失敗（404）。請檢查：\n1) PAO_CAT_CORE_API_URL 是否為 PaoMao_Core Web App 的 /exec 網址。\n2) 是否有在 PaoMao_Core 專案部署含 TipsReport.js 的新版本。");
-              } else {
-                reply(replyToken, "上月小費報告失敗（Core API HTTP " + code + "）。請稍後再試或聯繫管理員。");
-              }
-              return;
-            }
-            var data;
-            try {
-              data = JSON.parse(body);
-            } catch (eJson) {
-              console.warn("[上月小費] Core API 回傳非 JSON:", body ? body.slice(0, 200) : "");
-              reply(replyToken, "上月小費報告失敗：Core API 回傳格式異常，請確認 PaoMao_Core 已含 TipsReport.js 並重新部署。");
-              return;
-            }
-            if (data && data.ok && data.url) {
-              var tipsMsg = (managedStoreIds.length > 0 ? "✅ 上月小費（您負責的店家）" : "✅ 上月小費（我的小費）") + "\n\n開啟報表：\n" + data.url;
-              if (data.cached) {
-                tipsMsg = "✅ 上月小費（同月份已有產出）\n\n開啟報表：\n" + data.url;
-              }
-              if (data.shareWarning) {
-                tipsMsg += "\n\n⚠️ " + data.shareWarning;
-              }
-              if (data.shareWarning) tipsMsg += "\n\n⚠️ " + data.shareWarning;
-              reply(replyToken, tipsMsg);
-              return;
-            }
-            var errMsgApi = (data && data.message) ? data.message : "未知錯誤";
-            reply(replyToken, "上月小費報告失敗：" + errMsgApi);
-            return;
-          } catch (eApi) {
-            console.warn("[上月小費] Core API 呼叫失敗:", eApi && eApi.message ? eApi.message : eApi);
-            reply(replyToken, "上月小費報告發生錯誤：" + (eApi && eApi.message ? eApi.message : "請稍後再試或聯繫管理員。"));
-            return;
-          }
+          // 計算上個月 YYYY-MM
+          var now = new Date();
+          var lastM = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+          var ym = Utilities.formatDate(lastM, TZ, 'yyyy-MM');
+          var dashboardUrl = "https://dashboard.paopaomao.tw/my#tips";
+          var downloadUrl = "https://dashboard.paopaomao.tw/api/tips/my/excel?month=" + ym;
+          reply(replyToken, "✅ 上月小費（" + ym + "）\n\n📊 線上查看：\n" + dashboardUrl + "\n\n📥 下載 Excel：\n" + downloadUrl + "\n\n💡 需先用 LINE 登入儀表板");
+          return;
         } catch (err) {
           var errMsg = (err && err.message) ? err.message : String(err);
           console.warn("[上月小費] 例外:", errMsg);

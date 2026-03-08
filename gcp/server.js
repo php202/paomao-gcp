@@ -301,6 +301,38 @@ export function startServer() {
       await handlePaopaoWebhook(req, res, { authClient, rawBody });
       return;
     }
+    if (method === 'POST' && url === '/paopao-line-push') {
+      try {
+        const rawBody = await parseBody(req);
+        const body = JSON.parse(rawBody.toString('utf8'));
+        const PAOPAO_TOKEN = (process.env.LINE_TOKEN_PAOPAO || '').trim();
+        
+        if (!PAOPAO_TOKEN) {
+          send(res, 500, { status: 'error', message: 'LINE_TOKEN_PAOPAO not configured' });
+          return;
+        }
+        
+        const lineResponse = await fetch('https://api.line.me/v2/bot/message/push', {
+          method: 'POST',
+          headers: { 
+            'Authorization': `Bearer ${PAOPAO_TOKEN}`,
+            'Content-Type': 'application/json' 
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(15000),
+        });
+        
+        if (lineResponse.ok) {
+          send(res, 200, { status: 'success' });
+        } else {
+          const errorText = await lineResponse.text();
+          send(res, lineResponse.status, { status: 'error', message: errorText });
+        }
+      } catch (error) {
+        send(res, 500, { status: 'error', message: error.message });
+      }
+      return;
+    }
 
     if (method === 'OPTIONS' && url === '/core') {
       res.writeHead(204, {

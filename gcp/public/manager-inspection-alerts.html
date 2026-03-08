@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>店長巡店警示 - 泡泡貓</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-blue: #18BAE1;
+            --secondary-blue: #008BD5;
+            --light-gray: #EBEDDF;
+            --dark-gray: #3E3A39;
+            --success: #28a745;
+            --warning: #ffc107;
+            --danger: #dc3545;
+            --info: #17a2b8;
+            --light: #f8f9fa;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--light-gray);
+            color: var(--dark-gray);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, var(--primary-blue), var(--secondary-blue));
+            color: white;
+            padding: 2rem 0;
+            margin: -20px -20px 30px -20px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            opacity: 0.9;
+        }
+
+        .alert-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+            border-left: 5px solid;
+        }
+
+        .alert-danger {
+            border-left-color: var(--danger);
+        }
+
+        .alert-warning {
+            border-left-color: var(--warning);
+        }
+
+        .alert-success {
+            border-left-color: var(--success);
+        }
+
+        .alert-header {
+            display: flex;
+            justify-content: between;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+        }
+
+        .alert-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--dark-gray);
+            flex: 1;
+        }
+
+        .alert-score {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 700;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            margin-left: 1rem;
+        }
+
+        .alert-score.danger {
+            background-color: rgba(220, 53, 69, 0.1);
+            color: var(--danger);
+        }
+
+        .alert-score.warning {
+            background-color: rgba(255, 193, 7, 0.1);
+            color: #856404;
+        }
+
+        .alert-meta {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 1rem;
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+
+        .alert-meta span {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .improvement-items {
+            background-color: rgba(220, 53, 69, 0.05);
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+        }
+
+        .improvement-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid rgba(220, 53, 69, 0.1);
+        }
+
+        .improvement-item:last-child {
+            border-bottom: none;
+        }
+
+        .item-info {
+            flex: 1;
+        }
+
+        .item-name {
+            font-weight: 600;
+            color: var(--dark-gray);
+        }
+
+        .item-notes {
+            color: #6c757d;
+            font-size: 0.9rem;
+            margin-top: 0.25rem;
+        }
+
+        .item-score {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 700;
+            color: var(--danger);
+        }
+
+        .photo-upload {
+            background-color: var(--light);
+            border: 2px dashed var(--primary-blue);
+            border-radius: 8px;
+            padding: 1rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .photo-upload:hover {
+            background-color: rgba(24, 186, 225, 0.05);
+        }
+
+        .photo-upload.dragover {
+            border-color: var(--secondary-blue);
+            background-color: rgba(24, 186, 225, 0.1);
+        }
+
+        .photo-preview {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .photo-item {
+            position: relative;
+            border-radius: 8px;
+            overflow: hidden;
+            background-color: var(--light);
+        }
+
+        .photo-item img {
+            width: 100%;
+            height: 80px;
+            object-fit: cover;
+        }
+
+        .photo-status {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: white;
+        }
+
+        .photo-status.pending {
+            background-color: var(--warning);
+        }
+
+        .photo-status.approved {
+            background-color: var(--success);
+        }
+
+        .photo-status.rejected {
+            background-color: var(--danger);
+        }
+
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-blue);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--secondary-blue);
+        }
+
+        .btn-success {
+            background-color: var(--success);
+            color: white;
+        }
+
+        .btn-outline {
+            background-color: transparent;
+            border: 2px solid var(--primary-blue);
+            color: var(--primary-blue);
+        }
+
+        .btn-outline:hover {
+            background-color: var(--primary-blue);
+            color: white;
+        }
+
+        .deadline-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+        }
+
+        .deadline-indicator.overdue {
+            color: var(--danger);
+        }
+
+        .deadline-indicator.due-soon {
+            color: var(--warning);
+        }
+
+        .deadline-indicator.normal {
+            color: var(--success);
+        }
+
+        .progress-bar {
+            background-color: var(--light);
+            border-radius: 10px;
+            height: 8px;
+            overflow: hidden;
+            margin: 0.5rem 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background-color: var(--primary-blue);
+            transition: width 0.3s ease;
+        }
+
+        .no-alerts {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: #6c757d;
+        }
+
+        .no-alerts i {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            opacity: 0.3;
+        }
+
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .summary-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+            text-align: center;
+        }
+
+        .summary-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary-blue);
+            margin-bottom: 0.5rem;
+        }
+
+        .summary-value.danger {
+            color: var(--danger);
+        }
+
+        .summary-value.warning {
+            color: var(--warning);
+        }
+
+        .summary-label {
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+
+        .upload-form {
+            background-color: var(--light);
+            padding: 1rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: var(--dark-gray);
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 0.5rem;
+            border: 2px solid #e9ecef;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary-blue);
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+
+            .alert-header {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .alert-meta {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+
+            .improvement-item {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fas fa-exclamation-triangle"></i> 巡店改善通知</h1>
+            <p>請及時完成改善項目並上傳照片</p>
+        </div>
+
+        <!-- 摘要統計 -->
+        <div class="summary-cards" id="summary-cards">
+            <div class="summary-card">
+                <div class="summary-value danger" id="overdue-count">0</div>
+                <div class="summary-label">逾期未改善</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-value warning" id="due-soon-count">0</div>
+                <div class="summary-label">即將到期</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-value" id="pending-review-count">0</div>
+                <div class="summary-label">等待審核</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-value" id="completion-rate">0%</div>
+                <div class="summary-label">完成率</div>
+            </div>
+        </div>
+
+        <!-- 改善項目列表 -->
+        <div id="alerts-container">
+            <!-- 動態載入改善項目 -->
+        </div>
+
+        <!-- 無項目提示 -->
+        <div id="no-alerts" class="no-alerts" style="display: none;">
+            <i class="fas fa-check-circle"></i>
+            <h3>太棒了！沒有需要改善的項目</h3>
+            <p>您的門市巡店表現良好，請繼續保持。</p>
+        </div>
+    </div>
+
+    <script>
+        // 模擬數據（實際使用時從API獲取）
+        let improvementData = [];
+        
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            loadImprovementAlerts();
+        });
+
+        // 載入改善項目
+        async function loadImprovementAlerts() {
+            try {
+                // 模擬API響應數據
+                const mockData = {
+                    success: true,
+                    data: {
+                        results: [
+                            {
+                                id: 1,
+                                store_name: '新竹公道店',
+                                inspection_date: '2026-03-01',
+                                final_score: 72,
+                                grade: 'C',
+                                items_need_improvement: 3,
+                                improvement_deadline: '2026-03-06'
+                            }
+                        ],
+                        improvements: [
+                            {
+                                detail_id: 1,
+                                store_name: '新竹公道店',
+                                item_name: '潔面刷清潔無發霉',
+                                item_code: 'SERVICE_003',
+                                score: -2,
+                                inspector_notes: '發現潔面刷有發霉跡象，需立即更換並加強清潔',
+                                improvement_required: '立即更換所有發霉的潔面刷，建立每日清潔檢查制度',
+                                improvement_deadline: '2026-03-06',
+                                improvement_priority: 'high',
+                                is_overdue: false,
+                                completed_photos: 0,
+                                total_photos: 0
+                            },
+                            {
+                                detail_id: 2,
+                                store_name: '新竹公道店',
+                                item_name: '廁所清潔記錄表落實',
+                                item_code: 'CLEAN_003',
+                                score: -1,
+                                inspector_notes: '清潔記錄表未貼在廁所門後',
+                                improvement_required: '將清潔記錄表貼在廁所門後顯眼處，確實記錄清潔時間',
+                                improvement_deadline: '2026-03-06',
+                                improvement_priority: 'medium',
+                                is_overdue: false,
+                                completed_photos: 1,
+                                total_photos: 1
+                            },
+                            {
+                                detail_id: 3,
+                                store_name: '新竹公道店',
+                                item_name: '收銀櫃台整潔',
+                                item_code: 'CLEAN_002',
+                                score: -1,
+                                inspector_notes: '檯面有私人用品和雜物',
+                                improvement_required: '清理檯面，移除所有私人物品，保持整潔',
+                                improvement_deadline: '2026-03-06',
+                                improvement_priority: 'low',
+                                is_overdue: false,
+                                completed_photos: 0,
+                                total_photos: 0
+                            }
+                        ]
+                    }
+                };
+
+                improvementData = mockData.data.improvements;
+                displayImprovementAlerts(mockData.data);
+                updateSummary(mockData.data);
+
+            } catch (error) {
+                console.error('載入改善項目錯誤:', error);
+                showError('載入失敗，請重試');
+            }
+        }
+
+        // 顯示改善項目
+        function displayImprovementAlerts(data) {
+            const container = document.getElementById('alerts-container');
+            
+            if (!data.improvements || data.improvements.length === 0) {
+                document.getElementById('no-alerts').style.display = 'block';
+                return;
+            }
+
+            // 按門市分組
+            const groupedByStore = data.improvements.reduce((groups, item) => {
+                const key = item.store_name;
+                if (!groups[key]) {
+                    groups[key] = [];
+                }
+                groups[key].push(item);
+                return groups;
+            }, {});
+
+            let alertsHTML = '';
+
+            Object.entries(groupedByStore).forEach(([storeName, items]) => {
+                const storeResult = data.results.find(r => r.store_name === storeName);
+                const overdueItems = items.filter(item => item.is_overdue);
+                const totalItems = items.length;
+                const completedItems = items.filter(item => item.completed_photos > 0);
+
+                const alertType = overdueItems.length > 0 ? 'danger' : 
+                                 items.some(item => daysUntilDeadline(item.improvement_deadline) <= 1) ? 'warning' : 
+                                 'success';
+
+                alertsHTML += `
+                    <div class="alert-card alert-${alertType}">
+                        <div class="alert-header">
+                            <div class="alert-title">
+                                ${storeName} - 巡店改善項目
+                            </div>
+                            ${storeResult ? `
+                                <div class="alert-score ${storeResult.grade === 'D' ? 'danger' : 'warning'}">
+                                    <i class="fas fa-chart-line"></i>
+                                    ${storeResult.final_score} 分 (${storeResult.grade}級)
+                                </div>
+                            ` : ''}
+                        </div>
+                        
+                        <div class="alert-meta">
+                            <span><i class="fas fa-calendar"></i> 巡店日期：${storeResult?.inspection_date || '未知'}</span>
+                            <span><i class="fas fa-exclamation-circle"></i> 需改善：${totalItems} 項</span>
+                            <span><i class="fas fa-check-circle"></i> 已完成：${completedItems.length} 項</span>
+                            <span><i class="fas fa-clock"></i> 期限：${items[0]?.improvement_deadline}</span>
+                        </div>
+                        
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${totalItems > 0 ? (completedItems.length / totalItems * 100) : 0}%"></div>
+                        </div>
+                        
+                        <div class="improvement-items">
+                            ${items.map(item => createImprovementItemHTML(item)).join('')}
+                        </div>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = alertsHTML;
+        }
+
+        // 創建單個改善項目HTML
+        function createImprovementItemHTML(item) {
+            const daysLeft = daysUntilDeadline(item.improvement_deadline);
+            const deadlineClass = item.is_overdue ? 'overdue' : 
+                                  daysLeft <= 1 ? 'due-soon' : 'normal';
+            const deadlineText = item.is_overdue ? '已逾期' : 
+                                 daysLeft === 0 ? '今日到期' :
+                                 daysLeft === 1 ? '明日到期' : 
+                                 `還有 ${daysLeft} 天`;
+
+            const priorityIcon = {
+                'high': '<i class="fas fa-exclamation-triangle" style="color: var(--danger);"></i>',
+                'medium': '<i class="fas fa-exclamation-circle" style="color: var(--warning);"></i>',
+                'low': '<i class="fas fa-info-circle" style="color: var(--info);"></i>'
+            }[item.improvement_priority] || '';
+
+            return `
+                <div class="improvement-item" data-detail-id="${item.detail_id}">
+                    <div class="item-info">
+                        <div class="item-name">
+                            ${priorityIcon} ${item.item_name}
+                        </div>
+                        <div class="item-notes">
+                            <strong>督導說明：</strong>${item.inspector_notes}<br>
+                            <strong>改善要求：</strong>${item.improvement_required}
+                        </div>
+                        <div class="deadline-indicator ${deadlineClass}">
+                            <i class="fas fa-clock"></i> ${deadlineText}
+                        </div>
+                        ${item.total_photos > 0 ? `
+                            <div style="margin-top: 0.5rem;">
+                                <span class="badge badge-${item.completed_photos > 0 ? 'success' : 'warning'}" style="padding: 0.25rem 0.5rem; font-size: 0.8rem; border-radius: 12px;">
+                                    已上傳 ${item.total_photos} 張照片 
+                                    ${item.completed_photos > 0 ? '(已審核通過)' : '(等待審核)'}
+                                </span>
+                            </div>
+                        ` : ''}
+                    </div>
+                    <div class="item-score">
+                        ${item.score} 分
+                    </div>
+                </div>
+                
+                <!-- 照片上傳區 -->
+                <div class="upload-form" id="upload-form-${item.detail_id}">
+                    <h4 style="margin-bottom: 1rem;">上傳改善照片</h4>
+                    
+                    <div class="form-group">
+                        <label for="description-${item.detail_id}">照片說明</label>
+                        <textarea id="description-${item.detail_id}" class="form-control" rows="2" 
+                            placeholder="請說明改善的具體情況..."></textarea>
+                    </div>
+                    
+                    <div class="photo-upload" onclick="triggerFileUpload(${item.detail_id})">
+                        <i class="fas fa-camera" style="font-size: 2rem; color: var(--primary-blue); margin-bottom: 0.5rem;"></i>
+                        <div>點擊或拖拽上傳改善照片</div>
+                        <small style="color: #6c757d;">支援 JPG, PNG 格式，最大 10MB</small>
+                        <input type="file" id="file-upload-${item.detail_id}" 
+                               accept="image/*" multiple style="display: none"
+                               onchange="handleFileUpload(${item.detail_id}, this)">
+                    </div>
+                    
+                    <div class="photo-preview" id="photo-preview-${item.detail_id}">
+                        <!-- 現有照片預覽 -->
+                    </div>
+                    
+                    <div style="text-align: right; margin-top: 1rem;">
+                        <button class="btn btn-primary" onclick="submitImprovement(${item.detail_id})">
+                            <i class="fas fa-upload"></i> 提交改善照片
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // 更新摘要統計
+        function updateSummary(data) {
+            const overdueCount = data.improvements.filter(item => item.is_overdue).length;
+            const dueSoonCount = data.improvements.filter(item => 
+                !item.is_overdue && daysUntilDeadline(item.improvement_deadline) <= 1
+            ).length;
+            const pendingReviewCount = data.improvements.filter(item => 
+                item.total_photos > item.completed_photos
+            ).length;
+            const completionRate = data.improvements.length > 0 ? 
+                Math.round((data.improvements.filter(item => item.completed_photos > 0).length / data.improvements.length) * 100) : 100;
+
+            document.getElementById('overdue-count').textContent = overdueCount;
+            document.getElementById('due-soon-count').textContent = dueSoonCount;
+            document.getElementById('pending-review-count').textContent = pendingReviewCount;
+            document.getElementById('completion-rate').textContent = completionRate + '%';
+        }
+
+        // 觸發文件上傳
+        function triggerFileUpload(detailId) {
+            document.getElementById(`file-upload-${detailId}`).click();
+        }
+
+        // 處理文件上傳
+        function handleFileUpload(detailId, input) {
+            const files = Array.from(input.files);
+            const previewContainer = document.getElementById(`photo-preview-${detailId}`);
+            
+            files.forEach((file, index) => {
+                if (file.type.startsWith('image/') && file.size <= 10 * 1024 * 1024) {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const photoDiv = document.createElement('div');
+                        photoDiv.className = 'photo-item';
+                        photoDiv.innerHTML = `
+                            <img src="${e.target.result}" alt="改善照片">
+                            <div class="photo-status pending">
+                                <i class="fas fa-clock"></i>
+                            </div>
+                        `;
+                        previewContainer.appendChild(photoDiv);
+                    };
+                    reader.readAsDataURL(file);
+                } else {
+                    alert('請選擇 10MB 以內的圖片檔案');
+                }
+            });
+        }
+
+        // 提交改善項目
+        async function submitImprovement(detailId) {
+            try {
+                const fileInput = document.getElementById(`file-upload-${detailId}`);
+                const description = document.getElementById(`description-${detailId}`).value;
+                
+                if (!fileInput.files.length) {
+                    alert('請選擇要上傳的照片');
+                    return;
+                }
+
+                const formData = new FormData();
+                Array.from(fileInput.files).forEach(file => {
+                    formData.append('photos', file);
+                });
+                formData.append('description', description);
+                formData.append('photoType', 'improvement');
+
+                // 模擬上傳成功
+                alert('照片已成功上傳，等待督導審核！');
+                
+                // 清空表單
+                fileInput.value = '';
+                document.getElementById(`description-${detailId}`).value = '';
+                document.getElementById(`photo-preview-${detailId}`).innerHTML = '';
+                
+                // 重新載入數據
+                setTimeout(() => {
+                    loadImprovementAlerts();
+                }, 1000);
+
+            } catch (error) {
+                console.error('提交改善項目錯誤:', error);
+                alert('提交失敗，請重試');
+            }
+        }
+
+        // 計算距離截止日期的天數
+        function daysUntilDeadline(deadlineStr) {
+            const deadline = new Date(deadlineStr);
+            const today = new Date();
+            const timeDiff = deadline.getTime() - today.getTime();
+            return Math.ceil(timeDiff / (1000 * 3600 * 24));
+        }
+
+        // 顯示錯誤信息
+        function showError(message) {
+            alert('❌ ' + message);
+        }
+
+        // 拖拽上傳支援
+        document.addEventListener('DOMContentLoaded', function() {
+            // 為所有上傳區域添加拖拽支援
+            document.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                const uploadArea = e.target.closest('.photo-upload');
+                if (uploadArea) {
+                    uploadArea.classList.add('dragover');
+                }
+            });
+
+            document.addEventListener('dragleave', function(e) {
+                e.preventDefault();
+                const uploadArea = e.target.closest('.photo-upload');
+                if (uploadArea) {
+                    uploadArea.classList.remove('dragover');
+                }
+            });
+
+            document.addEventListener('drop', function(e) {
+                e.preventDefault();
+                const uploadArea = e.target.closest('.photo-upload');
+                if (uploadArea) {
+                    uploadArea.classList.remove('dragover');
+                    
+                    const detailId = uploadArea.parentElement.id.split('-').pop();
+                    const fileInput = document.getElementById(`file-upload-${detailId}`);
+                    
+                    if (e.dataTransfer.files.length > 0) {
+                        fileInput.files = e.dataTransfer.files;
+                        handleFileUpload(detailId, fileInput);
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>

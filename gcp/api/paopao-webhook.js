@@ -515,7 +515,81 @@ async function handleConfirmPostback(authClient, event) {
     return;
   }
 
-  // 3. Reply + receipt
+  // 3. Odoo actions: SO confirm / PO vendor bill
+  try {
+    const { Pool: PgPool } = await import('pg');
+    const odooPool = new PgPool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
+    const { rows: achRows } = await odooPool.query(
+      'SELECT odoo_quote_id, fee_type FROM ach_records WHERE id = $1 AND year = 2026', [resolvedDbId]
+    );
+    await odooPool.end();
+
+    const quoteId = achRows[0]?.odoo_quote_id;
+    if (quoteId && String(quoteId).trim()) {
+      const { default: xmlrpc } = await import('xmlrpc');
+      const { readFileSync } = await import('fs');
+      const odooConfig = JSON.parse(readFileSync('/Users/paopaomao/.openclaw/secrets/odoo-config.json', 'utf8'));
+      const odooClient = xmlrpc.createSecureClient({ host: 'paomao.odoo.com', port: 443, path: '/xmlrpc/2/object' });
+
+      const odooCall = (model, method, args, kwargs = {}) => new Promise((resolve, reject) => {
+        odooClient.methodCall('execute_kw', [odooConfig.db, 6, odooConfig.password, model, method, args, kwargs], (err, val) => {
+          if (err) {
+            if (err.message && err.message.includes('Cannot read response')) resolve(null);
+            else reject(err);
+          } else resolve(val);
+        });
+      });
+
+      if (quoteId.startsWith('S')) {
+        // Sale Order → confirm (draft → sale)
+        const soIds = await odooCall('sale.order', 'search', [[['name', '=', quoteId]]]);
+        if (soIds && soIds.length > 0) {
+          const so = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['state'] });
+          if (so[0].state === 'draft') {
+            await odooCall('sale.order', 'action_confirm', [soIds]);
+            console.log(`[paopao-webhook] ✅ Odoo SO ${quoteId} confirmed`);
+          } else {
+            console.log(`[paopao-webhook] SO ${quoteId} already in state: ${so[0].state}`);
+          }
+          // Write confirmed SO name to O column (odoo_invoice_id)
+          const confirmPool = new PgPool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
+          await confirmPool.query(
+            'UPDATE ach_records SET odoo_invoice_id = $1 WHERE id = $2 AND year = 2026',
+            [quoteId, resolvedDbId]
+          );
+          await confirmPool.end();
+        }
+      } else if (quoteId.startsWith('P')) {
+        // Purchase Order → create vendor bill
+        const poIds = await odooCall('purchase.order', 'search', [[['name', '=', quoteId]]]);
+        if (poIds && poIds.length > 0) {
+          // Create vendor bill via action_create_invoice
+          await odooCall('purchase.order', 'action_create_invoice', [poIds]);
+          // Read the created bill
+          const po = await odooCall('purchase.order', 'read', [poIds[0]], { fields: ['invoice_ids'] });
+          const billIds = po[0]?.invoice_ids || [];
+          let billName = quoteId;
+          if (billIds.length > 0) {
+            const bill = await odooCall('account.move', 'read', [billIds[billIds.length - 1]], { fields: ['name'] });
+            billName = bill[0]?.name || quoteId;
+          }
+          console.log(`[paopao-webhook] ✅ Odoo PO ${quoteId} vendor bill created: ${billName}`);
+          // Write bill name to O column
+          const billPool = new PgPool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
+          await billPool.query(
+            'UPDATE ach_records SET odoo_invoice_id = $1 WHERE id = $2 AND year = 2026',
+            [billName, resolvedDbId]
+          );
+          await billPool.end();
+        }
+      }
+    }
+  } catch (odooErr) {
+    // Odoo errors should NOT block the confirm flow — log and continue
+    console.error('[paopao-webhook] Odoo action failed (non-blocking):', odooErr?.message);
+  }
+
+  // 4. Reply + receipt
   await replyText(event.replyToken, '✅ 已確認，謝謝！');
   try {
     await pushFlexReceipt(targetId, resolvedStoreName, resolvedDbId || odooId, userName);

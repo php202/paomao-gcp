@@ -13,6 +13,7 @@ import fetch from 'node-fetch';
 import { getAuth } from '../lib/auth.js';
 import { readSheet } from '../lib/sheets.js';
 import { getBearerToken } from '../lib/saydou.js';
+import pool from '../lib/db.js';
 
 const EMPLOYEE_SHEET_NAME = '員工清單';
 const STORE_SHEET_NAME = '店家基本資料';
@@ -66,30 +67,67 @@ function parseRealTotal(json) {
   return 0;
 }
 
-/** 員工清單欄位：A?, B店家(1), C姓名(2), D LineId(3), E職稱(4), F?(5), ..., H狀態(7), ..., L員工編號(11) */
+/** 員工清單：從 PostgreSQL DB employees 表讀取 */
 async function getEmployeeData(auth) {
-  const ssId = process.env.LINE_STAFF_SS_ID || '1GH2XbihFIY0AX8SMF9Tk6igrVKPpA_vMJVlkDkJjpe4';
-  const rows = await readSheet(auth, ssId, `'${EMPLOYEE_SHEET_NAME}'!A2:L2000`);
+  // 保留 auth 參數以維持相容性，但實際不使用
   const empCodes = [];
   const empMap = {};
   const storeIdByCode = {};
-  const storeNameByCode = {}; // B 欄店家名稱，報表顯示用
+  const storeNameByCode = {}; // 店家名稱，報表顯示用
+  const multiStoreMap = {}; // empCode -> [storeId, storeId, ...]
   let excluded = 0;
-  for (const row of rows) {
-    const code = (row[11] ?? '').toString().trim();
-    const name = (row[2] ?? '').toString().trim();
-    const statusH = (row[7] ?? '').toString().trim();
-    const storeId = (row[5] ?? '').toString().trim();
-    const storeName = (row[1] ?? '').toString().trim();
-    if (!code) continue;
-    if (statusH.indexOf('離職') >= 0) { excluded++; continue; }
-    empCodes.push(code);
-    empMap[code] = name || code;
-    storeIdByCode[code] = storeId;
-    if (storeName) storeNameByCode[code] = storeName;
+
+  try {
+    // 從 employees 表讀取在職員工資料
+    const { rows } = await pool.query(`
+      SELECT employee_code, name, store_name, saydou_store_id, managed_stores
+      FROM employees 
+      WHERE is_active = true 
+        AND employee_code IS NOT NULL 
+        AND employee_code != ''
+      ORDER BY employee_code
+    `);
+
+    for (const row of rows) {
+      const code = (row.employee_code || '').toString().trim();
+      const name = (row.name || '').toString().trim();
+      const storeId = (row.saydou_store_id || '').toString().trim();
+      const storeName = (row.store_name || '').toString().trim();
+      const managedStores = row.managed_stores || [];
+
+      if (!code) continue;
+      
+      empCodes.push(code);
+      empMap[code] = name || code;
+      storeIdByCode[code] = storeId;
+      if (storeName) storeNameByCode[code] = storeName;
+
+      // 處理多店歸屬
+      if (managedStores.length > 1) {
+        multiStoreMap[code] = managedStores.map(s => String(s).trim()).filter(Boolean);
+      }
+    }
+
+    // 計算排除的員工數（is_active = false）
+    const { rows: inactiveRows } = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM employees 
+      WHERE is_active = false 
+        AND employee_code IS NOT NULL 
+        AND employee_code != ''
+    `);
+    excluded = parseInt(inactiveRows[0]?.count || 0);
+
+    if (excluded > 0) console.log(`[GCP] is_active=false 離職已排除 ${excluded} 人`);
+    console.log(`[GCP] 從 DB 讀取在職員工 ${empCodes.length} 人`);
+    console.log(`[GCP] 多店員工 ${Object.keys(multiStoreMap).length} 人：${Object.entries(multiStoreMap).map(([c, s]) => `${empMap[c] || c}(${s.length}店)`).join(', ')}`);
+
+  } catch (e) {
+    console.error('[GCP] 從 DB 讀取員工資料失敗:', e.message);
+    throw new Error(`無法從資料庫讀取員工資料: ${e.message}`);
   }
-  if (excluded > 0) console.log(`[GCP] H 欄離職已排除 ${excluded} 人`);
-  return { empCodes, empMap, storeIdByCode, storeNameByCode };
+
+  return { empCodes, empMap, storeIdByCode, storeNameByCode, multiStoreMap };
 }
 
 async function getStoreIdToName(auth) {
@@ -135,27 +173,97 @@ async function fetchTransactionStatistic(bearerToken, keyword, startDate, endDat
   return 0;
 }
 
+/** 多店員工：用明細 API 拿所有交易，按 storid 分組加總
+ *  回傳 { storeId: amount, ... } */
+async function fetchTransactionsByStore(bearerToken, keyword, startDate, endDate, tipsGodsid) {
+  const PAGE_SIZE = 50;
+  const MAX_PAGES = 20;
+  const byStore = {}; // storeId -> { total: 0, tips: 0 }
+
+  // 拿全部交易（不含小費）
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const url = `https://saywebdatafeed.saydou.com/api/management/finance/transaction?page=${page}&limit=${PAGE_SIZE}&sort=ordrsn&order=desc` +
+      `&keyword=${encodeURIComponent(keyword)}&start=${encodeURIComponent(startDate)}&end=${encodeURIComponent(endDate)}` +
+      `&searchMemberCtrl=null&searchProductCtrl=null&searchStaffCtrl=null&membid=0&godsid=0` +
+      `&usrsid=0&memnam=&godnam=&usrnam=&assign=all&licnum=&goctString=`;
+    let json;
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${bearerToken}` },
+        signal: AbortSignal.timeout(60000),
+      });
+      json = await res.json();
+    } catch (e) {
+      console.warn(`[GCP] 多店明細 API 失敗 ${keyword} page=${page}:`, e.message);
+      break;
+    }
+    if (!json?.data?.items?.length) break;
+    for (const item of json.data.items) {
+      const sid = String(item.storid || 'unknown');
+      if (!byStore[sid]) byStore[sid] = { total: 0, tips: 0 };
+      const amt = Number(item.rprice ?? item.price_ ?? item.ordamt ?? 0) || 0;
+      byStore[sid].total += amt;
+    }
+    if (json.data.items.length < PAGE_SIZE) break;
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  // 拿小費交易
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const godnam = encodeURIComponent('小費');
+    const url = `https://saywebdatafeed.saydou.com/api/management/finance/transaction?page=${page}&limit=${PAGE_SIZE}&sort=ordrsn&order=desc` +
+      `&keyword=${encodeURIComponent(keyword)}&start=${encodeURIComponent(startDate)}&end=${encodeURIComponent(endDate)}` +
+      `&searchMemberCtrl=null&searchProductCtrl=null&searchStaffCtrl=null&membid=0&godsid=${tipsGodsid}` +
+      `&usrsid=0&memnam=&godnam=${godnam}&usrnam=&assign=all&licnum=&goctString=`;
+    let json;
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${bearerToken}` },
+        signal: AbortSignal.timeout(60000),
+      });
+      json = await res.json();
+    } catch (e) { break; }
+    if (!json?.data?.items?.length) break;
+    for (const item of json.data.items) {
+      const sid = String(item.storid || 'unknown');
+      if (!byStore[sid]) byStore[sid] = { total: 0, tips: 0 };
+      const amt = Number(item.rprice ?? item.price_ ?? item.ordamt ?? 0) || 0;
+      byStore[sid].tips += amt;
+    }
+    if (json.data.items.length < PAGE_SIZE) break;
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  // 計算每店淨業績
+  const result = {};
+  for (const [sid, v] of Object.entries(byStore)) {
+    const net = Math.max(0, v.total - v.tips);
+    if (net > 0) result[sid] = net;
+  }
+  return result;
+}
+
 async function buildReport(auth, bearerToken, startYm, endYm) {
   const tipsGodsid = parseInt(process.env.TIPS_GODSID || '201969', 10);
   const batchSize = parseInt(process.env.FETCH_BATCH_SIZE || '10', 10);
 
-  const { empCodes, empMap, storeIdByCode, storeNameByCode } = await getEmployeeData(auth);
+  const { empCodes, empMap, storeIdByCode, storeNameByCode, multiStoreMap } = await getEmployeeData(auth);
   const storeIdToName = await getStoreIdToName(auth);
 
   const months = listMonthsFrom2025(endYm);
   const startIdx = months.indexOf(startYm);
   const toRun = startIdx >= 0 ? months.slice(startIdx) : months;
 
-  const result = {};
-  const totalMap = {};
-  const tipsMap = {};
+  // --- 單店員工：用 transactionStatistic API（快速） ---
+  const singleStoreCodes = empCodes.filter(c => !multiStoreMap[c] || multiStoreMap[c].length <= 1);
+  const multiStoreCodes = empCodes.filter(c => multiStoreMap[c] && multiStoreMap[c].length > 1);
 
   const requests = [];
   const meta = [];
   for (const ym of toRun) {
     const range = getMonthDateRange(ym);
     if (!range) continue;
-    for (const code of empCodes) {
+    for (const code of singleStoreCodes) {
       requests.push({ keyword: code, ...range, godsid: 0 });
       meta.push({ empCode: code, ym, isTips: false });
       requests.push({ keyword: code, ...range, godsid: tipsGodsid });
@@ -163,7 +271,11 @@ async function buildReport(auth, bearerToken, startYm, endYm) {
     }
   }
 
-  console.log(`[GCP] 共 ${requests.length} 個 API 請求，每批 ${batchSize} 個`);
+  console.log(`[GCP] 單店 ${singleStoreCodes.length} 人 → ${requests.length} 個統計 API 請求，每批 ${batchSize} 個`);
+  console.log(`[GCP] 多店 ${multiStoreCodes.length} 人 → 用明細 API 按店分組`);
+
+  const totalMap = {};
+  const tipsMap = {};
 
   for (let i = 0; i < requests.length; i += batchSize) {
     const chunk = requests.slice(i, i + batchSize);
@@ -172,56 +284,80 @@ async function buildReport(auth, bearerToken, startYm, endYm) {
       fetchTransactionStatistic(bearerToken, r.keyword, r.startDate, r.endDate, r.godsid)));
     for (let j = 0; j < chunkMeta.length; j++) {
       const m = chunkMeta[j];
-      if (m.isTips) {
-        if (!tipsMap[m.ym]) tipsMap[m.ym] = {};
-        tipsMap[m.ym][m.empCode] = vals[j];
-      } else {
-        if (!totalMap[m.ym]) totalMap[m.ym] = {};
-        totalMap[m.ym][m.empCode] = vals[j];
-      }
+      const targetMap = m.isTips ? tipsMap : totalMap;
+      if (!targetMap[m.ym]) targetMap[m.ym] = {};
+      targetMap[m.ym][m.empCode] = vals[j];
     }
-    console.log(`[GCP] 已完成 ${Math.min(i + batchSize, requests.length)}/${requests.length}`);
+    console.log(`[GCP] 單店已完成 ${Math.min(i + batchSize, requests.length)}/${requests.length}`);
     if (i + batchSize < requests.length) await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
   }
 
+  // --- 多店員工：用 transaction 明細 API 按 storid 分組 ---
+  const multiStoreResults = {}; // ym -> code -> { storeId: amt }
   for (const ym of toRun) {
-    result[ym] = {};
-    for (const code of empCodes) {
-      const total = totalMap[ym]?.[code] ?? 0;
-      const tips = tipsMap[ym]?.[code] ?? 0;
-      const amt = Math.max(0, total - tips);
-      if (amt > 0) result[ym][code] = amt;
+    const range = getMonthDateRange(ym);
+    if (!range) continue;
+    multiStoreResults[ym] = {};
+    for (const code of multiStoreCodes) {
+      console.log(`[GCP] 多店明細 ${empMap[code] || code} (${code}) ${ym}...`);
+      const byStore = await fetchTransactionsByStore(bearerToken, code, range.startDate, range.endDate, tipsGodsid);
+      multiStoreResults[ym][code] = byStore;
+      await new Promise(r => setTimeout(r, 1000));
     }
   }
 
+  // --- 組報表 rows ---
   const storeMap = {};
   for (const code of empCodes) {
     storeMap[code] = (storeNameByCode[code] || storeIdToName[storeIdByCode[code]] || storeIdByCode[code] || '').trim();
   }
 
   const rows = [];
-  for (const ym of Object.keys(result).sort()) {
-    const byEmp = result[ym];
-    for (const code of Object.keys(byEmp).sort()) {
-      const amt = byEmp[code];
-      if (amt <= 0) continue;
-      rows.push([
-        ym,
-        code,
-        empMap[code] || '',
-        storeMap[code] || '',
-        amt,
-        '',
-        '',
-        '',
-        amt >= 90000 ? '1' : '0',
-        amt >= 100000 ? '1' : '0',
-        amt >= 110000 ? '1' : '0',
-        amt >= 120000 ? '1' : '0',
-      ]);
+  for (const ym of toRun) {
+    for (const code of empCodes) {
+      if (multiStoreMap[code] && multiStoreMap[code].length > 1) {
+        // 多店員工：每店一列 + 合計列
+        const byStore = multiStoreResults[ym]?.[code] || {};
+        let grandTotal = 0;
+        const storeRows = [];
+        for (const [storeId, amt] of Object.entries(byStore)) {
+          if (amt > 0) {
+            const sName = storeIdToName[storeId] || ('店' + storeId);
+            storeRows.push([ym, code, empMap[code] || '', sName, amt, '', '', '', '', '', '', '']);
+            grandTotal += amt;
+          }
+        }
+        if (grandTotal > 0) {
+          // 按店名排序
+          storeRows.sort((a, b) => String(a[3]).localeCompare(String(b[3])));
+          rows.push(...storeRows);
+          // 合計列：獎金門檻看合計
+          rows.push([
+            ym, code, empMap[code] || '', '【合計】', grandTotal, '', '', '',
+            grandTotal >= 90000 ? '1' : '0',
+            grandTotal >= 100000 ? '1' : '0',
+            grandTotal >= 110000 ? '1' : '0',
+            grandTotal >= 120000 ? '1' : '0',
+          ]);
+        }
+      } else {
+        // 單店員工
+        const total = totalMap[ym]?.[code] ?? 0;
+        const tips = tipsMap[ym]?.[code] ?? 0;
+        const amt = Math.max(0, total - tips);
+        if (amt > 0) {
+          rows.push([
+            ym, code, empMap[code] || '', storeMap[code] || '', amt, '', '', '',
+            amt >= 90000 ? '1' : '0',
+            amt >= 100000 ? '1' : '0',
+            amt >= 110000 ? '1' : '0',
+            amt >= 120000 ? '1' : '0',
+          ]);
+        }
+      }
     }
   }
-  return { rows, months: Object.keys(result).sort() };
+  return { rows, months: toRun };
 }
 
 /** 寫入員工業績月報：一律從 A 欄開始（A1 標題，A2 起資料），更新既有列或接在後面 append */
@@ -293,30 +429,124 @@ async function writeToSheet(auth, rows) {
   return { updated: toUpdate.length, appended: toAppend.length };
 }
 
+/** 存入 DB（upsert） */
+async function saveToDB(rows, storeIdToName) {
+  let saved = 0;
+  for (const row of rows) {
+    const [month, empCode, empName, storeName, amount] = row;
+    const isSummary = storeName === '【合計】';
+    // 找 store saydou id（反查）
+    let storeId = '_total';
+    if (!isSummary) {
+      for (const [sid, sname] of Object.entries(storeIdToName)) {
+        if (sname === storeName) { storeId = sid; break; }
+      }
+    }
+    try {
+      await pool.query(`
+        INSERT INTO employee_performance (month, employee_code, employee_name, store_name, store_saydou_id, revenue, tip_total, is_summary, data_source, synced_at)
+        VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 'saydou', NOW())
+        ON CONFLICT (store_name, employee_code, month)
+        DO UPDATE SET revenue = $6, employee_name = $3, store_saydou_id = $5, is_summary = $7, synced_at = NOW()
+      `, [month, empCode, empName, storeName, storeId, amount, isSummary]);
+      saved++;
+    } catch (e) {
+      console.warn(`[GCP] DB upsert 失敗 ${empCode} ${month} ${storeName}:`, e.message);
+    }
+  }
+  return saved;
+}
+
+/** 從 DB 讀取快取（某月份有資料就不打 API） */
+async function loadFromDB(months) {
+  const { rows } = await pool.query(
+    `SELECT month, employee_code, employee_name, store_name, store_saydou_id, revenue, is_summary
+     FROM employee_performance WHERE month = ANY($1) ORDER BY month, employee_code, is_summary`,
+    [months]
+  );
+  return rows;
+}
+
 export async function run(args = []) {
   const d = new Date();
   const currentYm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   const startYm = args[0] ?? null;
   const endYm = args[1] ?? currentYm;
+  const forceRefresh = args.includes('--refresh');
 
   // 未帶參數時只跑「當月」（GCP 排程用），避免每次 2025-01～今天資料量過大
   const actualStart = (startYm || args[1]) ? (startYm || '2025-01') : currentYm;
   const actualEnd = endYm;
 
-  console.log(`[GCP] 員工業績月報 開始 ${actualStart} ~ ${actualEnd}`);
+  console.log(`[GCP] 員工業績月報 開始 ${actualStart} ~ ${actualEnd}${forceRefresh ? ' (強制重整)' : ''}`);
 
   const auth = await getAuth();
-  const bearerToken = await getBearerToken(auth);
-  if (!bearerToken) {
-    throw new Error('無 Bearer Token，請設 SAYDOU_BEARER_TOKEN 或 TOKEN_SHEET_SS_ID');
+
+  // 計算需要的月份
+  const allMonths = listMonthsFrom2025(actualEnd);
+  const startIdx = allMonths.indexOf(actualStart);
+  const targetMonths = startIdx >= 0 ? allMonths.slice(startIdx) : allMonths;
+
+  // 檢查 DB 快取（除非 --refresh）
+  let cachedRows = [];
+  let monthsToFetch = targetMonths;
+  if (!forceRefresh) {
+    try {
+      cachedRows = await loadFromDB(targetMonths);
+      const cachedMonths = [...new Set(cachedRows.map(r => r.month))];
+      monthsToFetch = targetMonths.filter(m => !cachedMonths.includes(m));
+      if (cachedMonths.length > 0) {
+        console.log(`[GCP] DB 快取命中 ${cachedMonths.length} 個月份，需重新拉取 ${monthsToFetch.length} 個月份`);
+      }
+    } catch (e) {
+      console.warn('[GCP] 讀取 DB 快取失敗，全部重新拉取:', e.message);
+      monthsToFetch = targetMonths;
+    }
   }
 
-  const { rows, months } = await buildReport(auth, bearerToken, actualStart, actualEnd);
+  let newRows = [];
+  const storeIdToName = await getStoreIdToName(auth);
 
-  console.log(`[GCP] 產出 ${rows.length} 筆，月份 ${months.join(',')}`);
+  if (monthsToFetch.length > 0) {
+    const bearerToken = await getBearerToken(auth);
+    if (!bearerToken) {
+      throw new Error('無 Bearer Token，請設 SAYDOU_BEARER_TOKEN 或 TOKEN_SHEET_SS_ID');
+    }
 
-  if (rows.length > 0) {
-    await writeToSheet(auth, rows);
+    const fetchStart = monthsToFetch[0];
+    const fetchEnd = monthsToFetch[monthsToFetch.length - 1];
+    const { rows } = await buildReport(auth, bearerToken, fetchStart, fetchEnd);
+    newRows = rows;
+
+    // 存入 DB
+    if (newRows.length > 0) {
+      const saved = await saveToDB(newRows, storeIdToName);
+      console.log(`[GCP] 已存入 DB ${saved} 筆`);
+    }
+  }
+
+  // 合併：DB 快取 + 新拉的資料
+  const allRows = [];
+
+  // DB 快取轉回 sheet row 格式
+  for (const r of cachedRows) {
+    const amt = Number(r.revenue) || 0;
+    allRows.push([
+      r.month, r.employee_code, r.employee_name || '', r.store_name || '',
+      amt, '', '', '',
+      r.is_summary ? (amt >= 90000 ? '1' : '0') : '',
+      r.is_summary ? (amt >= 100000 ? '1' : '0') : '',
+      r.is_summary ? (amt >= 110000 ? '1' : '0') : '',
+      r.is_summary ? (amt >= 120000 ? '1' : '0') : '',
+    ]);
+  }
+  // 加上新拉的
+  allRows.push(...newRows);
+
+  console.log(`[GCP] 總計 ${allRows.length} 筆（快取 ${cachedRows.length} + 新拉 ${newRows.length}）`);
+
+  if (allRows.length > 0) {
+    await writeToSheet(auth, allRows);
     console.log(`[GCP] 已寫入試算表`);
   }
 

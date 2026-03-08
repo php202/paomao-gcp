@@ -5,6 +5,7 @@ import { readSheet } from '../lib/sheets.js';
 import { getDirectStoreReplyStatusText } from '../lib/store-reply-status.js';
 import { getBearerToken, invalidateTokenCache } from '../lib/saydou.js';
 import { safeJsonParse, sendJson, sendRedirect, sendText } from './http-utils.js';
+import { lastMonthTipsReport } from '../scripts/tips-report.js';
 
 const CORE_KEY = (process.env.PAO_CAT_SECRET_KEY || '').trim();
 const LINE_STORE_SS_ID = (process.env.LINE_STORE_SS_ID || '').trim();
@@ -866,8 +867,14 @@ export async function handleCore(req, res, { authClient, url, bodyJson }) {
         return;
       }
       case 'lastMonthTipsReport': {
-        const out = await callLegacyCore('lastMonthTipsReport', { userId: params.userId, managedStoreIds: params.managedStoreIds, employeeCode: params.employeeCode }, { method: 'get' });
-        sendJson(res, 200, out);
+        try {
+          const mIds = params.managedStoreIds ? String(params.managedStoreIds).split(',').filter(Boolean) : [];
+          const out = await lastMonthTipsReport({ userId: params.userId, managedStoreIds: mIds, employeeCode: params.employeeCode || '' });
+          sendJson(res, 200, out);
+        } catch (e) {
+          console.error('[lastMonthTipsReport] error:', e.message);
+          sendJson(res, 200, { ok: false, message: e.message });
+        }
         return;
       }
       case 'syncLastMonthTipsConsolidated': {

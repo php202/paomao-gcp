@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import { nowTaipeiStr } from '../lib/date-tz.js';
 import { readSheet, appendSheet } from '../lib/sheets.js';
+import { lastMonthTipsReport } from './tips-report.js';
 import {
   getCachedAttendanceSheetUrl,
   createAttendanceSpreadsheetAndShare,
@@ -11,6 +12,7 @@ import {
   getSignedUrlFromGcsPath,
 } from '../lib/attendance-excel.js';
 import { isUserAuthorized } from './line-checkin-handler.js';
+import pool from '../lib/db.js';
 import { getTomorrowReservationList } from '../api/stores-api.js';
 import { findAvailableSlotsAction } from '../api/core-api.js';
 import {
@@ -391,14 +393,41 @@ function safeUserSuffix(userId) {
 }
 
 /**
- * 取得人員打卡記錄，與 GAS getUserAttendance 邏輯對齊
- * 資料來源：試算表 1GH2XbihFIY0AX8SMF9Tk6igrVKPpA_vMJVlkDkJjpe4
- * - 員工打卡紀錄 (gid=1879223058)：本月資料。今日出勤、本月出勤、店家本月出勤 一定要拉此表，否則會空值。
- * - 打卡紀錄封存 (gid=930376461)：上月及更早，結構相同。
- * - 規則：startDate < 本月1日 才讀打卡紀錄封存；endDate >= 本月1日 才讀員工打卡紀錄
- * - 過濾：userId、時間範圍、C 欄須含上班/下班；補打卡：G 欄含「補打卡」則 type 加 (補)
+ * 取得人員打卡記錄 — DB 優先，Sheet fallback
+ * DB: checkin_records (check_type: in/out)
+ * Sheet: 員工打卡紀錄 / 打卡紀錄封存 (C欄: 上班打卡/下班打卡)
  */
 async function readAttendance(auth, userIds, startDate, endDate, sheetReader) {
+  const userSet = new Set((userIds || []).map(String));
+  if (!userSet.size) return [];
+
+  // ── Step 1: 從 DB 讀 ──
+  let dbRecords = [];
+  try {
+    const { rows } = await pool.query(
+      `SELECT line_user_id, checked_at, check_type, note
+       FROM checkin_records
+       WHERE line_user_id = ANY($1)
+         AND checked_at >= $2 AND checked_at <= $3
+         AND check_type IN ('in', 'out')
+       ORDER BY checked_at`,
+      [[...userSet], startDate, endDate]
+    );
+    dbRecords = rows.map(r => ({
+      userId: r.line_user_id,
+      time: new Date(r.checked_at),
+      type: r.check_type === 'in' ? '上班打卡' : '下班打卡',
+    }));
+    if (dbRecords.length > 0) {
+      console.log(`[attendance] DB: ${dbRecords.length} records for ${userSet.size} users`);
+      return dbRecords;
+    }
+  } catch (e) {
+    console.warn('[attendance] DB query failed, falling back to Sheet:', e.message);
+  }
+
+  // ── Step 2: DB 沒資料 → fallback 讀 Sheet ──
+  console.log('[attendance] DB empty, falling back to Sheet');
   const now = new Date();
   const taipeiYMD = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
   const [ty, tm] = taipeiYMD.split('-').map(Number);
@@ -419,7 +448,6 @@ async function readAttendance(auth, userIds, startDate, endDate, sheetReader) {
     }
   }
 
-  const userSet = new Set((userIds || []).map(String));
   return rows
     .map((row) => {
       const userId = String(row[0] || '').trim();
@@ -1583,21 +1611,21 @@ export async function handleStaffCommand({
     return true;
   }
 
-  // 8. 上月小費（完全或包含，與 GAS 一致）
+  // 8. 上月小費（完全或包含，與 GAS 一致）— 本機直接呼叫
   if (text.trim() === '上月小費' || text.indexOf('上月小費') >= 0) {
-    const managedStoreIds = splitStoreIds(authResult.managedStores);
-    const params = { userId };
-    if (managedStoreIds.length) params.managedStoreIds = managedStoreIds.join(',');
-    if (!managedStoreIds.length && authResult.employeeCode) params.employeeCode = authResult.employeeCode;
-    const r = await callCoreApiGet('lastMonthTipsReport', params, fetcher);
-    if (!r || !r.ok || !r.url) {
-      const msg = !r && (!PAO_CAT_CORE_API_URL || !PAO_CAT_SECRET_KEY)
-        ? 'Core API 未設定，請聯繫管理員。'
-        : `上月小費報告失敗：${(r && r.message) || '未知錯誤'}`;
-      await replyText(msg);
-      return true;
+    try {
+      const managedStoreIds = splitStoreIds(authResult.managedStores);
+      const empCode = (!managedStoreIds.length && authResult.employeeCode) ? authResult.employeeCode : '';
+      const r = await lastMonthTipsReport({ userId, managedStoreIds, employeeCode: empCode });
+      if (!r || !r.ok || !r.url) {
+        await replyText(`上月小費報告失敗：${(r && r.message) || '未知錯誤'}`);
+        return true;
+      }
+      await replyText(`✅ 上月小費\n\n開啟報表：\n${r.url}`);
+    } catch (e) {
+      console.error('[上月小費] error:', e.message);
+      await replyText(`上月小費報告失敗：${e.message}`);
     }
-    await replyText(`✅ 上月小費\n\n開啟報表：\n${r.url}`);
     return true;
   }
 
