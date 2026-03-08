@@ -70,8 +70,9 @@ async function main() {
   const sinceDate = new Date(Date.now() - DAYS * 86400000).toISOString().slice(0, 10);
   console.log(`[sync-odoo-ach] 查詢 Odoo SO: state=sale, website, since ${sinceDate}`);
 
+  // sent = 結帳完成（寫入 ACH 等確認）, sale = LINE 確認後, done = 完成
   const orders = await odooCall('sale.order', 'search_read', [[
-    ['state', 'in', ['sale', 'done']],
+    ['state', 'in', ['sent', 'sale', 'done']],
     ['create_date', '>', sinceDate],
     ['website_id', '!=', false]
   ]], { fields: ['name', 'partner_id', 'amount_total', 'date_order', 'create_date', 'state', 'id'], limit: 500, order: 'create_date asc' });
