@@ -70,11 +70,12 @@ async function main() {
   const sinceDate = new Date(Date.now() - DAYS * 86400000).toISOString().slice(0, 10);
   console.log(`[sync-odoo-ach] 查詢 Odoo SO: state=sale, website, since ${sinceDate}`);
 
+  // 抓 sent (報價單已送出/結帳完成) + sale (已確認) + done
   const orders = await odooCall('sale.order', 'search_read', [[
-    ['state', 'in', ['sale', 'done']],
+    ['state', 'in', ['sent', 'sale', 'done']],
     ['create_date', '>', sinceDate],
     ['website_id', '!=', false]
-  ]], { fields: ['name', 'partner_id', 'amount_total', 'date_order', 'create_date', 'state'], limit: 500, order: 'create_date asc' });
+  ]], { fields: ['name', 'partner_id', 'amount_total', 'date_order', 'create_date', 'state', 'id'], limit: 500, order: 'create_date asc' });
 
   console.log(`[sync-odoo-ach] Odoo 找到 ${orders.length} 筆已確認電商訂單`);
   if (!orders.length) { await pool.end(); return; }
@@ -89,6 +90,24 @@ async function main() {
   const newOrders = orders.filter(o => !existingSet.has(o.name));
 
   console.log(`[sync-odoo-ach] 已存在 ${existingSet.size} 筆，新增 ${newOrders.length} 筆`);
+
+  // Auto-confirm: sent → sale（內部 B2B 電商，結帳即確認）
+  for (const o of orders) {
+    if (o.state === 'sent') {
+      if (DRY_RUN) {
+        console.log(`[sync-odoo-ach] 🔄 (dry-run) 會自動確認 ${o.name} (sent→sale)`);
+      } else {
+        try {
+          await odooCall('sale.order', 'action_confirm', [[o.id]]);
+          console.log(`[sync-odoo-ach] 🔄 自動確認 ${o.name} (sent→sale)`);
+          o.state = 'sale';
+        } catch (e) {
+          console.warn(`[sync-odoo-ach] ⚠️ 確認 ${o.name} 失敗: ${e.message}`);
+        }
+      }
+    }
+  }
+
   if (!newOrders.length) { console.log('[sync-odoo-ach] ✅ 無新訂單'); await pool.end(); return; }
 
   // 3. Load store mapping (company → store)
