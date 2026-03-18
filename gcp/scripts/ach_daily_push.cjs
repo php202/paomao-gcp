@@ -12,8 +12,35 @@
 
 const { Pool } = require('pg');
 const pool = new Pool({ database: 'paomao' });
+const { odooCall } = require('../lib/odoo.cjs');
 
 const PAOPAO_LINE_TOKEN = 'cpJinkc6qjthP9/685wxeI114mz/TPYieKdtabf0KIkuzpf1mGLFIRKSbVoCD7QAtIf7pBSJrI8I3x7Pk2Z5khTFbCgsaos749+4MjrIFoW5+90ppxSguaWlvYGGoLHGgMHzmJejEHWIlggnfMBqKQdB04t89/1O/w1cDnyilFU=';
+
+/** Fetch order lines for a sale.order by name (e.g. S01650) or numeric ID */
+async function fetchOdooOrderLines(quoteRef) {
+  try {
+    if (!quoteRef) return null;
+    // First try by name
+    let orders = await odooCall('sale.order', 'search_read',
+      [[['name', '=', quoteRef]]],
+      { fields: ['id'], limit: 1 }
+    );
+    // Fallback: try as numeric ID
+    if ((!orders || orders.length === 0) && /^\d+$/.test(quoteRef)) {
+      orders = await odooCall('sale.order', 'read', [parseInt(quoteRef)], { fields: ['id'] });
+    }
+    if (!orders || orders.length === 0) return null;
+
+    const lines = await odooCall('sale.order.line', 'search_read',
+      [[['order_id', '=', orders[0].id]]],
+      { fields: ['name', 'product_uom_qty', 'price_subtotal'], limit: 50 }
+    );
+    return lines && lines.length > 0 ? lines : null;
+  } catch (e) {
+    console.warn(`[odoo] ⚠️ 無法取得訂單 ${quoteRef} 明細: ${e.message}`);
+    return null;
+  }
+}
 
 async function main() {
   console.log('[ach-daily-push] 🚀 開始執行...');
@@ -31,6 +58,7 @@ async function main() {
       AND ar.amount IS NOT NULL AND ar.amount != 0
       AND p.line_group_id IS NOT NULL AND p.line_group_id != ''
       AND ar.odoo_quote_id IS NOT NULL AND ar.odoo_quote_id != ''
+      AND COALESCE(s.store_type, 'franchise') != 'direct'
     ORDER BY ar.sheet_row
   `);
 
@@ -59,6 +87,14 @@ async function main() {
     try {
       const storeName = (group.store || '').replace('泡泡貓｜', '');
 
+      // Pre-fetch Odoo order lines for all items in this group
+      const orderLineCache = {};
+      for (const item of group.items) {
+        if (item.odoo_quote_id && !orderLineCache[item.odoo_quote_id]) {
+          orderLineCache[item.odoo_quote_id] = await fetchOdooOrderLines(item.odoo_quote_id);
+        }
+      }
+
       const bubbles = group.items.map(item => {
         const amt = Math.abs(item.amount);
         const dbId = item.id;
@@ -67,8 +103,25 @@ async function main() {
         const themeColor = isPayment ? '#FF5733' : '#1DB446';
         const titleText = isPayment ? '💰 付款通知' : '🐱 請款提醒';
         const footerText = isPayment ? `泡泡貓將付款給您：$${amt.toLocaleString()} 元` : `ACH 將自動扣款：$${amt.toLocaleString()} 元`;
-        const sheetStoreName = item.store_name || storeName;
-        const itemsText = `📋 ${desc} x1：$${amt.toLocaleString()}`;
+        const sheetStoreName = (item.full_store_name || item.store_name || storeName).replace('泡泡貓｜', '');
+
+        // Build line items from Odoo order lines if available
+        const odooLines = (orderLineCache[item.odoo_quote_id] || []).filter(l => l.price_subtotal !== 0);
+        let itemContents;
+        if (odooLines.length > 0) {
+          itemContents = odooLines.map(line => ({
+            type: 'box', layout: 'horizontal', margin: 'sm',
+            contents: [
+              { type: 'text', text: (line.name || '品項').replace(/\n/g, ' '), size: 'xs', color: '#555555', wrap: true, flex: 5 },
+              { type: 'text', text: `x${line.product_uom_qty}`, size: 'xs', color: '#888888', flex: 1, align: 'center' },
+              { type: 'text', text: `$${Math.round(line.price_subtotal).toLocaleString()}`, size: 'xs', color: '#333333', flex: 2, align: 'end' }
+            ]
+          }));
+        } else {
+          itemContents = [{
+            type: 'text', text: `📋 ${desc} x1：$${amt.toLocaleString()}`, wrap: true, size: 'xs', color: '#555555', lineSpacing: '4px'
+          }];
+        }
 
         return {
           type: 'bubble',
@@ -84,7 +137,7 @@ async function main() {
             contents: [
               { type: 'text', text: sheetStoreName || '店家', weight: 'bold', size: 'md' },
               { type: 'separator', margin: 'md' },
-              { type: 'text', text: itemsText, wrap: true, size: 'xs', margin: 'md', color: '#555555', lineSpacing: '4px' },
+              { type: 'box', layout: 'vertical', margin: 'md', spacing: 'sm', contents: itemContents },
               { type: 'separator', margin: 'md' },
               { type: 'box', layout: 'vertical', margin: 'md', contents: [
                 { type: 'text', text: '如果以上內容正確，請點擊下方按鈕確認。', size: 'xs', color: '#888888', wrap: true },

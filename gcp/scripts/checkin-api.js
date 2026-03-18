@@ -241,6 +241,16 @@ async function handleCheckIn(req, res, body) {
   let punchType = '上班打卡';
   let checkType = 'in';
 
+  // 智慧判定：當天第一次打卡，但時間很晚（>=17:00）→ 可能是下班
+  if (!history.hasRecord) {
+    const hourTW = new Date(timestamp.toLocaleString('en-US', { timeZone: 'Asia/Taipei' })).getHours();
+    if (hourTW >= 17) {
+      checkType = 'out';
+      punchType = '下班打卡';
+      console.log(`[checkin-api] smart detect: first punch at ${hourTW}:xx (>=17) → treat as clock-out`);
+    }
+  }
+
   if (history.hasRecord) {
     const lastPunchTime = new Date(history.lastTime);
     // 用 DB 的 timestamptz 和 JS Date 比較，兩邊都是 UTC epoch，不受 TZ 影響

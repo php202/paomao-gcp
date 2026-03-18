@@ -24,6 +24,7 @@ import { handleSaydouTokenSync } from './api/saydou-token-sync.js';
 import { handleGivemeInvoice, handleGivemeInvoiceCheck, handleGivemeInvoicePrint } from './api/giveme-invoice.js';
 import { handleCheckinApi } from './scripts/checkin-api.js';
 import { appendWebhookError } from './lib/webhook-error-log.js';
+import { handleIgWebhookVerify, handleIgWebhookEvent } from './api/ig-webhook.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -288,6 +289,74 @@ export function startServer() {
       const authClient = await getAuth();
       const rawBody = await parseBody(req);
       await handleStoreLineWebhook(req, res, { authClient, rawBody });
+      return;
+    }
+
+    // Privacy Policy
+    if (method === 'GET' && url === '/privacy') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>隱私權政策 - 泡泡貓</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif;max-width:700px;margin:40px auto;padding:0 20px;color:#333;line-height:1.8}h1{color:#008BD5;font-size:24px}h2{color:#5a3e2b;font-size:18px;margin-top:28px}p{margin:8px 0}a{color:#008BD5}</style></head><body>
+<h1>🐱 泡泡貓 隱私權政策</h1><p>最後更新：2026 年 3 月 15 日</p>
+<p>泡泡貓股份有限公司（統一編號：94256530，以下稱「本公司」）重視您的隱私權，特訂定本政策說明我們如何收集、使用及保護您的個人資料。</p>
+<h2>1. 資料收集</h2><p>當您透過 Instagram 回覆我們的限時動態或與我們互動時，我們可能會收到以下資訊：</p>
+<ul><li>您的 Instagram 用戶 ID</li><li>您發送的訊息內容</li><li>您回覆的限時動態資訊</li></ul>
+<p>當您使用我們的預約網站（book.paopaomao.tw）時，我們可能會收集：</p>
+<ul><li>您的姓名、電話號碼</li><li>您選擇的預約門市及時段</li><li>裝置定位資訊（僅在您授權時）</li></ul>
+<h2>2. 資料使用</h2><ul><li>回覆您的預約需求，提供門市資訊及預約連結</li><li>改善我們的服務品質</li><li>我們<strong>不會</strong>將您的資料出售或分享給無關第三方</li></ul>
+<h2>3. 資料保留</h2><p>我們僅在提供服務所需期間內保留您的資料。Instagram 互動紀錄保留不超過 90 天。</p>
+<h2>4. 資料刪除</h2><p>您可以隨時要求刪除您的個人資料：</p>
+<ul><li>透過 Instagram 封鎖或取消追蹤 @paopaomao_ 帳號</li><li>發送 Email 至 <a href="mailto:mktpaopao88@gmail.com">mktpaopao88@gmail.com</a> 請求刪除</li><li>透過資料刪除連結：<a href="https://gcp.paopaomao.tw/data-deletion">資料刪除請求</a></li></ul>
+<h2>5. Cookie 及追蹤</h2><p>我們的預約網站使用 Meta Pixel 追蹤廣告成效，您可透過瀏覽器設定管理 Cookie。</p>
+<h2>6. 第三方服務</h2><p>我們使用以下第三方服務：Meta (Facebook/Instagram)、LINE、Google。各服務的隱私政策請參閱其官方網站。</p>
+<h2>7. 聯絡方式</h2><p>泡泡貓股份有限公司<br>地址：407 台中市西屯區四川二街 38 號<br>Email：<a href="mailto:mktpaopao88@gmail.com">mktpaopao88@gmail.com</a><br>網站：<a href="https://paopaomao.tw">paopaomao.tw</a></p>
+</body></html>`);
+      return;
+    }
+
+    // Data Deletion Callback (Meta 要求)
+    if (method === 'GET' && url === '/data-deletion') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>資料刪除 - 泡泡貓</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif;max-width:600px;margin:40px auto;padding:0 20px;color:#333;line-height:1.8}h1{color:#008BD5}input,textarea{width:100%;padding:10px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;margin:6px 0 16px}button{background:#008BD5;color:#fff;border:none;padding:12px 32px;border-radius:8px;font-size:15px;cursor:pointer}button:hover{background:#006fa3}</style></head><body>
+<h1>🗑️ 資料刪除請求</h1><p>如果您希望刪除我們所持有的您的個人資料，請填寫以下表單，我們將在 30 天內處理。</p>
+<form method="POST" action="/data-deletion"><label>您的 Email<input type="email" name="email" required></label><label>Instagram 帳號（選填）<input type="text" name="ig_username"></label><label>說明<textarea name="note" rows="3" placeholder="請說明您希望刪除的資料"></textarea></label><button type="submit">提交刪除請求</button></form>
+</body></html>`);
+      return;
+    }
+    if (method === 'POST' && url === '/data-deletion') {
+      const rawBody = await parseBody(req);
+      try {
+        const params = new URLSearchParams(rawBody);
+        const email = params.get('email') || '';
+        const ig = params.get('ig_username') || '';
+        const note = params.get('note') || '';
+        console.log('[data-deletion] Request:', { email, ig, note });
+        // 通知 Robby
+        const TG_TOKEN = process.env.TG_BOT_TOKEN || '8520607475:AAHKn1oBOmTGloSzvM_Y0ps41tigRG3torc';
+        fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: '7956245081', text: `🗑️ 資料刪除請求\nEmail: ${email}\nIG: ${ig}\n說明: ${note}` })
+        }).catch(() => {});
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<html><body style="font-family:sans-serif;max-width:600px;margin:40px auto;padding:20px;text-align:center"><h2>✅ 已收到您的刪除請求</h2><p>我們將在 30 天內處理，並以 Email 通知您結果。</p><a href="https://paopaomao.tw">返回泡泡貓官網</a></body></html>');
+      } catch(e) {
+        res.writeHead(500);
+        res.end('Error');
+      }
+      return;
+    }
+
+    // IG Messaging Webhook (Story 回覆自動 DM)
+    if (method === 'GET' && url === '/ig-webhook') {
+      handleIgWebhookVerify(req.url, res);
+      return;
+    }
+    if (method === 'POST' && url === '/ig-webhook') {
+      const rawBody = await parseBody(req);
+      const signature = req.headers['x-hub-signature-256'] || '';
+      await handleIgWebhookEvent(rawBody, signature, res);
       return;
     }
 

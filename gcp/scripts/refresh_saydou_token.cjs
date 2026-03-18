@@ -58,7 +58,15 @@ async function main() {
 
   console.log('✅ Token 已寫入 Sheet');
 
-  // 5. Calculate expiry
+  // 5. Write to local booking-site token file
+  try {
+    fs.writeFileSync('/Users/paopaomao/.openclaw/workspace/booking-site/.saydou-token', newToken);
+    console.log('✅ Token 已寫入 booking-site/.saydou-token');
+  } catch (e) {
+    console.warn('⚠️ 無法寫入 booking-site token:', e.message);
+  }
+
+  // 6. Calculate expiry
   try {
     const payload = JSON.parse(Buffer.from(newToken.split('.')[1], 'base64').toString());
     const expDate = new Date(payload.exp * 1000);

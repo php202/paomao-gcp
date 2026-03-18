@@ -11,6 +11,7 @@
  */
 
 const puppeteer = require('puppeteer');
+const delay = ms => new Promise(r => setTimeout(r, ms));
 const fs = require('fs');
 const path = require('path');
 const { OpenAI } = require('openai');
@@ -85,7 +86,7 @@ async function main() {
     // 1. Navigate to login page
     console.log('[sinopac] 開啟登入頁...');
     await page.goto(SINOPAC_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-    await page.waitForTimeout(2000);
+    await delay(2000);
     
     // 2. Fill login form
     // Company ID (用戶代號)
@@ -128,7 +129,7 @@ async function main() {
     console.log('[sinopac] 登入...');
     const loginBtn = await page.$('button[type="submit"], input[type="submit"], a[onclick*="login"], button[id*="login"]');
     if (loginBtn) await loginBtn.click();
-    await page.waitForTimeout(5000);
+    await delay(5000);
     
     // Check login success (look for menu or error)
     const pageContent = await page.content();
@@ -146,7 +147,7 @@ async function main() {
       const text = await page.evaluate(el => el.textContent, link);
       if (text && text.includes('收款服務')) {
         await link.click();
-        await page.waitForTimeout(2000);
+        await delay(2000);
         break;
       }
     }
@@ -156,7 +157,7 @@ async function main() {
       const text = await page.evaluate(el => el.textContent, link);
       if (text && text.includes('ACH收付款')) {
         await link.click();
-        await page.waitForTimeout(2000);
+        await delay(2000);
         break;
       }
     }
@@ -166,14 +167,14 @@ async function main() {
       const text = await page.evaluate(el => el.textContent, link);
       if (text && (text.includes('結果回覆') || text.includes('檔案下載'))) {
         await link.click();
-        await page.waitForTimeout(3000);
+        await delay(3000);
         break;
       }
     }
     
     // 6. Look for download links/buttons for today's files
     console.log('[sinopac] 尋找可下載的回覆檔...');
-    await page.waitForTimeout(3000);
+    await delay(3000);
     
     // Find and click download buttons for media files (_M_)
     const downloadLinks = await page.$$('a[href*="download"], button[onclick*="download"], a[onclick*="download"]');
@@ -182,7 +183,7 @@ async function main() {
       if (text.includes('媒體檔') || text.includes('_M_')) {
         console.log(`[sinopac] 下載: ${text}`);
         await link.click();
-        await page.waitForTimeout(3000);
+        await delay(3000);
       }
     }
     
@@ -193,12 +194,12 @@ async function main() {
       if (text.includes('下載') || text.includes('媒體')) {
         console.log(`[sinopac] 點擊下載按鈕: ${text}`);
         await btn.click();
-        await page.waitForTimeout(3000);
+        await delay(3000);
       }
     }
     
     // 7. Check what was downloaded
-    await page.waitForTimeout(5000);
+    await delay(5000);
     const files = fs.readdirSync(DOWNLOAD_DIR)
       .filter(f => f.startsWith('94256530_NEP01_') && f.endsWith('.TXT'))
       .map(f => ({

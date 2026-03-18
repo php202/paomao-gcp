@@ -15,8 +15,8 @@
 
 const fs = require('fs');
 const { Pool } = require('pg');
-const xmlrpc = require('xmlrpc');
 const { google } = require('googleapis');
+const { odooCall } = require('../lib/odoo.cjs');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const MONTH_ARG = process.argv.find((_, i, a) => a[i - 1] === '--month');
@@ -29,18 +29,6 @@ const TG_BOT_TOKEN = (() => {
   try { return fs.readFileSync('/Users/paopaomao/.openclaw/secrets/telegram-bot-token.txt', 'utf8').trim(); } catch { return ''; }
 })();
 const TG_CHAT_ROBBY = '7956245081';
-
-// ── Odoo ──
-const odooConfig = JSON.parse(fs.readFileSync('/Users/paopaomao/.openclaw/secrets/odoo-config.json', 'utf8'));
-function odooCall(model, method, args, kwargs = {}) {
-  return new Promise((resolve, reject) => {
-    const client = xmlrpc.createSecureClient({ host: 'paomao.odoo.com', port: 443, path: '/xmlrpc/2/object' });
-    client.methodCall('execute_kw', [
-      odooConfig.db || 'paomao', odooConfig.uid || 6, odooConfig.password,
-      model, method, args, kwargs
-    ], (err, val) => err ? reject(err) : resolve(val));
-  });
-}
 
 // ── TG ──
 async function sendTG(chatId, text) {
@@ -143,7 +131,8 @@ async function main() {
           }]);
           const order = await odooCall('sale.order', 'read', [[orderId]], { fields: ['name'] });
           odooOrderName = order[0]?.name;
-          console.log(`    → Odoo: ${odooOrderName}`);
+          await odooCall('sale.order', 'write', [[orderId], { state: 'sent' }]);
+          console.log(`    → Odoo: ${odooOrderName} → sent`);
         } else {
           console.warn(`    ⚠️ Odoo partner not found for ${shortName}`);
         }

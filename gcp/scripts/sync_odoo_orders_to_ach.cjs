@@ -21,8 +21,8 @@
 
 const fs = require('fs');
 const { Pool } = require('pg');
-const xmlrpc = require('xmlrpc');
 const { google } = require('googleapis');
+const { odooCall } = require('../lib/odoo.cjs');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const DAYS = parseInt(process.argv.find((_, i, a) => a[i - 1] === '--days') || '30');
@@ -34,19 +34,6 @@ const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN || (() => {
 })();
 const TG_CHAT_ROBBY = '7956245081';
 const TG_CHAT_OFFICE = '-5220564261';
-
-// ── Odoo XML-RPC ──
-const odooConfig = JSON.parse(fs.readFileSync('/Users/paopaomao/.openclaw/secrets/odoo-config.json', 'utf8'));
-
-function odooCall(model, method, args, kwargs = {}) {
-  return new Promise((resolve, reject) => {
-    const client = xmlrpc.createSecureClient({ host: 'paomao.odoo.com', port: 443, path: '/xmlrpc/2/object' });
-    client.methodCall('execute_kw', [
-      odooConfig.db || 'paomao', odooConfig.uid || 6, odooConfig.password,
-      model, method, args, kwargs
-    ], (err, val) => err ? reject(err) : resolve(val));
-  });
-}
 
 // ── TG notification ──
 async function sendTG(chatId, text) {
@@ -94,11 +81,16 @@ async function main() {
   if (!newOrders.length) { console.log('[sync-odoo-ach] ✅ 無新訂單'); await pool.end(); return; }
 
   // 3. Load store mapping (company → store)
+  // Use stores.payee_id (主要關聯代號) to avoid multi-payee ambiguity
   const { rows: storeRows } = await pool.query(`
-    SELECT s.id as store_id, s.store_name, s.company, p.code as payee_code, p.id as payee_id
+    SELECT s.id as store_id, s.store_name, s.company, 
+           dp.code as payee_code, 
+           s.payee_id as payee_id,
+           s.goods_payee_id,
+           gp.code as goods_payee_code
     FROM stores s
-    LEFT JOIN payee_stores ps ON ps.store_id = s.id
-    LEFT JOIN payees p ON p.id = ps.payee_id
+    LEFT JOIN payees dp ON s.payee_id = dp.id
+    LEFT JOIN payees gp ON s.goods_payee_id = gp.id
     WHERE s.company IS NOT NULL AND s.company != ''
   `);
   // Map by company name (exact) and also partial match
@@ -139,9 +131,10 @@ async function main() {
     }
 
     const storeName = storeInfo ? storeInfo.store_name.replace('泡泡貓｜', '') : partnerName;
-    const payeeCode = storeInfo?.payee_code || '';
+    // 貨款用 goods_payee（有設的話），否則用預設 payee
+    const payeeCode = (storeInfo?.goods_payee_code || storeInfo?.payee_code) || '';
     const storeId = storeInfo?.store_id || null;
-    const payeeId = storeInfo?.payee_id || null;
+    const payeeId = (storeInfo?.goods_payee_id || storeInfo?.payee_id) || null;
 
     // Format date: M/D from date_order (UTC+8)
     const orderDate = new Date(order.date_order);

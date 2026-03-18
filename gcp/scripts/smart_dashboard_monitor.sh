@@ -1,198 +1,161 @@
 #!/bin/bash
+# 智能服務監控系統 — 檢查所有關鍵服務，異常自動重啟+通知
+# Cron: 每 30 分鐘或每小時執行一次
 
-# 智能 Dashboard 監控系統 - 帶錯誤記錄和自動修復
 LOG_DIR="$HOME/.openclaw/workspace/logs/dashboard-monitor"
 LOG_FILE="$LOG_DIR/monitor.log"
-ERROR_LOG="$LOG_DIR/errors.log"
-DASHBOARD_DIR="$HOME/泡泡貓/dashboard"
-
-# 創建 log 目錄
 mkdir -p "$LOG_DIR"
 
-# 記錄函數
-log_info() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: $1" | tee -a "$LOG_FILE"
+TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
+TG_CHAT_ID="7956245081"  # Robby 私訊
+TS=$(date '+%Y-%m-%d %H:%M:%S')
+
+log() { echo "[$TS] $1" >> "$LOG_FILE"; }
+notify() {
+  if [ -n "$TG_BOT_TOKEN" ]; then
+    curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+      -H 'Content-Type: application/json' \
+      -d "{\"chat_id\":\"$TG_CHAT_ID\",\"text\":\"$1\",\"parse_mode\":\"HTML\"}" > /dev/null 2>&1
+  fi
 }
 
-log_error() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1" | tee -a "$ERROR_LOG" -a "$LOG_FILE"
+ISSUES=()
+FIXED=()
+
+# ─── 1. Dashboard (port 3000) ───
+check_service() {
+  local name="$1" port="$2" plist="$3" health_path="${4:-/}"
+  local http=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${port}${health_path}" --max-time 5 2>/dev/null)
+  
+  if [ "$http" = "200" ] || [ "$http" = "302" ] || [ "$http" = "301" ]; then
+    log "✅ ${name} (port ${port}): OK (HTTP ${http})"
+    return 0
+  else
+    log "❌ ${name} (port ${port}): DOWN (HTTP ${http})"
+    ISSUES+=("${name} port ${port} 無回應 (HTTP ${http})")
+    
+    # 嘗試用 launchctl 重啟
+    if [ -n "$plist" ]; then
+      log "⚡ 嘗試重啟 ${plist}..."
+      launchctl kickstart -k "gui/$(id -u)/${plist}" 2>/dev/null
+      sleep 5
+      
+      local http2=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${port}" --max-time 5 2>/dev/null)
+      if [ "$http2" = "200" ] || [ "$http2" = "302" ] || [ "$http2" = "301" ]; then
+        log "✅ ${name} 重啟成功"
+        FIXED+=("${name} 已自動重啟恢復")
+      else
+        log "❌ ${name} 重啟失敗 (HTTP ${http2})"
+      fi
+    fi
+    return 1
+  fi
 }
 
-log_success() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: $1" | tee -a "$LOG_FILE"
-}
-
-# 檢查服務狀態
-check_dashboard_service() {
-    # 檢查是否有在 dashboard 目錄運行的 server.js
-    if ps aux | grep -E "dashboard.*server\.js|/dashboard/server\.js" | grep -v grep > /dev/null; then
-        return 0  # 運行中
-    # 也檢查在 dashboard 目錄下運行的 node server.js 
-    elif cd "$DASHBOARD_DIR" 2>/dev/null && ps aux | grep "node server.js" | grep -v grep > /dev/null; then
-        return 0  # 運行中
+# ─── 2. PostgreSQL ───
+check_postgres() {
+  local PSQL="/opt/homebrew/Cellar/libpq/18.3/bin/psql"
+  if [ ! -f "$PSQL" ]; then
+    PSQL=$(find /opt/homebrew -name psql -type f 2>/dev/null | head -1)
+  fi
+  
+  if [ -n "$PSQL" ]; then
+    if $PSQL -U paopaomao -d paomao -c "SELECT 1" > /dev/null 2>&1; then
+      log "✅ PostgreSQL: OK"
     else
-        return 1  # 未運行
+      log "❌ PostgreSQL: 連線失敗"
+      ISSUES+=("PostgreSQL 資料庫連線失敗")
+      # 嘗試重啟
+      brew services restart postgresql@17 2>/dev/null
+      sleep 3
+      if $PSQL -U paopaomao -d paomao -c "SELECT 1" > /dev/null 2>&1; then
+        FIXED+=("PostgreSQL 已自動重啟恢復")
+      fi
     fi
+  else
+    log "⚠️ psql 找不到，跳過 DB 檢查"
+  fi
 }
 
-# 檢查服務健康度
-check_dashboard_health() {
-    local health_response=$(curl -s -w "%{http_code}" http://localhost:3000 -o /dev/null 2>/dev/null)
-    
-    if [ "$health_response" = "302" ] || [ "$health_response" = "200" ]; then
-        return 0  # 健康
+# ─── 3. Cloudflare Tunnel ───
+check_tunnel() {
+  if pgrep -f cloudflared > /dev/null 2>&1; then
+    log "✅ Cloudflare Tunnel: 運行中"
+  else
+    log "❌ Cloudflare Tunnel: 未運行"
+    ISSUES+=("Cloudflare Tunnel 停止運行")
+    launchctl kickstart -k "gui/$(id -u)/com.paopaomao.cloudflared" 2>/dev/null
+    sleep 3
+    if pgrep -f cloudflared > /dev/null 2>&1; then
+      FIXED+=("Cloudflare Tunnel 已自動重啟")
+    fi
+  fi
+}
+
+# ─── 4. 磁碟空間 ───
+check_disk() {
+  local usage=$(df -h / | tail -1 | awk '{print $5}' | tr -d '%')
+  if [ "$usage" -gt 90 ]; then
+    log "⚠️ 磁碟使用率 ${usage}%"
+    ISSUES+=("磁碟使用率 ${usage}% (>90%)")
+  else
+    log "✅ 磁碟: ${usage}%"
+  fi
+}
+
+# ─── 5. 記憶體 ───
+check_memory() {
+  # macOS: 用 vm_stat
+  local pages_free=$(vm_stat 2>/dev/null | grep "Pages free" | awk '{print $3}' | tr -d '.')
+  local pages_inactive=$(vm_stat 2>/dev/null | grep "Pages inactive" | awk '{print $3}' | tr -d '.')
+  if [ -n "$pages_free" ]; then
+    local free_mb=$(( (pages_free + pages_inactive) * 4096 / 1024 / 1024 ))
+    if [ "$free_mb" -lt 500 ]; then
+      log "⚠️ 可用記憶體偏低: ${free_mb}MB"
+      ISSUES+=("可用記憶體偏低: ${free_mb}MB")
     else
-        log_error "Dashboard HTTP 健康檢查失敗 (HTTP: $health_response)"
-        return 1  # 不健康
+      log "✅ 記憶體: ${free_mb}MB 可用"
     fi
+  fi
 }
 
-# 檢查資料庫連接
-check_database_connection() {
-    if command -v psql >/dev/null 2>&1; then
-        if psql -h localhost -d paomao -c "SELECT 1;" >/dev/null 2>&1; then
-            return 0  # 資料庫正常
-        else
-            log_error "PostgreSQL 資料庫連接失敗"
-            return 1
-        fi
-    else
-        log_info "psql 命令不可用，跳過資料庫檢查"
-        return 0
-    fi
-}
+# ═══ 執行所有檢查 ═══
+log "========== 監控開始 =========="
 
-# 重啟 Dashboard 服務
-restart_dashboard() {
-    log_info "正在重啟 Dashboard 服務..."
-    
-    # 停止現有進程
-    local pids=$(pgrep -f 'dashboard/server.js')
-    if [ -n "$pids" ]; then
-        echo $pids | xargs kill
-        sleep 3
-        log_info "已停止舊的 Dashboard 進程: $pids"
-    fi
-    
-    # 檢查端口占用
-    local port_check=$(lsof -ti:3000 2>/dev/null || true)
-    if [ -n "$port_check" ]; then
-        log_error "端口 3000 被占用，進程: $port_check"
-        echo $port_check | xargs kill -9 2>/dev/null || true
-        sleep 2
-    fi
-    
-    # 啟動新服務
-    cd "$DASHBOARD_DIR" || {
-        log_error "無法進入 Dashboard 目錄: $DASHBOARD_DIR"
-        return 1
-    }
-    
-    # 清理舊的 log
-    if [ -f server.log ]; then
-        cp server.log "server.log.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-        > server.log
-    fi
-    
-    # 啟動服務
-    npm start > server.log 2>&1 &
-    sleep 5
-    
-    # 驗證啟動
-    if check_dashboard_service && check_dashboard_health; then
-        log_success "Dashboard 服務重啟成功"
-        return 0
-    else
-        log_error "Dashboard 服務重啟失敗"
-        
-        # 記錄錯誤詳情
-        if [ -f server.log ]; then
-            echo "--- Dashboard 啟動錯誤 ---" >> "$ERROR_LOG"
-            tail -20 server.log >> "$ERROR_LOG"
-            echo "--- 錯誤記錄結束 ---" >> "$ERROR_LOG"
-        fi
-        
-        return 1
-    fi
-}
+check_service "Dashboard" 3000 "com.paopaomao.dashboard-server"
+check_service "GCP Server" 3850 "com.paopaomao.gcp-server"
+check_service "LINE 自動回覆" 3800 "" "/health"
+check_service "預約網站" 3457 "com.paopaomao.booking-site"
+check_service "Checklist" 3456 "com.paopaomao.checklist-server"
+check_postgres
+check_tunnel
+check_disk
+check_memory
 
-# 收集系統診斷資訊
-collect_diagnostics() {
-    log_info "收集診斷資訊..."
-    
-    {
-        echo "=== 系統診斷報告 $(date) ==="
-        echo "1. 進程狀態:"
-        ps aux | grep -E "(dashboard|server\.js)" | grep -v grep || echo "   沒有找到相關進程"
-        
-        echo -e "\n2. 端口占用:"
-        lsof -ti:3000 2>/dev/null | while read pid; do
-            echo "   端口 3000 被進程 $pid 占用:"
-            ps -p $pid -o pid,ppid,cmd 2>/dev/null || echo "   進程資訊獲取失敗"
-        done
-        
-        echo -e "\n3. 系統資源:"
-        echo "   記憶體使用: $(free -h 2>/dev/null | grep Mem || echo '無法獲取')"
-        echo "   磁碟使用: $(df -h "$DASHBOARD_DIR" 2>/dev/null | tail -1 || echo '無法獲取')"
-        
-        echo -e "\n4. Dashboard 服務 log (最後 10 行):"
-        if [ -f "$DASHBOARD_DIR/server.log" ]; then
-            tail -10 "$DASHBOARD_DIR/server.log"
-        else
-            echo "   server.log 文件不存在"
-        fi
-        
-        echo -e "\n5. 最近的錯誤 (最後 5 個):"
-        if [ -f "$ERROR_LOG" ]; then
-            tail -20 "$ERROR_LOG" | grep ERROR | tail -5
-        else
-            echo "   沒有錯誤記錄"
-        fi
-        
-        echo "=== 診斷報告結束 ==="
-    } >> "$ERROR_LOG"
-}
+# ═══ 結果彙整 ═══
+if [ ${#ISSUES[@]} -eq 0 ]; then
+  log "✅ 全部服務正常"
+  echo "✅ 全部服務正常 ($TS)"
+else
+  MSG="⚠️ <b>服務監控警報</b> ($TS)\n"
+  for issue in "${ISSUES[@]}"; do
+    MSG+="❌ ${issue}\n"
+  done
+  if [ ${#FIXED[@]} -gt 0 ]; then
+    MSG+="\n🔧 <b>自動修復:</b>\n"
+    for fix in "${FIXED[@]}"; do
+      MSG+="✅ ${fix}\n"
+    done
+  fi
+  
+  notify "$MSG"
+  echo "$MSG"
+  log "發送告警通知"
+fi
 
-# 主監控邏輯
-main_monitor() {
-    log_info "開始 Dashboard 服務監控檢查"
-    
-    # 檢查服務狀態
-    if check_dashboard_service; then
-        log_info "Dashboard 進程運行中"
-        
-        # 檢查服務健康度
-        if check_dashboard_health; then
-            log_success "Dashboard 服務運行正常"
-            
-            # 檢查資料庫連接
-            if check_database_connection; then
-                log_info "資料庫連接正常"
-            fi
-            
-            echo "✅ Dashboard 服務運行正常"
-            return 0
-        else
-            log_error "Dashboard 服務響應異常，嘗試重啟"
-            collect_diagnostics
-            restart_dashboard
-        fi
-    else
-        log_error "Dashboard 服務已停止，正在重啟"
-        collect_diagnostics
-        restart_dashboard
-    fi
-}
+log "========== 監控結束 =========="
 
-# 執行監控
-main_monitor
-
-# 清理舊的 log 文件 (保留最近 7 天)
-find "$LOG_DIR" -name "*.log.*" -mtime +7 -delete 2>/dev/null || true
-
-# 如果 error log 太大，輪轉它
-if [ -f "$ERROR_LOG" ] && [ $(wc -l < "$ERROR_LOG") -gt 1000 ]; then
-    mv "$ERROR_LOG" "$ERROR_LOG.$(date +%Y%m%d-%H%M%S)"
-    touch "$ERROR_LOG"
-    log_info "錯誤 log 已輪轉"
+# 清理 7 天前的 log
+if [ $(wc -l < "$LOG_FILE" 2>/dev/null || echo 0) -gt 5000 ]; then
+  tail -1000 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
 fi

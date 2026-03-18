@@ -15,8 +15,8 @@
 
 const { google } = require('googleapis');
 const pg = require('pg');
-const xmlrpc = require('xmlrpc');
 const fs = require('fs');
+const { odooCall } = require('../lib/odoo.cjs');
 
 // ─── Config ───
 const ACH_SHEET_ID = '17hX7CjeDj2xdKBIt9TKG6iJF5lB38uXwj2kdhb4oIQE';
@@ -27,8 +27,6 @@ const ODOO_PRODUCT_ID = 724; // "ACH 匯款項目"
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN || '';
 const TG_CHAT_ID = '7956245081'; // Robby 私訊
 const TG_OFFICE_GROUP = '-5220564261';
-
-const odooConfig = JSON.parse(fs.readFileSync('/Users/paopaomao/.openclaw/secrets/odoo-config.json', 'utf8'));
 
 // ─── Args ───
 const args = process.argv.slice(2);
@@ -61,21 +59,8 @@ async function getAuth() {
   return auth.getClient();
 }
 
-function odooCall(model, method, args, kwargs = {}) {
-  return new Promise((resolve, reject) => {
-    const client = xmlrpc.createSecureClient({ host: 'paomao.odoo.com', port: 443, path: '/xmlrpc/2/object' });
-    client.methodCall('execute_kw', [odooConfig.db, 6, odooConfig.password, model, method, args, kwargs], (err, val) => {
-      if (err) {
-        // Odoo wizard methods return None → xmlrpc marshal error; treat as success
-        if (err.message && err.message.includes('Cannot read response')) {
-          resolve(null);
-        } else {
-          reject(err);
-        }
-      } else resolve(val);
-    });
-  });
-}
+// ─── odooCall: see ../lib/odoo.cjs ───
+// Note: xmlrpc 的 "Cannot read response" (None return) 在 JSON-RPC 中 json.result 為 null，不拋錯
 
 async function sendTG(chatId, text) {
   if (!TG_BOT_TOKEN) { console.log('[TG skip]', text); return; }
@@ -305,7 +290,9 @@ async function main() {
         }]);
         const so = await odooCall('sale.order', 'read', [soId], { fields: ['name'] });
         odooOrderName = so[0].name;
-        console.log(`  ✅ ${shortName}: SO ${odooOrderName} ($${r.amount.toLocaleString()})`);
+        // 自動改 sent 狀態（方便 09:00/17:00 定時通知）
+        await odooCall('sale.order', 'write', [[soId], { state: 'sent' }]);
+        console.log(`  ✅ ${shortName}: SO ${odooOrderName} ($${r.amount.toLocaleString()}) → sent`);
       } else {
         // Create Purchase Order (negative amount)
         const poId = await odooCall('purchase.order', 'create', [{

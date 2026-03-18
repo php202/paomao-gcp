@@ -5,11 +5,13 @@ import { appendSheet, readSheet, writeSheet, batchUpdateValues } from '../lib/sh
 import { getDirectStoreReplyStatusText } from '../lib/store-reply-status.js';
 import { sendAdminLinePush } from '../lib/line-push.js';
 import { sendJson } from './http-utils.js';
+import { odooCall } from '../lib/odoo.js';
 
 import fs from 'fs';
 
 // PostgreSQL connection for delete orders
-const pgPool = new Pool({ database: 'paomao', host: 'localhost', port: 5432, max: 3 });
+const pgPool = new Pool({ database: 'paomao', host: 'localhost', port: 5432, max: 5 });
+pgPool.on('error', (err) => console.error('[paopao-webhook] Pool idle client error:', err.message));
 
 // SayDou API
 const SAYDOU_API = 'https://saywebdatafeed.saydou.com';
@@ -189,15 +191,19 @@ function parseDeleteOrderText(text) {
   
   for (const line of lines) {
     if (line.includes('客人姓名')) {
-      data.customerName = line.replace(/.*客人姓名[：:]\s*/, '').trim();
+      data.customerName = line.replace(/.*客人姓名\s*[：:]\s*/, '').trim();
     } else if (line.includes('訂單編號')) {
-      data.orderId = line.replace(/.*訂單編號[：:]\s*/, '').trim();
-    } else if (line.includes('電話')) {
-      data.phone = line.replace(/.*電話[：:]\s*/, '').trim();
-    } else if (line.includes('需刪除的原因')) {
-      data.reason = line.replace(/.*需刪除的原因[：:]\s*/, '').trim();
+      data.orderId = line.replace(/.*訂單編號\s*[：:]\s*/, '').trim();
+    } else if (line.includes('需刪除的原因') || line.includes('刪除原因')) {
+      // ⚠️ 「需刪除的原因」必須在「電話」之前判斷，因為原因內容可能包含「電話」二字
+      data.reason = line.replace(/.*(?:需刪除的原因|刪除原因)\s*[：:]\s*/, '').trim();
+    } else if (/電話|手機/.test(line)) {
+      const phoneStr = line.replace(/.*(?:電話|手機)\s*[：:]\s*/, '').trim();
+      // 只取數字部分（防止後面夾雜文字）
+      const phoneMatch = phoneStr.match(/^(0\d{8,9})/);
+      data.phone = phoneMatch ? phoneMatch[1] : phoneStr;
     } else if (line.includes('金額')) {
-      const amountStr = line.replace(/.*金額[：:]\s*/, '').replace(/[^\d.-]/g, '');
+      const amountStr = line.replace(/.*金額\s*[：:]\s*/, '').replace(/[^\d.-]/g, '');
       data.amount = parseFloat(amountStr) || 0;
     }
   }
@@ -227,10 +233,10 @@ async function searchSayDouOrder(phone, customerName, orderId) {
     }
     
     const member = members[0];
-    const memberId = member.id || member._id || '';
+    const memberId = member.membid || member.id || member._id || '';
     
-    // 查交易記錄（用姓名）
-    const transRes = await fetch(`${SAYDOU_API}/api/management/finance/transaction?keyword=${encodeURIComponent(customerName)}`, {
+    // 查交易記錄（用 membid，比姓名精準）
+    const transRes = await fetch(`${SAYDOU_API}/api/management/finance/transaction?keyword=&membid=${memberId}&page=0&limit=50&sort=ordrsn&order=desc`, {
       headers, signal: AbortSignal.timeout(20000)
     });
     const transData = await transRes.json();
@@ -293,11 +299,274 @@ async function searchSayDouOrder(phone, customerName, orderId) {
       }
     }
     
+    // 最後手段：直接用訂單編號搜交易（不依賴 membid，處理手機號碼錯誤的情況）
+    if (orderId) {
+      console.log('[delete-order] membid 查不到，改用 ordrsn 直接搜:', orderId);
+      try {
+        const directRes = await fetch(`${SAYDOU_API}/api/management/finance/transaction?keyword=${encodeURIComponent(orderId)}&page=0&limit=10&sort=ordrsn&order=desc`, {
+          headers, signal: AbortSignal.timeout(20000)
+        });
+        const directData = await directRes.json();
+        const directItems = directData?.data?.items || directData?.data || [];
+        // ordrsn 可能有重複（不同門市/會員），需要用姓名+金額輔助比對
+        const exactMatches = directItems.filter(t =>
+          t.ordrsn && String(t.ordrsn) === String(orderId)
+        );
+        let directMatch = null;
+        if (exactMatches.length === 1) {
+          directMatch = exactMatches[0];
+        } else if (exactMatches.length > 1) {
+          // 多筆同 ordrsn，優先比對：客人姓名 > 金額
+          directMatch = exactMatches.find(t => t.memnam === customerName) 
+            || exactMatches.find(t => {
+              const amt = parseFloat(t.rprice || t.price_ || 0);
+              // 找到金額和申請者提供的一致的（如果有提供金額的話）
+              return amt > 0 && exactMatches.filter(x => parseFloat(x.rprice || x.price_ || 0) === amt).length === 1;
+            })
+            || exactMatches[0]; // fallback 取第一筆
+          console.log('[delete-order] ordrsn 有', exactMatches.length, '筆重複, 選 ordcid:', directMatch.ordcid, 'memnam:', directMatch.memnam);
+        }
+        if (directMatch) {
+          const nameMatch = directMatch.memnam === customerName;
+          console.log('[delete-order] 用 ordrsn 直接找到! ordcid:', directMatch.ordcid, 'membid:', directMatch.membid, 'nameMatch:', nameMatch);
+          return {
+            found: true,
+            type: 'transaction',
+            memberId: String(directMatch.membid),
+            ordcid: String(directMatch.ordcid),
+            ordrsn: String(directMatch.ordrsn || ''),
+            transactionData: directMatch,
+            actualAmount: parseFloat(directMatch.rprice || directMatch.price_ || directMatch.total || directMatch.amount || 0),
+            storeName: directMatch.stor?.stonam || '',
+            note: nameMatch ? '' : `⚠️ 手機號碼與訂單會員不同（訂單會員：${directMatch.memnam}），請確認`
+          };
+        }
+      } catch (e) {
+        console.error('[delete-order] direct ordrsn search error:', e.message);
+      }
+    }
+
     return { found: false, reason: 'order_not_matched' };
     
   } catch (error) {
     console.error('[delete-order] searchSayDouOrder error:', error.message);
     return { found: false, reason: 'api_error', error: error.message };
+  }
+}
+
+/** IG Story 空位：每日每店限用一次的 rate limit */
+const slotStoryDailyUsage = new Map(); // key: "YYYY-MM-DD:storeName" → true
+
+/** 處理「幫我發送空位」請求 */
+async function handleSlotStoryRequest(event) {
+  const text = String(event?.message?.text || '').trim();
+  // 格式：【幫我發送空位：竹北光明店】或 幫我發送空位：竹北光明
+  const match = text.match(/幫我發送空位[：:](.+)/);
+  if (!match) return false;
+
+  const rawStoreName = match[1].replace(/[【】\s]/g, '').replace(/店$/, '').trim();
+  if (!rawStoreName) {
+    await replyText(event.replyToken, '⚠️ 請指定店名\n\n格式：幫我發送空位：竹北光明店');
+    return true;
+  }
+
+  // 權限檢查：只有該店關聯的群組才能發送
+  const sourceGroupId = event?.source?.groupId;
+  if (!sourceGroupId) {
+    // 個人聊天一律擋掉，已讀不回
+    return true;
+  }
+  // 群組：檢查是否為該店的群組
+  try {
+    const { rows } = await pgPool.query(
+      `SELECT s.store_name FROM stores s
+       JOIN payee_stores ps ON ps.store_id = s.id
+       JOIN payees p ON p.id = ps.payee_id
+       WHERE p.line_group_id = $1
+       AND s.store_name ILIKE $2`,
+      [sourceGroupId, `%${rawStoreName}%`]
+    );
+    if (rows.length === 0) {
+      // 沒關聯的群組：已讀不回
+      return true;
+    }
+  } catch (e) {
+    console.error('[slot-story] group check error:', e.message);
+    return true;
+  }
+
+  // Rate limit: 一天一店一次
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+  const rateKey = `${today}:${rawStoreName}`;
+  if (slotStoryDailyUsage.has(rateKey)) {
+    await replyText(event.replyToken, `⚠️ ${rawStoreName}店 今天已經發送過空位 Story 了\n\n每間店每天限發一次`);
+    return true;
+  }
+
+  // 回覆「處理中」
+  await replyText(event.replyToken, `⏳ 正在查詢 ${rawStoreName}店 空位並產生 IG Story...`);
+
+  try {
+    const { execSync } = await import('child_process');
+    const result = execSync(
+      `cd ${process.env.HOME}/paomao-gcp/gcp && GOOGLE_APPLICATION_CREDENTIALS=${process.env.HOME}/.openclaw/secrets/gcp-service-account.json /opt/homebrew/bin/node scripts/ig_story_slots.mjs --store "${rawStoreName}"`,
+      { encoding: 'utf8', timeout: 90000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: '/opt/homebrew/bin:/opt/homebrew/opt/postgresql@17/bin:/usr/bin:/bin' } }
+    );
+    
+    console.log('[slot-story]', result);
+    
+    const source = event.source || {};
+    const targetId = source.groupId || source.roomId || source.userId;
+
+    // 檢查是否滿位
+    const fullMatch = result.match(/FULL:(.+)/);
+    if (fullMatch) {
+      if (targetId && PAOPAO_TOKEN) {
+        await fetch('https://api.line.me/v2/bot/message/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${PAOPAO_TOKEN}` },
+          body: JSON.stringify({
+            to: targetId,
+            messages: [{ type: 'text', text: `🎉 ${rawStoreName}店 今明兩天都滿了，很棒！` }]
+          })
+        });
+      }
+      return true;
+    }
+
+    // 有空位 → 產圖預覽（不直接發 IG）
+    const previewMatch = result.match(/PREVIEW:(.+)/);
+    const previewUrl = previewMatch ? previewMatch[1].trim() : null;
+
+    slotStoryDailyUsage.set(rateKey, true);
+    
+    if (targetId && PAOPAO_TOKEN && previewUrl) {
+      const flexMsg = {
+        type: 'flex',
+        altText: `📋 ${rawStoreName}店 空位預覽`,
+        contents: {
+          type: 'bubble',
+          hero: {
+            type: 'image',
+            url: previewUrl,
+            size: 'full',
+            aspectRatio: '9:16',
+            aspectMode: 'cover'
+          },
+          body: {
+            type: 'box',
+            layout: 'vertical',
+            contents: [
+              { type: 'text', text: `📋 ${rawStoreName}店 空位預覽`, weight: 'bold', size: 'md' },
+              { type: 'text', text: '確認沒問題後，按下方按鈕發布到 IG Story', size: 'xs', color: '#888888', margin: 'sm', wrap: true }
+            ]
+          },
+          footer: {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'button',
+                style: 'primary',
+                color: '#008BD5',
+                action: { type: 'postback', label: '✅ 發布到 IG', data: `action=publish_story&store=${encodeURIComponent(rawStoreName)}&url=${encodeURIComponent(previewUrl)}`, displayText: `發布 ${rawStoreName}店 空位到 IG` }
+              },
+              {
+                type: 'button',
+                style: 'secondary',
+                action: { type: 'postback', label: '❌ 取消', data: `action=cancel_story&store=${encodeURIComponent(rawStoreName)}`, displayText: '取消發布' }
+              }
+            ]
+          }
+        }
+      };
+      await fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${PAOPAO_TOKEN}` },
+        body: JSON.stringify({ to: targetId, messages: [flexMsg] })
+      });
+    }
+  } catch (e) {
+    console.error('[slot-story] error:', JSON.stringify({ message: e.message?.slice(0,200), status: e.status, stderr: e.stderr?.slice(0,300), stdout: e.stdout?.slice(0,300) }));
+    const source = event.source || {};
+    const targetId = source.groupId || source.roomId || source.userId;
+    const rawErr = (e.stderr || e.message || '').replace(/\[auth\][^\n]*/g, '').trim();
+    const errMsg = `❌ 空位查詢失敗：${rawErr.slice(0, 80) || '系統錯誤'}`;
+    if (targetId && PAOPAO_TOKEN) {
+      await fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${PAOPAO_TOKEN}` },
+        body: JSON.stringify({ to: targetId, messages: [{ type: 'text', text: errMsg }] })
+      });
+    }
+  }
+  return true;
+}
+
+/** 處理「發布空位 Story」postback */
+async function handlePublishStoryPostback(event, params) {
+  const storeName = decodeURIComponent(params.store || '');
+  const imageUrl = decodeURIComponent(params.url || '');
+  
+  if (!imageUrl) {
+    await replyText(event.replyToken, '❌ 找不到預覽圖片 URL');
+    return;
+  }
+
+  await replyText(event.replyToken, `⏳ 正在發布 ${storeName}店 空位到 IG Story...`);
+
+  try {
+    const META_TOKEN = fs.readFileSync(`${process.env.HOME}/.openclaw/secrets/meta-token.txt`, 'utf8').trim();
+    const IG_USER_ID = '17841463367279845';
+
+    // Create container
+    const createRes = await fetch(`https://graph.facebook.com/v21.0/${IG_USER_ID}/media`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ media_type: 'STORIES', image_url: imageUrl, access_token: META_TOKEN })
+    });
+    const createData = await createRes.json();
+    if (!createData.id) throw new Error(`Container 失敗: ${JSON.stringify(createData).slice(0, 100)}`);
+
+    // Wait for processing
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const s = await (await fetch(`https://graph.facebook.com/v21.0/${createData.id}?fields=status_code&access_token=${META_TOKEN}`)).json();
+      if (s.status_code === 'FINISHED') break;
+      if (s.status_code === 'ERROR') throw new Error('圖片處理失敗');
+    }
+
+    // Publish
+    const pubData = await (await fetch(`https://graph.facebook.com/v21.0/${IG_USER_ID}/media_publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ creation_id: createData.id, access_token: META_TOKEN })
+    })).json();
+
+    if (!pubData.id) throw new Error(`發布失敗: ${JSON.stringify(pubData).slice(0, 100)}`);
+
+    // Push success
+    const source = event.source || {};
+    const targetId = source.groupId || source.roomId || source.userId;
+    if (targetId && PAOPAO_TOKEN) {
+      await fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${PAOPAO_TOKEN}` },
+        body: JSON.stringify({ to: targetId, messages: [{ type: 'text', text: `✅ ${storeName}店 空位 Story 已發布到 @paopaomao_ IG！\nStory ID: ${pubData.id}` }] })
+      });
+    }
+  } catch (e) {
+    console.error('[publish-story]', e.message);
+    const source = event.source || {};
+    const targetId = source.groupId || source.roomId || source.userId;
+    if (targetId && PAOPAO_TOKEN) {
+      await fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${PAOPAO_TOKEN}` },
+        body: JSON.stringify({ to: targetId, messages: [{ type: 'text', text: `❌ 發布失敗：${e.message}` }] })
+      });
+    }
   }
 }
 
@@ -345,8 +614,8 @@ async function handleDeleteOrder(event) {
   // 檢查是否已有相同訂單的刪單請求（防重複）
   try {
     const { rows: existing } = await pgPool.query(
-      "SELECT id, status FROM delete_orders WHERE order_id = $1 AND status IN ('pending', 'deleted')",
-      [deleteData.orderId]
+      "SELECT id, status FROM delete_orders WHERE order_id = $1 AND phone = $2 AND status IN ('pending', 'deleted')",
+      [deleteData.orderId, deleteData.phone]
     );
     if (existing.length > 0) {
       const e = existing[0];
@@ -389,6 +658,18 @@ async function handleDeleteOrder(event) {
     ]);
     
     await replyText(event.replyToken, '泡泡貓會計正在審核中，請稍後。');
+
+    // 通知 TG 辦公室群有新的刪單待處理
+    const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN || (() => { try { return fs.readFileSync(`${process.env.HOME}/.openclaw/secrets/tg-bot-token.txt`, 'utf8').trim(); } catch { return ''; } })();
+    const noteLine = searchResult.note ? `\n⚠️ ${searchResult.note}` : '';
+    const tgMsg = `📋 新刪單申請\n客人：${deleteData.customerName}\n訂單：${deleteData.orderId}\n金額：$${deleteData.amount || searchResult.actualAmount}\n門市：${searchResult.storeName || sourceGroupName}\n申請人：${requestedBy}\n原因：${deleteData.reason || '未提供'}${noteLine}\n\n👉 請至 dashboard.paopaomao.tw/hq 確認刪除`;
+    try {
+      await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: '-5220564261', text: tgMsg })
+      });
+    } catch (tgErr) { console.error('[delete-order] TG notify error:', tgErr.message); }
     
   } catch (dbError) {
     await replyText(event.replyToken, '❌ 系統錯誤，請稍後再試。');
@@ -437,12 +718,10 @@ async function handleConfirmPostback(authClient, event) {
     rowIndex = sheetRow;
     // 從 DB 取 store_name 做收據用
     try {
-      const { Pool } = await import('pg');
-      const dbPool = new Pool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
-      const { rows: dbRows } = await dbPool.query(
+      // Using shared pgPool
+      const { rows: dbRows } = await pgPool.query(
         'SELECT store_name, customer_confirmed FROM ach_records WHERE id = $1 AND year = 2026', [dbId]
       );
-      await dbPool.end();
       if (dbRows.length === 0) {
         await replyText(event.replyToken, `⚠️ 找不到單號 ${dbId} 的資料。`);
         return;
@@ -494,20 +773,18 @@ async function handleConfirmPostback(authClient, event) {
   const confirmText = `${now} 由 ${userName} 確認`;
 
   try {
-    const { Pool } = await import('pg');
-    const dbPool = new Pool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
+    // Using shared pgPool
     if (resolvedDbId) {
-      await dbPool.query(
+      await pgPool.query(
         'UPDATE ach_records SET customer_confirmed = $1 WHERE id = $2 AND year = 2026',
         [confirmText, resolvedDbId]
       );
     } else {
-      await dbPool.query(
+      await pgPool.query(
         'UPDATE ach_records SET customer_confirmed = $1 WHERE sheet_row = $2 AND year = 2026',
         [confirmText, rowIndex]
       );
     }
-    await dbPool.end();
     console.log(`[paopao-webhook] ✅ ACH confirmed: dbId=${resolvedDbId || '?'} sheetRow=${rowIndex} by ${userName}`);
   } catch (dbErr) {
     console.error('[paopao-webhook] DB write failed:', dbErr?.message);
@@ -517,70 +794,108 @@ async function handleConfirmPostback(authClient, event) {
 
   // 3. Odoo actions: SO confirm / PO vendor bill
   try {
-    const { Pool: PgPool } = await import('pg');
-    const odooPool = new PgPool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
-    const { rows: achRows } = await odooPool.query(
+    // Using shared pgPool
+    const { rows: achRows } = await pgPool.query(
       'SELECT odoo_quote_id, fee_type FROM ach_records WHERE id = $1 AND year = 2026', [resolvedDbId]
     );
-    await odooPool.end();
 
     const quoteId = achRows[0]?.odoo_quote_id;
     if (quoteId && String(quoteId).trim()) {
-      const { default: xmlrpc } = await import('xmlrpc');
-      const { readFileSync } = await import('fs');
-      const odooConfig = JSON.parse(readFileSync('/Users/paopaomao/.openclaw/secrets/odoo-config.json', 'utf8'));
-      const odooClient = xmlrpc.createSecureClient({ host: 'paomao.odoo.com', port: 443, path: '/xmlrpc/2/object' });
-
-      const odooCall = (model, method, args, kwargs = {}) => new Promise((resolve, reject) => {
-        odooClient.methodCall('execute_kw', [odooConfig.db, 6, odooConfig.password, model, method, args, kwargs], (err, val) => {
-          if (err) {
-            if (err.message && err.message.includes('Cannot read response')) resolve(null);
-            else reject(err);
-          } else resolve(val);
-        });
-      });
+      // odooCall imported from ../lib/odoo.js
 
       if (quoteId.startsWith('S')) {
-        // Sale Order → confirm (draft → sale)
+        // Sale Order → confirm → create invoice → post → get INV number
         const soIds = await odooCall('sale.order', 'search', [[['name', '=', quoteId]]]);
         if (soIds && soIds.length > 0) {
-          const so = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['state'] });
-          if (so[0].state === 'draft') {
+          const so = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['state', 'invoice_ids'] });
+          // Step 1: Confirm SO if draft/sent
+          if (so[0].state === 'draft' || so[0].state === 'sent') {
             await odooCall('sale.order', 'action_confirm', [soIds]);
-            console.log(`[paopao-webhook] ✅ Odoo SO ${quoteId} confirmed`);
+            console.log(`[paopao-webhook] ✅ Odoo SO ${quoteId} confirmed (was ${so[0].state})`);
           } else {
             console.log(`[paopao-webhook] SO ${quoteId} already in state: ${so[0].state}`);
           }
-          // Write confirmed SO name to O column (odoo_invoice_id)
-          const confirmPool = new PgPool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
-          await confirmPool.query(
+          // Step 2: Create invoice if none exists
+          let invName = quoteId;
+          const soAfter = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['invoice_ids'] });
+          let invoiceIds = soAfter[0].invoice_ids || [];
+          if (invoiceIds.length === 0) {
+            try {
+              const wizardId = await odooCall('sale.advance.payment.inv', 'create', [{
+                advance_payment_method: 'delivered'
+              }], { context: { active_ids: soIds, active_model: 'sale.order' } });
+              await odooCall('sale.advance.payment.inv', 'create_invoices', [wizardId], { context: { active_ids: soIds, active_model: 'sale.order' } });
+              const soInv = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['invoice_ids'] });
+              invoiceIds = soInv[0].invoice_ids || [];
+              console.log(`[paopao-webhook] ✅ Invoice created for ${quoteId}`);
+            } catch (invErr) {
+              console.error(`[paopao-webhook] ⚠️ Invoice creation failed for ${quoteId}: ${invErr.message?.slice(0, 200)}`);
+            }
+          }
+          // Step 3: Post invoice to get INV number
+          if (invoiceIds.length > 0) {
+            const lastInvId = invoiceIds[invoiceIds.length - 1];
+            const inv = await odooCall('account.move', 'read', [lastInvId], { fields: ['name', 'state'] });
+            if (inv[0].state === 'draft') {
+              try {
+                await odooCall('account.move', 'action_post', [[lastInvId]]);
+                const invPosted = await odooCall('account.move', 'read', [lastInvId], { fields: ['name'] });
+                invName = invPosted[0].name || quoteId;
+                console.log(`[paopao-webhook] ✅ Invoice posted: ${invName}`);
+              } catch (postErr) {
+                console.error(`[paopao-webhook] ⚠️ Invoice post failed for ${quoteId}: ${postErr.message?.slice(0, 200)}`);
+                invName = inv[0].name || quoteId;
+              }
+            } else {
+              invName = inv[0].name || quoteId;
+            }
+          }
+          // Write INV number to DB
+          // Using shared pgPool
+          await pgPool.query(
             'UPDATE ach_records SET odoo_invoice_id = $1 WHERE id = $2 AND year = 2026',
-            [quoteId, resolvedDbId]
+            [invName, resolvedDbId]
           );
-          await confirmPool.end();
         }
       } else if (quoteId.startsWith('P')) {
-        // Purchase Order → create vendor bill
+        // Purchase Order → create vendor bill → post → get BILL number
         const poIds = await odooCall('purchase.order', 'search', [[['name', '=', quoteId]]]);
         if (poIds && poIds.length > 0) {
-          // Create vendor bill via action_create_invoice
-          await odooCall('purchase.order', 'action_create_invoice', [poIds]);
-          // Read the created bill
-          const po = await odooCall('purchase.order', 'read', [poIds[0]], { fields: ['invoice_ids'] });
-          const billIds = po[0]?.invoice_ids || [];
+          const po0 = await odooCall('purchase.order', 'read', [poIds[0]], { fields: ['invoice_ids'] });
+          let billIds = po0[0]?.invoice_ids || [];
+          // Create vendor bill if none exists
+          if (billIds.length === 0) {
+            await odooCall('purchase.order', 'action_create_invoice', [poIds]);
+            const po1 = await odooCall('purchase.order', 'read', [poIds[0]], { fields: ['invoice_ids'] });
+            billIds = po1[0]?.invoice_ids || [];
+          }
           let billName = quoteId;
           if (billIds.length > 0) {
-            const bill = await odooCall('account.move', 'read', [billIds[billIds.length - 1]], { fields: ['name'] });
-            billName = bill[0]?.name || quoteId;
+            const lastBillId = billIds[billIds.length - 1];
+            const bill = await odooCall('account.move', 'read', [lastBillId], { fields: ['name', 'state'] });
+            // Post if draft
+            if (bill[0].state === 'draft') {
+              try {
+                const today = new Date().toISOString().slice(0, 10);
+                await odooCall('account.move', 'write', [[lastBillId], { invoice_date: today }]);
+                await odooCall('account.move', 'action_post', [[lastBillId]]);
+                const billPosted = await odooCall('account.move', 'read', [lastBillId], { fields: ['name'] });
+                billName = billPosted[0]?.name || quoteId;
+              } catch (postErr) {
+                console.error(`[paopao-webhook] ⚠️ Bill post failed for ${quoteId}: ${postErr.message?.slice(0, 200)}`);
+                billName = bill[0]?.name || quoteId;
+              }
+            } else {
+              billName = bill[0]?.name || quoteId;
+            }
           }
-          console.log(`[paopao-webhook] ✅ Odoo PO ${quoteId} vendor bill created: ${billName}`);
+          console.log(`[paopao-webhook] ✅ Odoo PO ${quoteId} vendor bill: ${billName}`);
           // Write bill name to O column
-          const billPool = new PgPool({ host: '/tmp', database: 'paomao', user: 'paopaomao' });
-          await billPool.query(
+          // Using shared pgPool
+          await pgPool.query(
             'UPDATE ach_records SET odoo_invoice_id = $1 WHERE id = $2 AND year = 2026',
             [billName, resolvedDbId]
           );
-          await billPool.end();
         }
       }
     }
@@ -598,13 +913,223 @@ async function handleConfirmPostback(authClient, event) {
   }
 }
 
+/** 直營店「正確」按鈕 postback：直接在 Odoo 登記付款 (sale → paid)
+ *  postback data: action=direct_confirm&odooOrder=S01234
+ */
+async function handleDirectConfirmPostback(event) {
+  const params = parsePostbackParams(event?.postback?.data);
+  if (params.action !== 'direct_confirm') return false;
+
+  const odooOrder = params.odooOrder ? String(params.odooOrder).trim() : '';
+  if (!odooOrder) {
+    await replyText(event.replyToken, '⚠️ 無法取得訂單號碼。');
+    return true;
+  }
+
+  const source = event.source || {};
+  const userId = source.userId;
+  let userName = await fetchDisplayNameInSource(userId, source);
+  if (!userName) userName = '操作者';
+
+  try {
+    // odooCall imported from ../lib/odoo.js
+
+    // 1. Find SO
+    const soIds = await odooCall('sale.order', 'search', [[['name', '=', odooOrder]]]);
+    if (!soIds || soIds.length === 0) {
+      await replyText(event.replyToken, `⚠️ 找不到 Odoo 訂單 ${odooOrder}`);
+      return true;
+    }
+
+    const so = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['state'] });
+
+    // 2. Confirm SO (draft/sent → sale)
+    if (so[0].state === 'draft' || so[0].state === 'sent') {
+      await odooCall('sale.order', 'action_confirm', [soIds]);
+      console.log(`[direct-confirm] ✅ SO ${odooOrder} confirmed (was ${so[0].state})`);
+    } else {
+      console.log(`[direct-confirm] SO ${odooOrder} already in state: ${so[0].state}`);
+    }
+
+    await replyText(event.replyToken, `✅ ${odooOrder} 已確認，謝謝 ${userName}！`);
+    console.log(`[direct-confirm] ✅ ${odooOrder} confirmed by ${userName}`);
+  } catch (e) {
+    console.error(`[direct-confirm] ❌ ${odooOrder} failed:`, e.message?.slice(0, 300));
+    await replyText(event.replyToken, `⚠️ 處理失敗：${e.message?.slice(0, 100)}\n請通知總公司。`);
+  }
+  return true;
+}
+
+/** Dashboard「發送」按鈕 postback：action=so_confirm&orderId=xxx&orderName=S01xxx
+ *  1. 在 ach_records 裡找對應紀錄（by odoo_quote_id = orderName）
+ *  2. 寫 customer_confirmed
+ *  3. Odoo 確認 SO + 開發票
+ */
+async function handleSOConfirmPostback(authClient, event) {
+  const params = parsePostbackParams(event?.postback?.data);
+  const orderId = params.orderId ? String(params.orderId).trim() : '';
+  const orderName = params.orderName ? String(params.orderName).trim() : '';
+
+  const source = event.source || {};
+  const targetId = source.groupId || source.roomId || source.userId;
+  const userId = source.userId;
+  let userName = await fetchDisplayNameInSource(userId, source);
+  if (!userName) userName = '操作者';
+
+  if (!orderName) {
+    await replyText(event.replyToken, '⚠️ 無法取得訂單號碼，請重試。');
+    return;
+  }
+
+  let achRows = [];
+  try {
+    // Using shared pgPool
+
+    // 找 ach_records by odoo_quote_id
+    const dbResult = await pgPool.query(
+      'SELECT id, store_name, customer_confirmed FROM ach_records WHERE odoo_quote_id = $1 AND year = 2026 LIMIT 1',
+      [orderName]
+    );
+    achRows = dbResult.rows;
+
+    if (achRows.length > 0) {
+      if (achRows[0].customer_confirmed && String(achRows[0].customer_confirmed).trim()) {
+        await replyText(event.replyToken, `⚠️ ${userName} 您好，\n這筆資料已經確認過囉！\n\n紀錄：\n${achRows[0].customer_confirmed}`);
+        return;
+      }
+      // 寫入確認
+      const now = formatTaiwanDateTime(new Date());
+      const confirmText = `${now} 由 ${userName} 確認`;
+      await pgPool.query(
+        'UPDATE ach_records SET customer_confirmed = $1 WHERE id = $2 AND year = 2026',
+        [confirmText, achRows[0].id]
+      );
+      console.log(`[paopao-webhook] ✅ so_confirm: ${orderName} (ach id=${achRows[0].id}) by ${userName}`);
+    } else {
+      console.log(`[paopao-webhook] so_confirm: ${orderName} 不在 ach_records 中，僅做 Odoo 確認`);
+    }
+  } catch (dbErr) {
+    console.error('[paopao-webhook] so_confirm DB error:', dbErr?.message);
+  }
+
+  // Odoo: 確認 SO (odooCall imported from ../lib/odoo.js)
+  try {
+    const soIds = await odooCall('sale.order', 'search', [[['name', '=', orderName]]]);
+    let invName = orderName;
+    if (soIds && soIds.length > 0) {
+      const so = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['state', 'invoice_ids', 'origin'] });
+
+      // Step 1: Confirm SO (draft/sent → sale)
+      if (so[0].state === 'draft' || so[0].state === 'sent') {
+        await odooCall('sale.order', 'action_confirm', [soIds]);
+        console.log(`[so_confirm] ✅ SO ${orderName} confirmed (was ${so[0].state})`);
+      } else {
+        console.log(`[so_confirm] SO ${orderName} already in state: ${so[0].state}`);
+      }
+
+      // Step 1.5: 維修單 — 如果 origin 是 ppm/RO/，把 repair.order 改為 confirmed
+      const roOrigin = so[0].origin;
+      if (roOrigin && roOrigin.startsWith('ppm/RO/')) {
+        try {
+          const roIds = await odooCall('repair.order', 'search', [[['name', '=', roOrigin]]]);
+          if (roIds && roIds.length > 0) {
+            const ro = await odooCall('repair.order', 'read', [roIds[0]], { fields: ['state'] });
+            if (ro[0].state === 'draft') {
+              await odooCall('repair.order', 'write', [roIds, { state: 'confirmed' }]);
+              console.log(`[so_confirm] ✅ Repair order ${roOrigin} confirmed`);
+            } else {
+              console.log(`[so_confirm] Repair order ${roOrigin} already in state: ${ro[0].state}`);
+            }
+          }
+        } catch (roErr) {
+          console.error(`[so_confirm] ⚠️ Repair order confirm failed for ${roOrigin}: ${roErr.message?.slice(0, 200)}`);
+        }
+      }
+
+      // Step 2: Create invoice if none exists
+      const soAfter = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['invoice_ids'] });
+      let invoiceIds = soAfter[0].invoice_ids || [];
+      if (invoiceIds.length === 0) {
+        try {
+          const wizardId = await odooCall('sale.advance.payment.inv', 'create', [{
+            advance_payment_method: 'delivered'
+          }], { context: { active_ids: soIds, active_model: 'sale.order' } });
+          await odooCall('sale.advance.payment.inv', 'create_invoices', [wizardId], { context: { active_ids: soIds, active_model: 'sale.order' } });
+          const soInv = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['invoice_ids'] });
+          invoiceIds = soInv[0].invoice_ids || [];
+          console.log(`[so_confirm] ✅ Invoice created for ${orderName}`);
+        } catch (invErr) {
+          console.error(`[so_confirm] ⚠️ Invoice creation failed for ${orderName}: ${invErr.message?.slice(0, 200)}`);
+        }
+      }
+
+      // Step 3: Post invoice (draft → posted, 產生 INV 編號)
+      if (invoiceIds.length > 0) {
+        const lastInvId = invoiceIds[invoiceIds.length - 1];
+        const inv = await odooCall('account.move', 'read', [lastInvId], { fields: ['name', 'state'] });
+        if (inv[0].state === 'draft') {
+          try {
+            await odooCall('account.move', 'action_post', [[lastInvId]]);
+            const invPosted = await odooCall('account.move', 'read', [lastInvId], { fields: ['name'] });
+            invName = invPosted[0].name || orderName;
+            console.log(`[so_confirm] ✅ Invoice posted: ${invName}`);
+          } catch (postErr) {
+            console.error(`[so_confirm] ⚠️ Invoice post failed for ${orderName}: ${postErr.message?.slice(0, 200)}`);
+            invName = inv[0].name || orderName;
+          }
+        } else {
+          invName = inv[0].name || orderName;
+        }
+      }
+
+      // Step 4: Write INV number to ach_records
+      if (invName !== orderName && achRows && achRows.length > 0) {
+        try {
+          // Using shared pgPool
+          await pgPool.query('UPDATE ach_records SET odoo_invoice_id = $1 WHERE odoo_quote_id = $2 AND year = 2026', [invName, orderName]);
+          console.log(`[so_confirm] ✅ ach_records updated: ${orderName} → ${invName}`);
+        } catch (dbErr2) {
+          console.error(`[so_confirm] ⚠️ DB write INV failed: ${dbErr2?.message}`);
+        }
+      }
+
+      // Step 5: Chatter 紀錄誰確認的
+      const now2 = formatTaiwanDateTime(new Date());
+      await odooCall('sale.order', 'message_post', [soIds[0]], {
+        body: `<p>✅ LINE 確認：由 <b>${userName}</b> 於 ${now2} 點擊「正確」確認此訂單</p>${invName !== orderName ? `<p>📄 應收帳款：${invName}</p>` : ''}`,
+        message_type: 'comment',
+        subtype_xmlid: 'mail.mt_note'
+      });
+      console.log(`[so_confirm] ✅ Chatter note added for ${orderName} by ${userName}`);
+    }
+  } catch (odooErr) {
+    // Odoo errors non-blocking
+    console.error(`[so_confirm] ❌ Odoo error for ${orderName}:`, odooErr?.message?.slice(0, 200));
+  }
+
+  await replyText(event.replyToken, `✅ ${orderName} 已確認，謝謝 ${userName}！`);
+}
+
+/** Dashboard「取消」按鈕 postback：action=so_cancel&orderId=xxx&orderName=S01xxx */
+async function handleSOCancelPostback(event) {
+  const params = parsePostbackParams(event?.postback?.data);
+  const orderName = params.orderName ? String(params.orderName).trim() : '';
+
+  const source = event.source || {};
+  const userId = source.userId;
+  let userName = await fetchDisplayNameInSource(userId, source);
+  if (!userName) userName = '操作者';
+
+  await replyText(event.replyToken, `❌ ${orderName} 已取消確認。\n\n操作者：${userName}\n如有疑問請聯繫總公司。`);
+  console.log(`[paopao-webhook] so_cancel: ${orderName} by ${userName}`);
+}
+
 export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
   if (!PAOPAO_STORE_SS_ID) {
     sendJson(res, 200, { status: 'error', message: 'PAOPAO_STORE_SS_ID missing' });
     return;
   }
 
-  // If this is a non-LINE payload (cookie/token update), allow without signature.
   let body = null;
   try {
     body = JSON.parse(rawBody.toString('utf8'));
@@ -613,15 +1138,25 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     return;
   }
 
-  if (body?.cookie) {
-    await writeSheet(authClient, PAOPAO_STORE_SS_ID, "'安全庫存'!P1:Q1", [[String(body.cookie), new Date().toISOString()]]);
-    sendJson(res, 200, { status: 'success', message: 'Cookie Updated' });
-    return;
-  }
-  if (body?.token) {
-    await writeSheet(authClient, PAOPAO_STORE_SS_ID, "'預約表單'!C2:D2", [[String(body.token), new Date().toISOString()]]);
-    sendJson(res, 200, { status: 'success', message: 'Token Updated' });
-    return;
+  // Cookie/token update: 需要內部 API key（不走 LINE signature）
+  if (body?.cookie || body?.token) {
+    const INTERNAL_API_KEY = (process.env.INTERNAL_API_KEY || '').trim();
+    const providedKey = String(req.headers['x-api-key'] || body?.apiKey || '').trim();
+    if (!INTERNAL_API_KEY || providedKey !== INTERNAL_API_KEY) {
+      console.warn('[paopao-webhook] ❌ cookie/token update rejected: invalid API key');
+      sendJson(res, 401, { status: 'unauthorized', message: 'Invalid API key' });
+      return;
+    }
+    if (body?.cookie) {
+      await writeSheet(authClient, PAOPAO_STORE_SS_ID, "'安全庫存'!P1:Q1", [[String(body.cookie), new Date().toISOString()]]);
+      sendJson(res, 200, { status: 'success', message: 'Cookie Updated' });
+      return;
+    }
+    if (body?.token) {
+      await writeSheet(authClient, PAOPAO_STORE_SS_ID, "'預約表單'!C2:D2", [[String(body.token), new Date().toISOString()]]);
+      sendJson(res, 200, { status: 'success', message: 'Token Updated' });
+      return;
+    }
   }
 
   const signature = String(req.headers['x-line-signature'] || '');
@@ -634,10 +1169,22 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
 
   const events = Array.isArray(body?.events) ? body.events : [];
   for (const event of events) {
+    console.log(`[paopao-webhook] event type=${event?.type}${event?.type === 'postback' ? ' data=' + event?.postback?.data : ''}`);
     if (event?.type === 'postback' && event?.postback?.data) {
       const params = parsePostbackParams(event.postback.data);
+      console.log(`[paopao-webhook] postback action=${params.action} dbId=${params.dbId || ''} odoo=${params.odoo || ''}`);
       if (params.action === 'confirm') {
         await handleConfirmPostback(authClient, event);
+      } else if (params.action === 'direct_confirm') {
+        await handleDirectConfirmPostback(event);
+      } else if (params.action === 'so_confirm') {
+        await handleSOConfirmPostback(authClient, event);
+      } else if (params.action === 'so_cancel') {
+        await handleSOCancelPostback(event);
+      } else if (params.action === 'publish_story') {
+        await handlePublishStoryPostback(event, params);
+      } else if (params.action === 'cancel_story') {
+        await replyText(event.replyToken, '👌 已取消發布');
       }
       continue;
     }
@@ -675,6 +1222,11 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
         }
         continue;
       }
+
+      // 處理「幫我發送空位」請求 — 已停用，改由 Dashboard 發布
+      // if (await handleSlotStoryRequest(event)) {
+      //   continue;
+      // }
 
       // 處理刪單請求
       if (await handleDeleteOrder(event)) {

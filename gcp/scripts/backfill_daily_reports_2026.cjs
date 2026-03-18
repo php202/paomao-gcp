@@ -1,65 +1,33 @@
 #!/usr/bin/env node
 /**
- * cron_daily_report_sync.cjs
- * 每天 09:30 跑，從 SayDou dailyIncome API 拉指定日期的營收資料，存進 daily_reports DB。
- *
- * Usage:
- *   node cron_daily_report_sync.cjs                    # 預設拉昨天
- *   node cron_daily_report_sync.cjs --date=2026-03-07  # 指定日期
- *   node cron_daily_report_sync.cjs --store=新竹公道    # 指定店家（模糊比對）
- *   node cron_daily_report_sync.cjs --date=2026-03-07 --store=新竹公道
- *   node cron_daily_report_sync.cjs --from=2026-03-01 --to=2026-03-07  # 日期區間
+ * backfill_daily_reports_2026.cjs
+ * 2026 年全部從 SayDou dailyIncome 重新拉一次，慢慢來不要搞爆 API。
+ * 每批 5 店，每批間隔 3 秒，每天完成後暫停 2 秒。
  */
 
 const { Pool } = require('pg');
 const fs = require('fs');
-const path = require('path');
 
 const pool = new Pool({ database: 'paomao' });
-
 const SAYDOU_API = 'https://saywebdatafeed.saydou.com';
 const TOKEN_PATH = '/Users/paopaomao/.openclaw/workspace/booking-site/.saydou-token';
-const BATCH_SIZE = 10;
-const BATCH_DELAY = 1500;
+const BATCH_SIZE = 5;        // 每批只拉 5 店（原本 10）
+const BATCH_DELAY = 3000;    // 每批間隔 3 秒（原本 1.5）
+const DAY_DELAY = 2000;      // 每天結束暫停 2 秒
+const REQUEST_TIMEOUT = 30000;
 
 function getToken() {
   return fs.readFileSync(TOKEN_PATH, 'utf8').trim();
 }
 
-function parseArgs() {
-  const args = {};
-  for (const a of process.argv.slice(2)) {
-    const m = a.match(/^--(\w+)=(.+)$/);
-    if (m) args[m[1]] = m[2];
-  }
-  return args;
-}
-
 function formatYmd(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${dd}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function yesterday() {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return formatYmd(d);
-}
-
-function today() {
-  return formatYmd(new Date());
-}
-
-async function getStores(filter) {
-  let q = "SELECT id, store_name, saydou_id FROM stores WHERE saydou_id IS NOT NULL AND saydou_id != '0001'";
-  const params = [];
-  if (filter) {
-    q += ' AND store_name ILIKE $1';
-    params.push(`%${filter}%`);
-  }
-  const { rows } = await pool.query(q, params);
+async function getStores() {
+  const { rows } = await pool.query(
+    "SELECT id, store_name, saydou_id FROM stores WHERE saydou_id IS NOT NULL AND saydou_id != '0001' AND is_active = true ORDER BY store_name"
+  );
   return rows;
 }
 
@@ -67,13 +35,12 @@ async function fetchDailyIncome(token, storeId, dateStr) {
   const url = `${SAYDOU_API}/api/management/finance/dailyIncome?storid=${encodeURIComponent(storeId)}&date=${encodeURIComponent(dateStr)}&end_date=${encodeURIComponent(dateStr)}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT),
   });
   if (res.status === 401 || res.status === 403) {
-    throw new Error(`SayDou Token 過期 (HTTP ${res.status})`);
+    throw new Error(`Token 過期 (HTTP ${res.status})`);
   }
-  const json = await res.json();
-  return json;
+  return await res.json();
 }
 
 function parseIncome(json) {
@@ -100,9 +67,7 @@ function parseIncome(json) {
 }
 
 async function upsertReport(storeId, storeName, dateStr, data) {
-  // Extract short name for store_name (matching Sheet convention)
-  const shortName = storeName.replace(/^泡泡貓[｜|]/, '').replace(/店.*$/, '');
-
+  const shortName = storeName.replace(/^泡泡貓[｜|]/, '').replace(/店$/, '');
   await pool.query(`
     INSERT INTO daily_reports (store_id, store_name, report_date,
       cash_total, cash_consume, cash_stored, third_party_total,
@@ -130,61 +95,37 @@ async function upsertReport(storeId, storeName, dateStr, data) {
   ]);
 }
 
-async function findMissingDates(days = 7) {
-  // 檢查最近 N 天有沒有遺漏的日期
-  const missing = [];
-  for (let i = 1; i <= days; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const ds = formatYmd(d);
-    const { rows } = await pool.query('SELECT COUNT(*) as cnt FROM daily_reports WHERE report_date = $1', [ds]);
-    if (parseInt(rows[0].cnt) === 0) {
-      missing.push(ds);
-    }
-  }
-  return missing;
-}
-
 async function main() {
-  const args = parseArgs();
-
-  // Date range
-  const fromDate = args.from || args.date || yesterday();
-  const toDate = args.to || args.date || yesterday();
-  const storeFilter = args.store || null;
-
-  // Generate date list
+  const stores = await getStores();
+  
+  // Date range: 2026-01-01 to yesterday
+  const startDate = new Date('2026-01-01T00:00:00+08:00');
+  const now = new Date();
+  // Yesterday in Taipei timezone
+  const endDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+  endDate.setDate(endDate.getDate() - 1);
+  
   const dates = [];
-  const cur = new Date(fromDate + 'T00:00:00+08:00');
-  const end = new Date(toDate + 'T00:00:00+08:00');
-  while (cur <= end) {
+  const cur = new Date(startDate);
+  while (cur <= endDate) {
     dates.push(formatYmd(cur));
     cur.setDate(cur.getDate() + 1);
   }
-
-  // 防呆：自動補拉最近 7 天遺漏的日期
-  if (!args.date && !args.from) {
-    const missing = await findMissingDates(7);
-    if (missing.length) {
-      console.log(`[daily-report-sync] 🔧 發現遺漏日期: ${missing.join(', ')}，自動補拉`);
-      missing.forEach(d => { if (!dates.includes(d)) dates.push(d); });
-      dates.sort();
-    }
-  }
-
-  const stores = await getStores(storeFilter);
-  console.log(`[daily-report-sync] ${dates.length} 天 × ${stores.length} 店`);
-
-  if (!stores.length) {
-    console.error('No stores found');
-    await pool.end();
-    process.exit(1);
-  }
+  
+  console.log(`[backfill] ${dates.length} 天 × ${stores.length} 店 = ${dates.length * stores.length} 次 API call`);
+  console.log(`[backfill] 預估時間: ~${Math.ceil(dates.length * (stores.length / BATCH_SIZE) * (BATCH_DELAY/1000) / 60)} 分鐘`);
+  console.log(`[backfill] 日期範圍: ${dates[0]} ~ ${dates[dates.length-1]}`);
+  console.log(`[backfill] 每批 ${BATCH_SIZE} 店, 間隔 ${BATCH_DELAY/1000} 秒`);
+  console.log('');
 
   const token = getToken();
   let success = 0, failed = 0, skipped = 0;
+  const startTime = Date.now();
 
-  for (const dateStr of dates) {
+  for (let di = 0; di < dates.length; di++) {
+    const dateStr = dates[di];
+    let daySuccess = 0, dayFail = 0;
+    
     for (let i = 0; i < stores.length; i += BATCH_SIZE) {
       const batch = stores.slice(i, i + BATCH_SIZE);
       const results = await Promise.allSettled(
@@ -196,10 +137,11 @@ async function main() {
         const res = results[j];
         if (res.status !== 'fulfilled') {
           failed++;
+          dayFail++;
           console.error(`  ✗ ${store.store_name} ${dateStr}: ${res.reason?.message}`);
-          // Token expired = fatal
           if (res.reason?.message?.includes('Token 過期')) {
-            console.error('Token expired, aborting');
+            console.error('\n⛔ Token 過期，中止。請更新 token 後重跑。');
+            console.log(`進度: ${di}/${dates.length} 天, 已完成到 ${dateStr}`);
             await pool.end();
             process.exit(1);
           }
@@ -211,20 +153,30 @@ async function main() {
         try {
           await upsertReport(store.id, store.store_name, dateStr, data);
           success++;
+          daySuccess++;
         } catch (e) {
           failed++;
+          dayFail++;
           console.error(`  ✗ DB ${store.store_name} ${dateStr}: ${e.message}`);
         }
       }
 
+      // Delay between batches
       if (i + BATCH_SIZE < stores.length) {
         await new Promise(r => setTimeout(r, BATCH_DELAY));
       }
     }
-    console.log(`[daily-report-sync] ${dateStr} done`);
+
+    const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+    const pct = ((di + 1) / dates.length * 100).toFixed(0);
+    console.log(`[${pct}%] ${dateStr} ✓ ${daySuccess} ok ${dayFail ? `/ ${dayFail} fail` : ''} (${elapsed}min)`);
+
+    // Delay between days
+    await new Promise(r => setTimeout(r, DAY_DELAY));
   }
 
-  console.log(`[daily-report-sync] 完成: ${success} ok, ${failed} failed, ${skipped} skipped`);
+  const totalMin = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+  console.log(`\n[backfill] 完成！ ${success} ok, ${failed} failed, ${skipped} skipped — 耗時 ${totalMin} 分鐘`);
   await pool.end();
 }
 

@@ -854,6 +854,31 @@ export async function handleStoreLineWebhook(req, res, { authClient, rawBody }) 
       }
       continue;
     }
+    // ── follow/unfollow 事件記錄 ──
+    if (event?.type === 'follow' || event?.type === 'unfollow') {
+      const fUserId = String(event?.source?.userId || '').trim();
+      if (fUserId) {
+        let fDisplayName = '';
+        try { fDisplayName = accessToken ? await fetchDisplayName(fUserId, accessToken) : ''; } catch {}
+        try {
+          await fetch('http://localhost:3000/api/line-follow-event', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              line_user_id: fUserId,
+              store_name: store.storeName,
+              line_channel_id: store.channelId,
+              event_type: event.type,
+              display_name: fDisplayName,
+              secret: 'paopaomao_internal'
+            })
+          });
+        } catch (e) { console.error(`[store-webhook] ${event.type} record failed:`, e.message); }
+        console.log(`[store-webhook] 📊 ${event.type}: ${fDisplayName || fUserId} @ ${store.storeName}`);
+      }
+      continue;
+    }
+
     if (event?.type !== 'message') continue;
     const userId = String(event?.source?.userId || '').trim();
     const replyToken = String(event?.replyToken || '').trim();

@@ -8,7 +8,7 @@ import http from 'http';
 import { URL } from 'url';
 
 const PORT = 3870;
-const TARGET_URL = 'https://paopaomao.tw/shop';
+const TARGET_URL = 'https://site.paopaomao.tw/shop';
 
 const server = http.createServer((req, res) => {
     const { pathname } = new URL(req.url, `http://localhost:${PORT}`);

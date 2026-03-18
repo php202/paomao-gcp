@@ -1490,6 +1490,28 @@ export async function handleStaffCommand({
     return true;
   }
 
+  // 0. 固定回覆：服務費說明
+  if (text.includes('服務費包含哪些')) {
+    await replyText(
+      '您好：\n' +
+      '關於服務費涵蓋的具體範圍，雙方簽署的合約上有完整的記載，再麻煩您撥冗翻閱。\n\n' +
+      '先向您說明，總公司服務費用固定於每月 10 號扣款，目前的計費基準為：四床新台幣 8,000 元整（若後續有新增床位，則每張床位加收 2,000 元整）。\n\n' +
+      '這筆常規服務費所包含的合約項目，條列如下：\n' +
+      '✅ 教育訓練：Odoo 系統教學與訓練\n' +
+      '✅ 營業內容：開發新品、新活動規劃\n' +
+      '✅ 管理支援：採購及商品管理\n' +
+      '✅ 授權維護：授權標的物之使用與維護\n\n' +
+      '至於您目前正在使用的其他資源，其實並不包含在上述的常規服務費中，是我們考量雙方的合作關係，額外無償提供給貴公司的支援，包含：\n' +
+      '🔹 104 徵才服務\n' +
+      '🔹 神美系統\n' +
+      '🔹 跑活動的相關贈品\n' +
+      '🔹 顧問問答協助\n' +
+      '🔹 總部文件提供\n\n' +
+      '希望以上的條列說明，能幫助您更清楚我們提供的服務範疇。若您後續對於合約內的項目仍有不清楚的地方，我們也可以安排個時間簡單對焦，謝謝您。'
+    );
+    return true;
+  }
+
   // GAS 順序：1. 我要了解客人（先於 switch）
   if (text.indexOf('我要了解客人') === 0 || text.includes('我要了解客人')) {
     const phone = extractPhoneFromCustomerKeyword(text);
@@ -1544,7 +1566,7 @@ export async function handleStaffCommand({
 
   // 4. 包含：補打卡、Line問題集
   if (text.includes('補打卡')) {
-    return handleMakeUpTime(authClient, authResult, userId, text, replyText, sheetReader);
+    return replyText('📢 補打卡功能已全面轉移至網頁版！\n\n請點擊連結登入系統進行補打卡：\nhttps://dashboard.paopaomao.tw/my#attendance\n\n登入後在「📋 出勤」分頁，點擊缺漏的 - 即可補打卡。');
   }
   if (text.includes('Line問題集')) {
     return handleLineQuestion(replyText, authClient, sheetReader);

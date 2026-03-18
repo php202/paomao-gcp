@@ -22,12 +22,12 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
 const { google } = require('googleapis');
+const { odooCall } = require('../lib/odoo.cjs');
 
 // ========== Config ==========
 const SHEET_ID = '17hX7CjeDj2xdKBIt9TKG6iJF5lB38uXwj2kdhb4oIQE';
 const ACH_SHEET_NAME = '2026/ACH紀錄';
 const SA_KEY_PATH = path.join(process.env.HOME, '.openclaw/secrets/gcp-service-account.json');
-const ODOO_CONFIG_PATH = path.join(process.env.HOME, '.openclaw/secrets/odoo-config.json');
 const SINOPAC_PW_PATH = path.join(process.env.HOME, '.openclaw/secrets/sinopac-password.txt');
 
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN || '';
@@ -82,47 +82,7 @@ async function appendSheet(values) {
   });
 }
 
-// ========== Odoo JSON-RPC ==========
-let odooUid = null;
-let odooConfig = null;
-function getOdooConfig() {
-  if (odooConfig) return odooConfig;
-  odooConfig = JSON.parse(fs.readFileSync(ODOO_CONFIG_PATH, 'utf8'));
-  return odooConfig;
-}
-
-async function odooAuth() {
-  if (odooUid) return odooUid;
-  const cfg = getOdooConfig();
-  const res = await fetch(`${cfg.url}/jsonrpc`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0', method: 'call',
-      params: { service: 'common', method: 'authenticate', args: [cfg.db, cfg.username, cfg.password, {}] }
-    }),
-  });
-  const json = await res.json();
-  odooUid = json.result;
-  if (!odooUid) throw new Error('Odoo auth failed');
-  return odooUid;
-}
-
-async function odooCall(model, method, args, kwargs = {}) {
-  const cfg = getOdooConfig();
-  const uid = await odooAuth();
-  const res = await fetch(`${cfg.url}/jsonrpc`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0', method: 'call',
-      params: { service: 'object', method: 'execute_kw', args: [cfg.db, uid, cfg.password, model, method, args, kwargs] }
-    }),
-  });
-  const json = await res.json();
-  if (json.error) throw new Error(JSON.stringify(json.error));
-  return json.result;
-}
+// ========== Odoo: see ../lib/odoo.cjs ==========
 
 // ========== Telegram ==========
 async function sendTg(chatId, text) {
@@ -155,7 +115,7 @@ function today() {
 // Phase 2A: Odoo 銷售訂單 → ACH 紀錄 (貨款)
 // =============================================
 async function odooToAch() {
-  console.log('=== Phase 2A: Odoo → ACH (貨款) ===');
+  console.log('=== Phase 2A: Odoo → ACH (直接寫 DB，不經 Sheet) ===');
   
   // 1. 從 Odoo 抓取最近的已確認銷售訂單
   const orders = await odooCall('sale.order', 'search_read', [
@@ -167,9 +127,11 @@ async function odooToAch() {
   });
   console.log(`  Odoo 查到 ${orders.length} 筆已開票銷售訂單`);
 
-  // 2. 讀取現有 ACH Sheet P欄，避免重複
-  const existingRows = await readSheet('P:P');
-  const existingOdooIds = new Set(existingRows.flat().map(v => String(v).trim()).filter(Boolean));
+  // 2. 從 DB 查已存在的 Odoo ID，避免重複
+  const { rows: existingRows } = await pool.query(
+    "SELECT odoo_quote_id FROM ach_records WHERE year = 2026 AND odoo_quote_id IS NOT NULL AND odoo_quote_id != ''"
+  );
+  const existingOdooIds = new Set(existingRows.map(r => r.odoo_quote_id));
 
   // 3. 取得 payees mapping (store name → code)
   const { rows: payees } = await pool.query(`SELECT code, store_label, account_name FROM payees WHERE is_active = TRUE`);
@@ -179,16 +141,19 @@ async function odooToAch() {
     if (p.account_name) storeToCode.set(p.account_name.trim(), p.code);
   }
 
+  // 4. 取得下一個 sheet_row（保持相容性）
+  const { rows: maxRow } = await pool.query("SELECT COALESCE(MAX(sheet_row), 1) as max_row FROM ach_records WHERE year = 2026");
+  let nextRow = maxRow[0].max_row + 1;
+
   let added = 0;
   for (const order of orders) {
     const odooId = `S${String(order.id).padStart(5, '0')}`;
-    if (existingOdooIds.has(odooId)) continue;
+    if (existingOdooIds.has(odooId) || existingOdooIds.has(order.name)) continue;
 
     const partnerName = order.partner_id?.[1] || '';
     const amount = order.amount_total || 0;
     if (amount <= 0) continue;
 
-    // Map partner to store
     const storeCode = storeToCode.get(partnerName) || '';
     const dateStr = formatDate(order.date_order);
 
@@ -200,23 +165,26 @@ async function odooToAch() {
     const desc = lines.map(l => `${l.name}x${l.product_uom_qty}`).join(', ').substring(0, 100);
     const fullDesc = `${odooId} ${desc}`;
 
-    // ACH row: [A日期, B店名, C金額, D代碼, E類型, F說明, G確認, H~N空, O空, P odooId, Q空]
-    const newRow = [dateStr, partnerName, `＄${amount}`, storeCode, '貨款', fullDesc, '', '', '', '', '', '', '', '', '', odooId, ''];
-    
-    await appendSheet([newRow]);
+    // 查 payee_id 和 store_id
+    const payeeRow = storeCode ? await pool.query('SELECT id FROM payees WHERE code=$1 LIMIT 1', [storeCode]) : { rows: [] };
+    const storeRow = partnerName ? await pool.query('SELECT id FROM stores WHERE store_name=$1 LIMIT 1', [partnerName]) : { rows: [] };
+    const payeeId = payeeRow.rows[0]?.id || null;
+    const storeId = storeRow.rows[0]?.id || null;
+
+    // 直接寫入 DB
+    await pool.query(`
+      INSERT INTO ach_records (sheet_row, year, record_date, store_name, amount, payee_code, fee_type, description, odoo_quote_id, payee_id, store_id)
+      VALUES ($1, 2026, $2, $3, $4, $5, '貨款', $6, $7, $8, $9)
+      ON CONFLICT (sheet_row, year) DO NOTHING
+    `, [nextRow, dateStr || null, partnerName, amount, storeCode, fullDesc, odooId, payeeId, storeId]);
+
     existingOdooIds.add(odooId);
+    nextRow++;
     added++;
     console.log(`  + ${odooId} ${partnerName} $${amount}`);
   }
 
-  // Sync to DB
-  if (added > 0) {
-    console.log(`  新增 ${added} 筆，同步 DB...`);
-    const { execSync } = require('child_process');
-    execSync(`node ${path.join(__dirname, 'sync_ach_full.cjs')}`, { stdio: 'inherit' });
-  }
-
-  console.log(`  完成：新增 ${added} 筆 ACH 紀錄`);
+  console.log(`  完成：新增 ${added} 筆 ACH 紀錄（直接寫 DB）`);
   return { added };
 }
 
@@ -224,28 +192,9 @@ async function odooToAch() {
 // Phase 2B: Sheet G 欄同步到 DB
 // =============================================
 async function syncGColumn() {
-  console.log('=== Phase 2B: Sync G column (Sheet → DB) ===');
-  
-  const rows = await readSheet('A:Q');
-  let updated = 0;
-  
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    if (!row || row.length < 7) continue;
-    const gVal = (row[6] || '').trim();
-    if (!gVal) continue;
-    
-    const sheetRow = i + 1;
-    const result = await pool.query(
-      `UPDATE ach_records SET customer_confirmed = $1 WHERE sheet_row = $2 AND year = 2026 
-       AND (customer_confirmed IS NULL OR customer_confirmed != $1)`,
-      [gVal, sheetRow]
-    );
-    if (result.rowCount > 0) updated++;
-  }
-  
-  console.log(`  完成：更新 ${updated} 筆 G 欄到 DB`);
-  return { updated };
+  // 2026 起停用 Sheet 同步，G 欄直接在 Dashboard DB 操作
+  console.log('=== Phase 2B: syncGColumn — SKIPPED (Sheet 已停用，改用 DB 直接操作) ===');
+  return { updated: 0, skipped: true };
 }
 
 // =============================================
@@ -309,90 +258,98 @@ async function classifyTransfers() {
 // Phase 3A: 永豐銀行自動查帳
 // =============================================
 async function bankCheck() {
-  console.log('=== Phase 3A: 永豐銀行自動查帳 ===');
+  console.log('=== Phase 3A: 永豐銀行自動查帳 (修正版：包含失敗檔) ===');
   
-  // 解析已下載的 ACH 回覆媒體檔
+  // 解析已下載的 ACH 回覆檔 - 包括成功檔和失敗檔
   const downloadDir = path.join(process.env.HOME, 'Downloads');
+  
+  // 成功檔
   const achFiles = fs.readdirSync(downloadDir)
     .filter(f => f.match(/^94256530_NEP01_M_\d{8}\.TXT$/))
     .sort()
     .reverse();
   
-  if (achFiles.length === 0) {
-    console.log('  沒有找到 ACH 回覆媒體檔，需先從永豐下載');
-    return { parsed: 0 };
-  }
-  
-  const results = [];
-  
-  for (const file of achFiles.slice(0, 5)) { // 最近 5 個檔
-    const content = fs.readFileSync(path.join(downloadDir, file), 'utf8');
-    const lines = content.split(/\r?\n/).filter(l => l.startsWith('RSD') || l.startsWith('NSD'));
-    
-    for (const line of lines) {
-      // ACH NEP01 回覆檔格式 (固定寬度)
-      // 位置大約：銀行代碼 pos 6-9, 帳號 pos ~30-44, 金額 pos ~46-55, 身分證 pos ~65-75
-      const record = parseAchReplyLine(line);
-      if (record) results.push({ ...record, sourceFile: file });
-    }
-  }
-  
-  console.log(`  解析到 ${results.length} 筆成功扣款`);
-  
-  // 比對 DB 的 ACH 紀錄，標記已入帳
-  let matched = 0;
-  for (const r of results) {
-    // 用身分證/統編 + 金額比對
-    const { rows } = await pool.query(`
-      SELECT ar.id, ar.sheet_row, ar.amount, ar.ach_registered, p.id_number
-      FROM ach_records ar
-      LEFT JOIN payees p ON ar.payee_id = p.id
-      WHERE p.id_number = $1 AND ar.amount IS NOT NULL
-        AND (ar.ach_registered IS NULL OR ar.ach_registered = '')
-    `, [r.pin]);
-    
-    for (const dbRow of rows) {
-      const dbAmount = Math.abs(parseAmount(dbRow.amount));
-      if (Math.abs(dbAmount - r.amount) < 1) { // 金額差 < $1
-        const ts = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
-        const regValue = `${ts} 自動比對 (${r.sourceFile})`;
-        
-        // Update DB
-        await pool.query(`UPDATE ach_records SET ach_registered = $1 WHERE id = $2`, [regValue, dbRow.id]);
-        
-        // Update Sheet K column (index 10, K = col 11)
-        await writeSheet(`K${dbRow.sheet_row}`, [[regValue]]);
-        
-        matched++;
-        break;
-      }
-    }
-  }
-  
-  // 檢查失敗檔
+  // 失敗檔
   const failFiles = fs.readdirSync(downloadDir)
     .filter(f => f.match(/^94256530_NEP01_M_\d{8}_F\.TXT$/))
     .sort()
     .reverse();
   
-  let failures = [];
-  for (const file of failFiles.slice(0, 5)) {
+  const allFiles = [...achFiles, ...failFiles];
+  
+  if (allFiles.length === 0) {
+    console.log('  沒有找到 ACH 回覆檔，需先從永豐下載');
+    return { parsed: 0 };
+  }
+  
+  console.log(`  找到 ${achFiles.length} 個成功檔 + ${failFiles.length} 個失敗檔`);
+  
+  const results = [];
+  
+  for (const file of allFiles.slice(0, 10)) { // 最近 10 個檔
     const content = fs.readFileSync(path.join(downloadDir, file), 'utf8');
     const lines = content.split(/\r?\n/).filter(l => l.startsWith('RSD') || l.startsWith('NSD'));
+    
     for (const line of lines) {
       const record = parseAchReplyLine(line);
-      if (record) failures.push({ ...record, sourceFile: file });
+      if (record) {
+        results.push({ 
+          ...record, 
+          sourceFile: file, 
+          isFailure: file.includes('_F.TXT')
+        });
+      }
     }
   }
   
-  if (failures.length > 0) {
-    const failText = failures.map(f => `  ⚠️ ${f.pin} $${f.amount} (${f.sourceFile})`).join('\n');
-    console.log(`  ❌ ${failures.length} 筆扣款失敗:\n${failText}`);
-    await sendTg(TG_ROBBY_CHAT, `❌ ACH 扣款失敗 ${failures.length} 筆:\n${failText}`);
+  console.log(`  解析到 ${results.length} 筆扣款記錄`);
+  
+  // 比對 DB 的 ACH 紀錄，標記已入帳
+  let matched = 0;
+  let failureMatched = 0;
+  
+  for (const r of results) {
+    // 用身分證/統編 + 金額比對：找已 Robby 放行但尚未確認的紀錄
+    const { rows } = await pool.query(`
+      SELECT ar.id, ar.sheet_row, ar.amount, ar.ach_released, ar.ach_confirmed, p.id_number, ar.created_at
+      FROM ach_records ar
+      LEFT JOIN payees p ON ar.payee_id = p.id
+      WHERE p.id_number = $1 AND ar.amount IS NOT NULL
+        AND ar.ach_released IS NOT NULL AND ar.ach_released != ''
+        AND (ar.ach_confirmed IS NULL OR ar.ach_confirmed = '' OR ar.ach_confirmed = 'FALSE')
+    `, [r.pin]);
+    
+    for (const dbRow of rows) {
+      const dbAmount = Math.abs(parseAmount(dbRow.amount));
+      if (Math.abs(dbAmount - r.amount) < 1) { // 金額差 < $1
+        
+        if (r.isFailure) {
+          // 失敗檔：標記為失敗
+          const failValue = `FAIL ${new Date().toISOString().slice(5, 16)}`;
+          await pool.query(`UPDATE ach_records SET ach_confirmed = $1 WHERE id = $2`, [failValue, dbRow.id]);
+          failureMatched++;
+          console.log(`    ❌ 失敗: PIN=${r.pin} $${r.amount} → DB ID=${dbRow.id}`);
+        } else {
+          // 成功檔：標記為成功
+          const successValue = `OK ${new Date().toISOString().slice(5, 16)}`;
+          await pool.query(`UPDATE ach_records SET ach_confirmed = $1 WHERE id = $2`, [successValue, dbRow.id]);
+          matched++;
+          console.log(`    ✅ 成功: PIN=${r.pin} $${r.amount} → DB ID=${dbRow.id}`);
+        }
+        break;
+      }
+    }
   }
   
-  console.log(`  完成：${matched} 筆已比對入帳，${failures.length} 筆失敗`);
-  return { parsed: results.length, matched, failures: failures.length };
+  console.log(`  完成：${matched} 筆已比對入帳，${failureMatched} 筆失敗`);
+  
+  // 發送失敗通知
+  if (failureMatched > 0) {
+    const failList = results.filter(r => r.isFailure).map(f => `  ⚠️ ${f.pin} $${f.amount}`).join('\n');
+    await sendTg(TG_ROBBY_CHAT, `❌ ACH 扣款失敗 ${failureMatched} 筆:\n${failList}`);
+  }
+  
+  return { parsed: results.length, matched, failures: failureMatched };
 }
 
 /**
@@ -592,7 +549,9 @@ Commands:
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
 
 // Export for Dashboard API
 module.exports = { getAutomationStatus, odooToAch, syncGColumn, classifyTransfers, bankCheck, issueInvoices, odooPost, processAllFeeTypes };

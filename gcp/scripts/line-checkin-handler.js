@@ -91,6 +91,7 @@ export async function handleCheckInRequest(auth, replyToken, userId) {
   if (dayOfMonth >= 1 && dayOfMonth <= 7) {
     actions.push({ type: 'message', label: '上月小費', text: '上月小費' });
   }
+  actions.push({ type: 'uri', label: '📊 員工系統', uri: 'https://dashboard.paopaomao.tw/employee-guide.html' });
   const message = {
     type: 'template',
     altText: '請進行打卡驗證',
