@@ -166,14 +166,26 @@ class SinopacTransfer {
     await this.findMainFrame();
   }
 
-  /** PrimeFaces dropdown: click label → find panel items → click matching */
-  async selectDropdown(formField, optionText) {
+  /** PrimeFaces dropdown: click label → find panel items → click matching (with retry) */
+  async selectDropdown(formField, optionText, maxRetries = 3) {
     console.log(`[Sinopac] 選擇: ${formField} → ${optionText}`);
     const esc = formField.replace(/:/g, '\\:');
     
-    // Click the label to open
-    await this.mainFrame.click(`#${esc}_label`);
-    await delay(1000);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Wait for element to be available
+        await this.mainFrame.waitForSelector(`#${esc}_label`, { visible: true, timeout: 10000 });
+        await delay(500);
+        await this.mainFrame.click(`#${esc}_label`);
+        await delay(1000);
+        break; // success
+      } catch (e) {
+        if (attempt < maxRetries) {
+          console.log(`[Sinopac]   dropdown click retry (${attempt}/${maxRetries}): ${e.message.substring(0, 60)}`);
+          await delay(2000);
+        } else throw new Error(`❌ No element found for selector: #${esc}_label (${maxRetries} retries)`);
+      }
+    }
     
     // Find matching item in the panel
     const items = await this.mainFrame.$$(`#${esc}_panel .ui-selectonemenu-item`);
@@ -221,26 +233,55 @@ class SinopacTransfer {
     await delay(500);
   }
 
-  /** Click button/link by text content (handles both <button> and <a> commandlinks) */
-  async clickByText(text) {
+  /** Click button/link by text content — with retry + waitForVisible */
+  async clickByText(text, maxRetries = 5) {
     console.log(`[Sinopac] 點擊: ${text}`);
     
-    const clicked = await this.mainFrame.evaluate((targetText) => {
-      // Search buttons, links, and any clickable element
-      const candidates = document.querySelectorAll('button, a, input[type="submit"], input[type="button"], .btn, .ui-commandlink');
-      for (const el of candidates) {
-        const t = (el.textContent || el.value || '').trim();
-        if (t === targetText || t.includes(targetText)) {
-          el.click();
-          return el.tagName + '#' + el.id + ': ' + t;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Wait for any PrimeFaces ajax to complete
+        await this.mainFrame.evaluate(() => {
+          return new Promise(r => {
+            if (typeof PrimeFaces !== 'undefined' && PrimeFaces.ajax?.Queue?.isEmpty?.() === false) {
+              const t = setInterval(() => { if (PrimeFaces.ajax.Queue.isEmpty()) { clearInterval(t); r(); } }, 200);
+              setTimeout(() => { clearInterval(t); r(); }, 5000);
+            } else r();
+          });
+        }).catch(() => {});
+
+        const clicked = await this.mainFrame.evaluate((targetText) => {
+          const candidates = document.querySelectorAll('button, a, input[type="submit"], input[type="button"], .btn, .ui-commandlink');
+          for (const el of candidates) {
+            const t = (el.textContent || el.value || '').trim();
+            if (t === targetText || t.includes(targetText)) {
+              // Check visible + enabled
+              const rect = el.getBoundingClientRect();
+              if (rect.width === 0 || rect.height === 0) continue;
+              if (el.disabled) continue;
+              el.click();
+              return el.tagName + '#' + el.id + ': ' + t;
+            }
+          }
+          return null;
+        }, text);
+        
+        if (clicked) {
+          console.log(`[Sinopac]   clicked: ${clicked}${attempt > 1 ? ' (attempt ' + attempt + ')' : ''}`);
+          return clicked;
         }
+        
+        if (attempt < maxRetries) {
+          console.log(`[Sinopac]   找不到「${text}」，等 2 秒重試 (${attempt}/${maxRetries})`);
+          await delay(2000);
+        }
+      } catch (e) {
+        if (attempt < maxRetries) {
+          console.log(`[Sinopac]   clickByText error: ${e.message.substring(0, 80)}，重試 (${attempt}/${maxRetries})`);
+          await delay(2000);
+        } else throw e;
       }
-      return null;
-    }, text);
-    
-    if (!clicked) throw new Error(`找不到按鈕: ${text}`);
-    console.log(`[Sinopac]   clicked: ${clicked}`);
-    return clicked;
+    }
+    throw new Error(`找不到按鈕: ${text} (重試 ${maxRetries} 次)`);
   }
 
   /** Extract case number from confirmation/result page */
@@ -272,6 +313,14 @@ class SinopacTransfer {
   async pay(fromAccount, toAccount, bankCode, branchCode, accountName, amount, memo) {
     console.log(`[Sinopac] === 臺幣單筆付款 ===`);
     console.log(`[Sinopac] ${fromAccount} → ${toAccount}, $${amount}, memo=${memo}`);
+    
+    // 防呆：先確保 mainFrame 在乾淨狀態（回到首頁或待命頁）
+    try {
+      const currentUrl = this.mainFrame?.url() || '';
+      if (currentUrl.includes('PayTransfer') || currentUrl.includes('confirm') || currentUrl.includes('result')) {
+        console.log('[Sinopac] mainFrame 還在上一筆頁面，重新導航');
+      }
+    } catch (_) {}
     
     // Step 1: Navigate to 臺幣單筆付款
     await this.navigateToMenu(['付款轉帳', '轉帳付款', '臺幣單筆付款']);
