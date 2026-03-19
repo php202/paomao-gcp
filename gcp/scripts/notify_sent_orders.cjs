@@ -5,7 +5,7 @@
  *
  * 流程：
  * 1. 查 Odoo sale.order state=sent
- * 2. 用 partner_id 比對 DB stores/payees 找 LINE 群組
+ * 2. 用 StoreGroupResolver 找 LINE 群組（odoo_id → parent_id → 名稱比對）
  * 3. 發送 Flex Message（帶 so_confirm / so_cancel 按鈕）
  * 4. 客人按「正確」→ paopao-webhook handleSOConfirmPostback
  */
@@ -14,8 +14,71 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { Pool } = require('pg');
 const pool = new Pool({ database: 'paomao' });
 const { odooCall } = require('../lib/odoo.cjs');
+const { StoreGroupResolver } = require('../lib/store-group.cjs');
 
 const PAOPAO_LINE_TOKEN = (process.env.LINE_TOKEN_PAOPAO || '').trim();
+
+/** 建立 Flex Bubble */
+function buildBubble(order, storeName, amt, themeColor, itemContents) {
+  if (!itemContents) {
+    itemContents = [{ type: 'text', text: `$${amt.toLocaleString()}`, size: 'sm', color: '#333333' }];
+  }
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box', layout: 'vertical',
+      contents: [
+        { type: 'text', text: '🐱 請款提醒', weight: 'bold', color: themeColor, size: 'sm' },
+        { type: 'text', text: `單號: ${order.name}`, size: 'xs', color: '#aaaaaa', margin: 'xs' }
+      ]
+    },
+    body: {
+      type: 'box', layout: 'vertical',
+      contents: [
+        { type: 'text', text: storeName || '店家', weight: 'bold', size: 'md' },
+        { type: 'separator', margin: 'md' },
+        { type: 'box', layout: 'vertical', margin: 'md', spacing: 'sm', contents: itemContents },
+        { type: 'separator', margin: 'md' },
+        { type: 'box', layout: 'vertical', margin: 'md', contents: [
+          { type: 'text', text: '如果以上內容正確，請點擊下方按鈕確認。', size: 'xs', color: '#888888', wrap: true },
+          { type: 'text', text: `ACH 將自動扣款：$${amt.toLocaleString()} 元`, size: 'sm', weight: 'bold', margin: 'xs', color: '#333333' }
+        ]}
+      ]
+    },
+    footer: {
+      type: 'box', layout: 'vertical', spacing: 'sm',
+      contents: [
+        { type: 'button', style: 'primary', color: themeColor, height: 'sm',
+          action: { type: 'postback', label: '正確', data: `action=so_confirm&orderId=${order.id}&orderName=${order.name}` } },
+        { type: 'button', style: 'link', color: '#e53935', height: 'sm',
+          action: { type: 'postback', label: '取消', data: `action=so_cancel&orderId=${order.id}&orderName=${order.name}` } }
+      ]
+    }
+  };
+}
+
+/** 取訂單明細，組 itemContents */
+async function getOrderItemContents(order) {
+  try {
+    const lines = await odooCall('sale.order.line', 'read', [order.order_line],
+      { fields: ['name', 'product_uom_qty', 'price_subtotal'] }
+    );
+    const validLines = (lines || []).filter(l => l.price_subtotal !== 0);
+    if (validLines.length > 0) {
+      return validLines.map(line => ({
+        type: 'box', layout: 'horizontal', margin: 'sm',
+        contents: [
+          { type: 'text', text: (line.name || '品項').replace(/\n/g, ' '), size: 'xs', color: '#555555', wrap: true, flex: 5 },
+          { type: 'text', text: `x${line.product_uom_qty}`, size: 'xs', color: '#888888', flex: 1, align: 'center' },
+          { type: 'text', text: `$${Math.round(line.price_subtotal).toLocaleString()}`, size: 'xs', color: '#333333', flex: 2, align: 'end' }
+        ]
+      }));
+    }
+  } catch (e) {
+    console.warn(`  ⚠️ ${order.name}: 取明細失敗: ${e.message}`);
+  }
+  return null;
+}
 
 async function main() {
   console.log('[notify-sent] 🚀 開始查詢 Odoo sent 訂單...');
@@ -33,217 +96,42 @@ async function main() {
     return;
   }
 
-  // 2. 建立 partner_id → line_group_id 的 mapping（透過 DB stores + payees）
-  //    查找順序：payees(store_id) → stores.payee_id(關聯代號) → stores.line_group_id
-  const { rows: storePayees } = await pool.query(`
-    SELECT s.odoo_id AS odoo_partner_id,
-           COALESCE(
-             NULLIF(p_direct.line_group_id, ''),
-             NULLIF(p_assoc.line_group_id, ''),
-             s.line_group_id
-           ) AS line_group_id,
-           s.store_name
-    FROM stores s
-    LEFT JOIN payees p_direct ON p_direct.store_id = s.id
-    LEFT JOIN payees p_assoc ON p_assoc.id = s.payee_id
-    WHERE s.odoo_id IS NOT NULL
-      AND (
-        (p_direct.line_group_id IS NOT NULL AND p_direct.line_group_id != '')
-        OR (p_assoc.line_group_id IS NOT NULL AND p_assoc.line_group_id != '')
-        OR (s.line_group_id IS NOT NULL AND s.line_group_id != '')
-      )
-  `);
-  const partnerToGroup = {};
-  for (const sp of storePayees) {
-    partnerToGroup[sp.odoo_partner_id] = { groupId: sp.line_group_id, storeName: sp.store_name };
-  }
+  // 2. 初始化 StoreGroupResolver
+  const resolver = new StoreGroupResolver(pool);
+  await resolver.init();
+
+  // 3. 批量解析所有訂單的 LINE 群組
+  const items = orders.map(o => ({
+    partnerId: o.partner_id?.[0],
+    partnerName: o.partner_id?.[1] || ''
+  }));
+  const groupMap = await resolver.resolveBatch(items);
 
   let sent = 0, skipped = 0;
-
-  // 3. 先組好每筆訂單的 bubble，按 groupId 分組
   const groupBubbles = {}; // groupId → [{ bubble, storeName, orderName }]
-
-  // 收集找不到 mapping 的 partner_id，批次查 Odoo parent_id
-  const unmatchedOrders = [];
 
   for (const order of orders) {
     const partnerId = order.partner_id?.[0];
     const partnerName = order.partner_id?.[1] || '';
-    let mapping = partnerToGroup[partnerId];
+    const mapping = groupMap.get(partnerId);
 
     if (!mapping) {
-      unmatchedOrders.push({ order, partnerId, partnerName });
+      console.log(`  ⏭️ ${order.name} (${partnerName}): 找不到 LINE 群組，跳過`);
+      skipped++;
       continue;
     }
 
-    // 取訂單明細
-    let itemContents;
-    try {
-      const lines = await odooCall('sale.order.line', 'read', [order.order_line],
-        { fields: ['name', 'product_uom_qty', 'price_subtotal'] }
-      );
-      const validLines = (lines || []).filter(l => l.price_subtotal !== 0);
-      if (validLines.length > 0) {
-        itemContents = validLines.map(line => ({
-          type: 'box', layout: 'horizontal', margin: 'sm',
-          contents: [
-            { type: 'text', text: (line.name || '品項').replace(/\n/g, ' '), size: 'xs', color: '#555555', wrap: true, flex: 5 },
-            { type: 'text', text: `x${line.product_uom_qty}`, size: 'xs', color: '#888888', flex: 1, align: 'center' },
-            { type: 'text', text: `$${Math.round(line.price_subtotal).toLocaleString()}`, size: 'xs', color: '#333333', flex: 2, align: 'end' }
-          ]
-        }));
-      }
-    } catch (e) {
-      console.warn(`  ⚠️ ${order.name}: 取明細失敗: ${e.message}`);
+    if (mapping.method !== 'odoo_id') {
+      console.log(`  🔗 ${order.name}: partner "${partnerName}" → ${mapping.method} 比對到 ${mapping.storeName}`);
     }
 
-    if (!itemContents) {
-      itemContents = [{ type: 'text', text: `$${Math.round(order.amount_total).toLocaleString()}`, size: 'sm', color: '#333333' }];
-    }
-
+    const itemContents = await getOrderItemContents(order);
     const storeName = (mapping.storeName || partnerName).replace('泡泡貓｜', '');
     const amt = Math.round(order.amount_total);
-    const themeColor = '#1DB446';
-
-    const bubble = {
-      type: 'bubble',
-      header: {
-        type: 'box', layout: 'vertical',
-        contents: [
-          { type: 'text', text: '🐱 請款提醒', weight: 'bold', color: themeColor, size: 'sm' },
-          { type: 'text', text: `單號: ${order.name}`, size: 'xs', color: '#aaaaaa', margin: 'xs' }
-        ]
-      },
-      body: {
-        type: 'box', layout: 'vertical',
-        contents: [
-          { type: 'text', text: storeName || '店家', weight: 'bold', size: 'md' },
-          { type: 'separator', margin: 'md' },
-          { type: 'box', layout: 'vertical', margin: 'md', spacing: 'sm', contents: itemContents },
-          { type: 'separator', margin: 'md' },
-          { type: 'box', layout: 'vertical', margin: 'md', contents: [
-            { type: 'text', text: '如果以上內容正確，請點擊下方按鈕確認。', size: 'xs', color: '#888888', wrap: true },
-            { type: 'text', text: `ACH 將自動扣款：$${amt.toLocaleString()} 元`, size: 'sm', weight: 'bold', margin: 'xs', color: '#333333' }
-          ]}
-        ]
-      },
-      footer: {
-        type: 'box', layout: 'vertical', spacing: 'sm',
-        contents: [
-          { type: 'button', style: 'primary', color: themeColor, height: 'sm',
-            action: { type: 'postback', label: '正確', data: `action=so_confirm&orderId=${order.id}&orderName=${order.name}` } },
-          { type: 'button', style: 'link', color: '#e53935', height: 'sm',
-            action: { type: 'postback', label: '取消', data: `action=so_cancel&orderId=${order.id}&orderName=${order.name}` } }
-        ]
-      }
-    };
+    const bubble = buildBubble(order, storeName, amt, '#1DB446', itemContents);
 
     if (!groupBubbles[mapping.groupId]) groupBubbles[mapping.groupId] = [];
     groupBubbles[mapping.groupId].push({ bubble, storeName, orderName: order.name });
-  }
-
-  // 3.5 Fallback: 用 Odoo parent_id (commercial_partner_id) 回查店家
-  if (unmatchedOrders.length > 0) {
-    const unmatchedIds = [...new Set(unmatchedOrders.map(u => u.partnerId).filter(Boolean))];
-    console.log(`[notify-sent] 🔍 ${unmatchedOrders.length} 筆找不到直接 mapping，嘗試查 Odoo parent_id...`);
-    try {
-      const partners = await odooCall('res.partner', 'read', [unmatchedIds],
-        { fields: ['id', 'parent_id', 'commercial_partner_id'] }
-      );
-      const partnerParentMap = {};
-      for (const p of partners) {
-        // commercial_partner_id 是最終的商業實體（公司），優先使用
-        const parentId = p.commercial_partner_id?.[0] || p.parent_id?.[0];
-        if (parentId && parentId !== p.id) {
-          partnerParentMap[p.id] = parentId;
-        }
-      }
-
-      for (const { order, partnerId, partnerName } of unmatchedOrders) {
-        const parentId = partnerParentMap[partnerId];
-        const mapping = parentId ? partnerToGroup[parentId] : null;
-
-        if (!mapping) {
-          console.log(`  ⏭️ ${order.name} (${partnerName}): 找不到 LINE 群組（parent_id=${parentId || '無'}），跳過`);
-          skipped++;
-          continue;
-        }
-
-        console.log(`  🔗 ${order.name}: partner ${partnerId} → parent ${parentId} (${mapping.storeName})`);
-
-        // 取訂單明細（同上邏輯）
-        let itemContents;
-        try {
-          const lines = await odooCall('sale.order.line', 'read', [order.order_line],
-            { fields: ['name', 'product_uom_qty', 'price_subtotal'] }
-          );
-          const validLines = (lines || []).filter(l => l.price_subtotal !== 0);
-          if (validLines.length > 0) {
-            itemContents = validLines.map(line => ({
-              type: 'box', layout: 'horizontal', margin: 'sm',
-              contents: [
-                { type: 'text', text: (line.name || '品項').replace(/\n/g, ' '), size: 'xs', color: '#555555', wrap: true, flex: 5 },
-                { type: 'text', text: `x${line.product_uom_qty}`, size: 'xs', color: '#888888', flex: 1, align: 'center' },
-                { type: 'text', text: `$${Math.round(line.price_subtotal).toLocaleString()}`, size: 'xs', color: '#333333', flex: 2, align: 'end' }
-              ]
-            }));
-          }
-        } catch (e) {
-          console.warn(`  ⚠️ ${order.name}: 取明細失敗: ${e.message}`);
-        }
-
-        if (!itemContents) {
-          itemContents = [{ type: 'text', text: `$${Math.round(order.amount_total).toLocaleString()}`, size: 'sm', color: '#333333' }];
-        }
-
-        const storeName = (mapping.storeName || partnerName).replace('泡泡貓｜', '');
-        const amt = Math.round(order.amount_total);
-        const themeColor = '#1DB446';
-
-        const bubble = {
-          type: 'bubble',
-          header: {
-            type: 'box', layout: 'vertical',
-            contents: [
-              { type: 'text', text: '🐱 請款提醒', weight: 'bold', color: themeColor, size: 'sm' },
-              { type: 'text', text: `單號: ${order.name}`, size: 'xs', color: '#aaaaaa', margin: 'xs' }
-            ]
-          },
-          body: {
-            type: 'box', layout: 'vertical',
-            contents: [
-              { type: 'text', text: storeName || '店家', weight: 'bold', size: 'md' },
-              { type: 'separator', margin: 'md' },
-              { type: 'box', layout: 'vertical', margin: 'md', spacing: 'sm', contents: itemContents },
-              { type: 'separator', margin: 'md' },
-              { type: 'box', layout: 'vertical', margin: 'md', contents: [
-                { type: 'text', text: '如果以上內容正確，請點擊下方按鈕確認。', size: 'xs', color: '#888888', wrap: true },
-                { type: 'text', text: `ACH 將自動扣款：$${amt.toLocaleString()} 元`, size: 'sm', weight: 'bold', margin: 'xs', color: '#333333' }
-              ]}
-            ]
-          },
-          footer: {
-            type: 'box', layout: 'vertical', spacing: 'sm',
-            contents: [
-              { type: 'button', style: 'primary', color: themeColor, height: 'sm',
-                action: { type: 'postback', label: '正確', data: `action=so_confirm&orderId=${order.id}&orderName=${order.name}` } },
-              { type: 'button', style: 'link', color: '#e53935', height: 'sm',
-                action: { type: 'postback', label: '取消', data: `action=so_cancel&orderId=${order.id}&orderName=${order.name}` } }
-            ]
-          }
-        };
-
-        if (!groupBubbles[mapping.groupId]) groupBubbles[mapping.groupId] = [];
-        groupBubbles[mapping.groupId].push({ bubble, storeName, orderName: order.name });
-      }
-    } catch (e) {
-      console.error(`[notify-sent] ❌ Odoo parent_id 查詢失敗: ${e.message}`);
-      // fallback: 全部跳過
-      for (const { order, partnerName } of unmatchedOrders) {
-        console.log(`  ⏭️ ${order.name} (${partnerName}): parent_id 查詢失敗，跳過`);
-        skipped++;
-      }
-    }
   }
 
   // 4. 按群組發送：多筆 → carousel（可滑動），單筆 → 單 bubble
@@ -260,10 +148,8 @@ async function main() {
 
       let flexContent;
       if (chunk.length === 1) {
-        // 單筆：直接送 bubble
         flexContent = chunk[0].bubble;
       } else {
-        // 多筆：carousel，可左右滑動
         flexContent = {
           type: 'carousel',
           contents: chunk.map(i => i.bubble)

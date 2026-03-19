@@ -139,3 +139,20 @@ launchctl kickstart -k gui/$(id -u)/com.paopaomao.gcp-server
 3. **不動業務邏輯**：所有業務邏輯、Odoo 呼叫參數、資料流均未更動。
 
 4. **未觸及**：`~/泡泡貓/dashboard/server.js`（另一 repo，本次不動）。
+
+---
+
+### 2026-03-19: lib/store-group.cjs — 門市 LINE 群組查找模組
+
+**新增** `lib/store-group.cjs`：`StoreGroupResolver` class
+- `resolve(partnerId, partnerName)` — 單筆查找（odoo_id → parent_id → 名稱比對）
+- `resolveBatch(items)` — 批量查找（減少 Odoo API 呼叫）
+- `resolveByOdooId(partnerId)` — 只查 odoo_id 直配
+- `resolveByName(partnerName)` — 只用名稱模糊比對
+
+**改動** `scripts/notify_sent_orders.cjs`
+- 移除內嵌的 SQL 查詢和 findStoreByName 邏輯
+- 改用 `StoreGroupResolver.resolveBatch()` 統一查找
+- 程式碼從 ~320 行縮到 ~180 行
+
+**解決問題**：忠孝店(Kelly)/台大辛亥店(廖婕茹) 等 partner 無 parent_id 的 SO 可透過名稱比對找到群組

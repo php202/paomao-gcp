@@ -33,6 +33,16 @@
 | [GAS_vs_GCP_細節與邏輯對照檢查清單.md](GAS_vs_GCP_細節與邏輯對照檢查清單.md) | GAS 與 GCP 邏輯對照 |
 | [GAS_vs_GCP_員工指令呈現差異.md](GAS_vs_GCP_員工指令呈現差異.md) | 員工指令呈現差異 |
 
+## 架構規劃
+
+| 檔案 | 說明 |
+|------|------|
+| [api-isolation-plan.md](api-isolation-plan.md) | API 隔離與獨立部署方案（巡店/考核/合約拆分、Circuit Breaker、零停機部署） |
+| [巡店考核系統實施計劃.md](巡店考核系統實施計劃.md) | 巡店考核系統實施計劃 |
+| [巡店考核評分標準.md](巡店考核評分標準.md) | 巡店考核評分標準 |
+| [續約品質控管Agent規劃.md](續約品質控管Agent規劃.md) | 續約品質控管 Agent 規劃 |
+| [modularization-changelog.md](modularization-changelog.md) | 模組化變更紀錄 |
+
 ## Giveme / 其他
 
 | 檔案 | 說明 |
