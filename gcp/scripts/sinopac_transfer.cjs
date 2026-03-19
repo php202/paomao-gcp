@@ -332,21 +332,45 @@ class SinopacTransfer {
     // 付款帳號
     await this.selectDropdown('form:payerAccountCombo', ACCOUNTS[fromAccount] || fromAccount);
     
-    // 跨行(非807)：指定付款通路 → 通匯
+    // 跨行(非807)：指定付款通路 → 通匯 (radio button)
     if (!isSameBank) {
-      console.log('[Sinopac] 跨行匯款 → 選擇通匯');
+      console.log('[Sinopac] 跨行匯款 → 選擇通匯 radio button');
       try {
-        await this.selectDropdown('form:payChannelCombo', '通匯');
-        await delay(1500);
+        // 付款通路是 radio button，找到「通匯」文字旁的 radio 並點擊
+        const clicked = await this.mainFrame.evaluate(() => {
+          // 方法1：找 label 文字包含「通匯」的 radio
+          const labels = document.querySelectorAll('label');
+          for (const label of labels) {
+            if (label.textContent.trim() === '通匯') {
+              label.click();
+              return 'label-click';
+            }
+          }
+          // 方法2：找 radio input value 含通匯
+          const radios = document.querySelectorAll('input[type="radio"]');
+          for (const radio of radios) {
+            const parent = radio.closest('td, div, span');
+            if (parent && parent.textContent.includes('通匯')) {
+              radio.click();
+              return 'radio-click';
+            }
+          }
+          // 方法3：PrimeFaces selectOneRadio — 找包含通匯文字的選項
+          const items = document.querySelectorAll('.ui-radiobutton, .ui-selectoneradio td');
+          for (const item of items) {
+            if (item.textContent.includes('通匯')) {
+              const box = item.querySelector('.ui-radiobutton-box, .ui-radiobutton-icon, input');
+              if (box) { box.click(); return 'pf-radio-click'; }
+              item.click();
+              return 'item-click';
+            }
+          }
+          return null;
+        });
+        console.log(`[Sinopac] 通匯選擇結果: ${clicked || '未找到'}`);
+        await delay(2000);
       } catch (e) {
-        console.log(`[Sinopac] 付款通路選擇嘗試: ${e.message}`);
-        // 備案：嘗試其他可能的 form field name
-        try {
-          await this.selectDropdown('form:payChannel', '通匯');
-          await delay(1500);
-        } catch (_) {
-          console.warn('[Sinopac] ⚠️ 無法自動選擇通匯，可能需要手動選');
-        }
+        console.warn(`[Sinopac] ⚠️ 通匯 radio 選擇失敗: ${e.message}`);
       }
     }
     
