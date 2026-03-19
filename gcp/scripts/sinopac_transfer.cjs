@@ -332,31 +332,6 @@ class SinopacTransfer {
     // 付款帳號
     await this.selectDropdown('form:payerAccountCombo', ACCOUNTS[fromAccount] || fromAccount);
     
-    // 跨行(非807)：指定付款通路 → FXML (PrimeFaces radio button)
-    // DOM: #form\:designatedChannelRadioFXML > .ui-radiobutton-box
-    if (!isSameBank) {
-      console.log('[Sinopac] 跨行匯款 → 選擇 FXML');
-      try {
-        // PrimeFaces radio: 點擊 .ui-radiobutton-box 觸發選中
-        const sel = '#form\\:designatedChannelRadioFXML .ui-radiobutton-box';
-        await this.mainFrame.waitForSelector(sel, { visible: true, timeout: 8000 });
-        await this.mainFrame.click(sel);
-        console.log('[Sinopac] ✅ FXML radio 已點擊');
-        await delay(2000);
-      } catch (e) {
-        console.warn(`[Sinopac] ⚠️ FXML radio 點擊失敗: ${e.message}`);
-        // Fallback: 直接設 input checked + trigger change
-        try {
-          await this.mainFrame.evaluate(() => {
-            const input = document.getElementById('form:designatedChannelRadio:2');
-            if (input) { input.checked = true; input.click(); input.dispatchEvent(new Event('change', { bubbles: true })); }
-          });
-          console.log('[Sinopac] ✅ FXML fallback (direct input click)');
-          await delay(2000);
-        } catch (_) {}
-      }
-    }
-    
     // 交易金額
     await this.fillInput('form:txAmt_input', String(Math.round(amount)));
     
@@ -381,6 +356,29 @@ class SinopacTransfer {
     // 收款人戶名
     if (accountName) {
       await this.fillInput('form:payeeName', accountName);
+    }
+    
+    // 跨行(非807)：填完收款人戶名後 → 選 FXML 付款通路 → 才能繼續後面欄位
+    // DOM: #form\:designatedChannelRadioFXML > .ui-radiobutton-box
+    if (!isSameBank) {
+      console.log('[Sinopac] 跨行匯款 → 填完戶名，選擇 FXML');
+      try {
+        const sel = '#form\\:designatedChannelRadioFXML .ui-radiobutton-box';
+        await this.mainFrame.waitForSelector(sel, { visible: true, timeout: 8000 });
+        await this.mainFrame.click(sel);
+        console.log('[Sinopac] ✅ FXML radio 已點擊');
+        await delay(3000); // 等表單刷新
+      } catch (e) {
+        console.warn(`[Sinopac] ⚠️ FXML radio 點擊失敗: ${e.message}`);
+        try {
+          await this.mainFrame.evaluate(() => {
+            const input = document.getElementById('form:designatedChannelRadio:2');
+            if (input) { input.checked = true; input.click(); input.dispatchEvent(new Event('change', { bubbles: true })); }
+          });
+          console.log('[Sinopac] ✅ FXML fallback (direct input click)');
+          await delay(3000);
+        } catch (_) {}
+      }
     }
     
     // 付款備註/匯款附言
