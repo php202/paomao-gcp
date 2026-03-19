@@ -332,44 +332,28 @@ class SinopacTransfer {
     // 付款帳號
     await this.selectDropdown('form:payerAccountCombo', ACCOUNTS[fromAccount] || fromAccount);
     
-    // 跨行(非807)：指定付款通路 → FXML (radio button)
+    // 跨行(非807)：指定付款通路 → FXML (PrimeFaces radio button)
+    // DOM: #form\:designatedChannelRadioFXML > .ui-radiobutton-box
     if (!isSameBank) {
-      console.log('[Sinopac] 跨行匯款 → 選擇 FXML radio button');
+      console.log('[Sinopac] 跨行匯款 → 選擇 FXML');
       try {
-        const clicked = await this.mainFrame.evaluate(() => {
-          // 方法1：找 label 文字包含「FXML」的 radio
-          const labels = document.querySelectorAll('label');
-          for (const label of labels) {
-            if (label.textContent.trim().includes('FXML')) {
-              label.click();
-              return 'label-click: ' + label.textContent.trim();
-            }
-          }
-          // 方法2：找 radio input value 含 FXML
-          const radios = document.querySelectorAll('input[type="radio"]');
-          for (const radio of radios) {
-            const parent = radio.closest('td, div, span');
-            if (parent && parent.textContent.includes('FXML')) {
-              radio.click();
-              return 'radio-click';
-            }
-          }
-          // 方法3：PrimeFaces selectOneRadio
-          const items = document.querySelectorAll('.ui-radiobutton, .ui-selectoneradio td');
-          for (const item of items) {
-            if (item.textContent.includes('FXML')) {
-              const box = item.querySelector('.ui-radiobutton-box, .ui-radiobutton-icon, input');
-              if (box) { box.click(); return 'pf-radio-click'; }
-              item.click();
-              return 'item-click';
-            }
-          }
-          return null;
-        });
-        console.log(`[Sinopac] FXML 選擇結果: ${clicked || '未找到'}`);
+        // PrimeFaces radio: 點擊 .ui-radiobutton-box 觸發選中
+        const sel = '#form\\:designatedChannelRadioFXML .ui-radiobutton-box';
+        await this.mainFrame.waitForSelector(sel, { visible: true, timeout: 8000 });
+        await this.mainFrame.click(sel);
+        console.log('[Sinopac] ✅ FXML radio 已點擊');
         await delay(2000);
       } catch (e) {
-        console.warn(`[Sinopac] ⚠️ FXML radio 選擇失敗: ${e.message}`);
+        console.warn(`[Sinopac] ⚠️ FXML radio 點擊失敗: ${e.message}`);
+        // Fallback: 直接設 input checked + trigger change
+        try {
+          await this.mainFrame.evaluate(() => {
+            const input = document.getElementById('form:designatedChannelRadio:2');
+            if (input) { input.checked = true; input.click(); input.dispatchEvent(new Event('change', { bubbles: true })); }
+          });
+          console.log('[Sinopac] ✅ FXML fallback (direct input click)');
+          await delay(2000);
+        } catch (_) {}
       }
     }
     
