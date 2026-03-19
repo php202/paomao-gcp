@@ -332,33 +332,32 @@ class SinopacTransfer {
     // 付款帳號
     await this.selectDropdown('form:payerAccountCombo', ACCOUNTS[fromAccount] || fromAccount);
     
-    // 跨行(非807)：指定付款通路 → 通匯 (radio button)
+    // 跨行(非807)：指定付款通路 → FXML (radio button)
     if (!isSameBank) {
-      console.log('[Sinopac] 跨行匯款 → 選擇通匯 radio button');
+      console.log('[Sinopac] 跨行匯款 → 選擇 FXML radio button');
       try {
-        // 付款通路是 radio button，找到「通匯」文字旁的 radio 並點擊
         const clicked = await this.mainFrame.evaluate(() => {
-          // 方法1：找 label 文字包含「通匯」的 radio
+          // 方法1：找 label 文字包含「FXML」的 radio
           const labels = document.querySelectorAll('label');
           for (const label of labels) {
-            if (label.textContent.trim() === '通匯') {
+            if (label.textContent.trim().includes('FXML')) {
               label.click();
-              return 'label-click';
+              return 'label-click: ' + label.textContent.trim();
             }
           }
-          // 方法2：找 radio input value 含通匯
+          // 方法2：找 radio input value 含 FXML
           const radios = document.querySelectorAll('input[type="radio"]');
           for (const radio of radios) {
             const parent = radio.closest('td, div, span');
-            if (parent && parent.textContent.includes('通匯')) {
+            if (parent && parent.textContent.includes('FXML')) {
               radio.click();
               return 'radio-click';
             }
           }
-          // 方法3：PrimeFaces selectOneRadio — 找包含通匯文字的選項
+          // 方法3：PrimeFaces selectOneRadio
           const items = document.querySelectorAll('.ui-radiobutton, .ui-selectoneradio td');
           for (const item of items) {
-            if (item.textContent.includes('通匯')) {
+            if (item.textContent.includes('FXML')) {
               const box = item.querySelector('.ui-radiobutton-box, .ui-radiobutton-icon, input');
               if (box) { box.click(); return 'pf-radio-click'; }
               item.click();
@@ -367,10 +366,10 @@ class SinopacTransfer {
           }
           return null;
         });
-        console.log(`[Sinopac] 通匯選擇結果: ${clicked || '未找到'}`);
+        console.log(`[Sinopac] FXML 選擇結果: ${clicked || '未找到'}`);
         await delay(2000);
       } catch (e) {
-        console.warn(`[Sinopac] ⚠️ 通匯 radio 選擇失敗: ${e.message}`);
+        console.warn(`[Sinopac] ⚠️ FXML radio 選擇失敗: ${e.message}`);
       }
     }
     
