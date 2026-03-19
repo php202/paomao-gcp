@@ -309,10 +309,13 @@ class SinopacTransfer {
 
   // ══════════════════════════════════════════════════
   // 臺幣單筆付款 (666→686 or 686→外部)
+  // 自動判斷：同行(807)走轉帳，他行走通匯
   // ══════════════════════════════════════════════════
   async pay(fromAccount, toAccount, bankCode, branchCode, accountName, amount, memo) {
-    console.log(`[Sinopac] === 臺幣單筆付款 ===`);
-    console.log(`[Sinopac] ${fromAccount} → ${toAccount}, $${amount}, memo=${memo}`);
+    const isSameBank = bankCode === '807';
+    const payMethod = isSameBank ? '臺幣單筆付款' : '臺幣單筆付款'; // 同一頁面，通匯靠下拉選
+    console.log(`[Sinopac] === ${isSameBank ? '同行轉帳' : '跨行通匯'} ===`);
+    console.log(`[Sinopac] ${fromAccount} → ${toAccount}, bank=${bankCode}, $${amount}, memo=${memo}`);
     
     // 防呆：先確保 mainFrame 在乾淨狀態（回到首頁或待命頁）
     try {
@@ -329,6 +332,24 @@ class SinopacTransfer {
     // 付款帳號
     await this.selectDropdown('form:payerAccountCombo', ACCOUNTS[fromAccount] || fromAccount);
     
+    // 跨行(非807)：指定付款通路 → 通匯
+    if (!isSameBank) {
+      console.log('[Sinopac] 跨行匯款 → 選擇通匯');
+      try {
+        await this.selectDropdown('form:payChannelCombo', '通匯');
+        await delay(1500);
+      } catch (e) {
+        console.log(`[Sinopac] 付款通路選擇嘗試: ${e.message}`);
+        // 備案：嘗試其他可能的 form field name
+        try {
+          await this.selectDropdown('form:payChannel', '通匯');
+          await delay(1500);
+        } catch (_) {
+          console.warn('[Sinopac] ⚠️ 無法自動選擇通匯，可能需要手動選');
+        }
+      }
+    }
+    
     // 交易金額
     await this.fillInput('form:txAmt_input', String(Math.round(amount)));
     
@@ -341,7 +362,7 @@ class SinopacTransfer {
       await delay(2000); // Wait for branch list to load
     }
     
-    // 分行 (同行轉帳可能自動帶入)
+    // 分行
     if (branchCode) {
       try {
         await this.selectDropdown('form:payeeBranchCombo', branchCode);
