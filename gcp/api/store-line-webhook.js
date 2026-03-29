@@ -518,7 +518,7 @@ function messFilter(msg) {
 }
 
 async function findStoreByDestinationId(auth, destinationId) {
-  const rows = await readSheet(auth, INTEGRATED_SHEET_SS_ID, "'店家基本資料'!A:L");
+  const rows = await readSheet(auth, INTEGRATED_SHEET_SS_ID, "'店家基本資料'!A:Q");
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     const dest = String(row[4] || '').trim();
@@ -532,6 +532,8 @@ async function findStoreByDestinationId(auth, destinationId) {
         sayId: String(row[5] || '').trim(),
         botId: String(row[6] || '').trim(),
         isReply: isReply !== false,
+        openTime: String(row[15] || '').trim() || '11:00',
+        closeTime: String(row[16] || '').trim() || '21:00',
       };
     }
   }
@@ -639,6 +641,9 @@ async function getUpcomingSlotsText(auth, sayId, store = null) {
     return { slotsStr: cached.slotsStr, debug: cached.debug ?? '' };
   }
 
+  const timeStart = store?.openTime || '11:00';
+  const timeEnd = store?.closeTime || '21:00';
+
   const today = new Date();
   const toYmd = (d) => d.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
   const startDate = toYmd(today);
@@ -653,6 +658,8 @@ async function getUpcomingSlotsText(auth, sayId, store = null) {
       endDate: endDateFirst,
       needPeople: 1,
       durationMin: 90,
+      timeStart,
+      timeEnd,
     });
     if (!result?.status || !Array.isArray(result.data)) {
       console.warn('[store-line-webhook] getUpcomingSlotsText GCP API 無資料 sayId=%s', sayId);
@@ -675,6 +682,8 @@ async function getUpcomingSlotsText(auth, sayId, store = null) {
       endDate: endDateExtended,
       needPeople: 1,
       durationMin: 90,
+      timeStart,
+      timeEnd,
     });
     if (!result?.status || !Array.isArray(result.data)) {
       const out = { slotsStr: null, debug: 'GCP_延伸無資料' };
