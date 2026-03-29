@@ -420,39 +420,106 @@ class SinopacTransfer {
   // ══════════════════════════════════════════════════
   // 查詢交易明細
   // ══════════════════════════════════════════════════
-  async query(account, date) {
-    console.log(`[Sinopac] === 帳戶查詢 === ${account}, ${date}`);
+  async query(account, date, dateTo) {
+    console.log(`[Sinopac] === 帳戶查詢 === ${account}, ${date}${dateTo ? ' ~ ' + dateTo : ''}`);
     
-    await this.navigateToMenu(['帳戶查詢', '帳戶交易明細查詢']);
+    await this.navigateToMenu(['帳戶查詢', '交易明細查詢']);
     
-    await this.selectDropdown('form:queryAcctCombo', ACCOUNTS[account] || account);
+    await this.selectDropdown('form:accountCombo', ACCOUNTS[account] || account);
     
     if (date) {
       const dateStr = date.replace(/-/g, '/');
-      await this.fillInput('form:startDate', dateStr);
-      await this.fillInput('form:endDate', dateStr);
+      const dateToStr = dateTo ? dateTo.replace(/-/g, '/') : dateStr;
+      await this.fillInput('form:queryDateStart_input', dateStr);
+      await this.fillInput('form:queryDateEnd_input', dateToStr);
     }
     
-    await this.clickByText('查詢');
+    // 用 form:btnQuery 按鈕查詢
+    try {
+      await this.mainFrame.click('#form\\:btnQuery');
+      console.log('[Sinopac] 點擊: 查詢按鈕');
+    } catch (e) {
+      await this.clickByText('查詢');
+    }
     await delay(5000);
     
-    const transactions = await this.mainFrame.evaluate(() => {
-      const rows = document.querySelectorAll('table tbody tr');
-      return Array.from(rows).map(row => {
-        const cells = row.querySelectorAll('td');
-        if (cells.length > 3) {
+    // 解析當前頁的交易資料
+    const parsePage = async () => {
+      return await this.mainFrame.evaluate(() => {
+        const dataBody = document.querySelector('[id$="DetailDataGrid_data"]');
+        if (!dataBody) return [];
+        const rows = dataBody.querySelectorAll('tr');
+        return Array.from(rows).map(row => {
+          const cells = row.querySelectorAll('td');
+          if (cells.length < 6) return null;
+          const debit = cells[4]?.textContent?.trim();
+          const credit = cells[5]?.textContent?.trim();
+          if (!debit && !credit) return null;
           return {
-            date: cells[0]?.textContent?.trim(),
-            description: cells[1]?.textContent?.trim(),
-            amount: cells[2]?.textContent?.trim(),
-            balance: cells[3]?.textContent?.trim(),
+            account: cells[0]?.textContent?.trim(),
+            date: cells[1]?.textContent?.trim(),
+            currency: cells[3]?.textContent?.trim(),
+            debit: debit || '',
+            credit: credit || '',
+            balance: cells[6]?.textContent?.trim() || '',
+            reference: cells[8]?.textContent?.trim() || '',
+            memo: cells[9]?.textContent?.trim() || '',
           };
+        }).filter(Boolean);
+      });
+    };
+
+    // 收集所有頁面的交易
+    let transactions = await parsePage();
+    let pageNum = 1;
+    const MAX_PAGES = 20; // 安全上限，避免無限迴圈
+
+    while (pageNum < MAX_PAGES) {
+      // 檢查是否有下一頁按鈕
+      const hasNext = await this.mainFrame.evaluate(() => {
+        // PrimeFaces paginator: 找「下一頁」按鈕（不是 disabled 的）
+        const nextBtns = document.querySelectorAll('.ui-paginator-next, [class*="paginator"] .ui-paginator-next');
+        for (const btn of nextBtns) {
+          if (!btn.classList.contains('ui-state-disabled')) return true;
         }
-        return null;
-      }).filter(Boolean);
-    });
+        // 也試試一般的 ">" 或 "下一頁" 連結
+        const links = document.querySelectorAll('.ui-paginator a, .ui-paginator span');
+        for (const el of links) {
+          if (el.textContent?.trim() === '>' && !el.classList.contains('ui-state-disabled')) return true;
+        }
+        return false;
+      });
+
+      if (!hasNext) {
+        console.log(`[Sinopac] 共 ${pageNum} 頁, ${transactions.length} 筆交易`);
+        break;
+      }
+
+      // 點下一頁
+      try {
+        await this.mainFrame.evaluate(() => {
+          const nextBtns = document.querySelectorAll('.ui-paginator-next');
+          for (const btn of nextBtns) {
+            if (!btn.classList.contains('ui-state-disabled')) { btn.click(); return; }
+          }
+        });
+        pageNum++;
+        console.log(`[Sinopac] 翻到第 ${pageNum} 頁...`);
+        await delay(3000);
+        
+        const pageData = await parsePage();
+        if (pageData.length === 0) {
+          console.log(`[Sinopac] 第 ${pageNum} 頁無資料，停止翻頁`);
+          break;
+        }
+        transactions = transactions.concat(pageData);
+      } catch (e) {
+        console.log(`[Sinopac] 翻頁失敗: ${e.message}`);
+        break;
+      }
+    }
     
-    return { action: 'query', account, date, transactions, count: transactions.length };
+    return { action: 'query', account, date, dateTo: dateTo || date, transactions, count: transactions.length, pages: pageNum };
   }
 
   async disconnect() {
@@ -475,6 +542,7 @@ async function main() {
 Usage:
   node sinopac_transfer.cjs pay --from 666 --to 19201800238686 --bank 807 --branch 1929 --name "泡泡貓股份有限公司" --amount 5971 --memo "台南安南-INV061"
   node sinopac_transfer.cjs query --account 666 --date 2026-03-13
+  node sinopac_transfer.cjs query --account 686 --date 2026-03-16 --date-to 2026-03-23
 
 Env:
   SINOPAC_CDP_PORT  Chrome DevTools port (default: 18800)`);
@@ -502,7 +570,7 @@ Env:
         break;
       case 'query':
         if (!options.account) throw new Error('缺少: --account');
-        result = await sinopac.query(options.account, options.date);
+        result = await sinopac.query(options.account, options.date, options['date-to']);
         break;
       default:
         throw new Error(`未知操作: ${action}`);

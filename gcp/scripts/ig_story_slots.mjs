@@ -100,19 +100,22 @@ async function main() {
   // 3. 取該店上傳的素材當背景（使用者手選 > 未使用過 > 用最少次的）
   let storeUploadPath = '';
   let usedUploadId = null;
+  let uploadMediaType = 'image';
   try {
     let sql;
     if (preferUploadId) {
-      sql = `SELECT id, file_url FROM story_uploads WHERE id = ${parseInt(preferUploadId)}`;
+      sql = `SELECT id, file_url, media_type FROM story_uploads WHERE id = ${parseInt(preferUploadId)}`;
     } else {
-      sql = `SELECT id, file_url FROM story_uploads WHERE store_name ILIKE '%${shortName.replace(/'/g, "''")}%' ORDER BY used_count ASC, created_at DESC LIMIT 1`;
+      sql = `SELECT id, file_url, media_type FROM story_uploads WHERE store_name ILIKE '%${shortName.replace(/'/g, "''")}%' ORDER BY used_count ASC, created_at DESC LIMIT 1`;
     }
     const uploadResult = execSync(
       `/opt/homebrew/opt/postgresql@17/bin/psql -d paomao -t -A -c "${sql}"`,
       { encoding: 'utf8' }
     ).trim();
     if (uploadResult) {
-      const [uploadId, fileUrl] = uploadResult.split('|');
+      const parts = uploadResult.split('|');
+      const [uploadId, fileUrl] = parts;
+      uploadMediaType = parts[2] || 'image';
       const fullPath = path.join(process.env.HOME, '泡泡貓/dashboard', fileUrl);
       if (fs.existsSync(fullPath)) {
         storeUploadPath = fullPath;
@@ -129,34 +132,73 @@ async function main() {
   } catch {}
   if (!storeUploadPath) console.log('⚠️ 該店無上傳素材，使用品牌色背景');
 
-  // Generate image (store upload bg + bubble overlay)
   const ts = Date.now();
-  const imgPath = `/tmp/story-slots-${ts}.jpg`;
-  const pyScript = generatePillowScript(shortName, slotLines, imgPath, storeUploadPath);
-  const pyPath = `/tmp/story-slots-${ts}.py`;
-  fs.writeFileSync(pyPath, pyScript);
+  let mediaUrl, mediaIsVideo = false, filename;
 
-  try {
-    execSync(`/opt/homebrew/bin/python3 "${pyPath}"`, { encoding: 'utf8', stdio: 'pipe' });
-  } catch (e) {
-    console.error('Pillow 產圖失敗:', e.stderr || e.message);
-    process.exit(1);
+  if (uploadMediaType === 'video' && storeUploadPath) {
+    // ─── 影片素材：產空位 overlay 圖 → ffmpeg 疊上去 ───
+    const overlayPath = `/tmp/story-overlay-${ts}.png`;
+    const overlayPy = generateVideoOverlayScript(shortName, slotLines, overlayPath);
+    const overlayPyPath = `/tmp/story-overlay-${ts}.py`;
+    fs.writeFileSync(overlayPyPath, overlayPy);
+    try {
+      execSync(`/opt/homebrew/bin/python3 "${overlayPyPath}"`, { encoding: 'utf8', stdio: 'pipe' });
+    } catch (e) {
+      console.error('Overlay 產圖失敗:', e.stderr || e.message);
+    }
+
+    const outVideoPath = `/tmp/story-video-${ts}.mp4`;
+    if (fs.existsSync(overlayPath)) {
+      // 影片 + overlay 合成
+      execSync(
+        `/opt/homebrew/bin/ffmpeg -y -i "${storeUploadPath}" -i "${overlayPath}" -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuva420p[bg];[bg][1:v]overlay=0:0[out]" -map "[out]" -map 0:a? -c:v libx264 -c:a aac -b:v 2M -maxrate 2M -bufsize 4M -t 15 -color_range 1 -movflags +faststart "${outVideoPath}"`,
+        { encoding: 'utf8', timeout: 120000, stdio: 'pipe' }
+      );
+    } else {
+      // Fallback：沒有 overlay 就直接縮放
+      execSync(
+        `/opt/homebrew/bin/ffmpeg -y -i "${storeUploadPath}" -c:v libx264 -c:a aac -b:v 2M -t 15 -vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p" -movflags +faststart "${outVideoPath}"`,
+        { encoding: 'utf8', timeout: 120000, stdio: 'pipe' }
+      );
+    }
+
+    filename = `story-video-${ts}.mp4`;
+    const webPath = path.join(BOOKING_SITE_PUBLIC, filename);
+    fs.copyFileSync(outVideoPath, webPath);
+    mediaUrl = `${BOOKING_SITE_URL}/${filename}`;
+    mediaIsVideo = true;
+    console.log(`🎬 影片素材+空位overlay: ${storeUploadPath} → ${outVideoPath}`);
+    // Cleanup
+    try { fs.unlinkSync(overlayPyPath); fs.unlinkSync(overlayPath); fs.unlinkSync(outVideoPath); } catch {}
+  } else {
+    // ─── 圖片素材：Pillow 產空位圖 ───
+    const imgPath = `/tmp/story-slots-${ts}.jpg`;
+    const pyScript = generatePillowScript(shortName, slotLines, imgPath, storeUploadPath);
+    const pyPath = `/tmp/story-slots-${ts}.py`;
+    fs.writeFileSync(pyPath, pyScript);
+
+    try {
+      execSync(`/opt/homebrew/bin/python3 "${pyPath}"`, { encoding: 'utf8', stdio: 'pipe' });
+    } catch (e) {
+      console.error('Pillow 產圖失敗:', e.stderr || e.message);
+      process.exit(1);
+    }
+
+    if (!fs.existsSync(imgPath)) { console.error('圖片未產生'); process.exit(1); }
+    console.log(`🖼️ 圖片: ${imgPath} (${(fs.statSync(imgPath).size / 1024).toFixed(0)}KB)`);
+
+    filename = `story-slots-${ts}.jpg`;
+    const webPath = path.join(BOOKING_SITE_PUBLIC, filename);
+    fs.copyFileSync(imgPath, webPath);
+    mediaUrl = `${BOOKING_SITE_URL}/${filename}`;
+
+    // Cleanup temp
+    try { fs.unlinkSync(pyPath); } catch {}
   }
 
-  if (!fs.existsSync(imgPath)) { console.error('圖片未產生'); process.exit(1); }
-  console.log(`🖼️ 圖片: ${imgPath} (${(fs.statSync(imgPath).size / 1024).toFixed(0)}KB)`);
-
-  // 4. Public URL
-  const filename = `story-slots-${ts}.jpg`;
-  const webPath = path.join(BOOKING_SITE_PUBLIC, filename);
-  fs.copyFileSync(imgPath, webPath);
-  const imageUrl = `${BOOKING_SITE_URL}/${filename}`;
-  console.log(`🌐 URL: ${imageUrl}`);
-  console.log(`PREVIEW:${imageUrl}`);
+  console.log(`🌐 URL: ${mediaUrl}`);
+  console.log(`PREVIEW:${mediaUrl}`);
   if (usedUploadId) console.log(`UPLOAD_ID:${usedUploadId}`);
-
-  // Cleanup temp
-  try { fs.unlinkSync(pyPath); } catch {}
 
   if (previewOnly) {
     console.log('📋 預覽模式 — 不發布到 IG。加 --publish 才會發布。');
@@ -166,10 +208,14 @@ async function main() {
   // 5. Post IG Story
   const token = fs.readFileSync(META_TOKEN_PATH, 'utf8').trim();
 
+  const createBody = mediaIsVideo
+    ? { media_type: 'STORIES', video_url: mediaUrl, access_token: token }
+    : { media_type: 'STORIES', image_url: mediaUrl, access_token: token };
+
   const createRes = await fetch(`https://graph.facebook.com/v21.0/${IG_USER_ID}/media`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ media_type: 'STORIES', image_url: imageUrl, access_token: token })
+    body: JSON.stringify(createBody)
   });
   const createData = await createRes.json();
   const containerId = createData.id;
@@ -206,6 +252,72 @@ async function main() {
   }, 5000);
 
   return { storyId: pubData.id, storeName: shortName };
+}
+
+// 影片用的透明 overlay（右上角毛玻璃泡泡 + 空位資訊）
+function generateVideoOverlayScript(storeName, slotLines, outputPath) {
+  const slotsJson = JSON.stringify(slotLines).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return `
+import json
+from PIL import Image, ImageDraw, ImageFont
+
+W, H = 1080, 1920
+img = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+draw = ImageDraw.Draw(img)
+
+# 右上角半透明泡泡
+bubble_r = 260
+bubble_cx = W - bubble_r - 40
+bubble_cy = 320 + bubble_r
+
+# 半透明白色圓底
+draw.ellipse([bubble_cx-bubble_r, bubble_cy-bubble_r, bubble_cx+bubble_r, bubble_cy+bubble_r], fill=(255, 255, 255, 180))
+draw.ellipse([bubble_cx-bubble_r, bubble_cy-bubble_r, bubble_cx+bubble_r, bubble_cy+bubble_r], outline=(255, 255, 255, 220), width=2)
+
+# Fonts
+FP = '/System/Library/Fonts/STHeiti Medium.ttc'
+FP_L = '/System/Library/Fonts/STHeiti Light.ttc'
+font_title = ImageFont.truetype(FP, 44)
+font_date = ImageFont.truetype(FP, 32)
+font_time = ImageFont.truetype(FP, 26)
+font_small = ImageFont.truetype(FP_L, 20)
+font_cta = ImageFont.truetype(FP, 22)
+
+C_MAIN = '#2A2A2A'
+C_SUB = '#555555'
+C_TIME = '#3E3A39'
+BLUE = '#6B9BC3'
+
+cx = bubble_cx
+y = bubble_cy - bubble_r + 40
+
+draw.text((cx, y), '${storeName}', font=font_title, fill=C_MAIN, anchor='mm')
+y += 50
+draw.text((cx, y), '- 近期空位 -', font=font_small, fill=C_SUB, anchor='mm')
+y += 32
+draw.line([(cx - 35, y), (cx + 35, y)], fill='#CCCCCC', width=1)
+y += 25
+
+slots = json.loads('${slotsJson}')
+for day in slots[:4]:
+    label = day['label']
+    draw.text((cx, y), label, font=font_date, fill=C_MAIN, anchor='mm')
+    bbox = draw.textbbox((cx, y), label, font=font_date, anchor='mm')
+    draw.line([(bbox[0]+5, bbox[3]+2), (bbox[2]-5, bbox[3]+2)], fill=BLUE, width=2)
+    y += 42
+    times = day['times']
+    for i in range(0, len(times), 2):
+        row = times[i:i+2]
+        draw.text((cx, y), ' · '.join(row), font=font_time, fill=C_TIME, anchor='mm')
+        y += 34
+    y += 12
+
+cta_y = bubble_cy + bubble_r - 55
+draw.text((cx, cta_y), '🔗 點連結預約', font=font_cta, fill='#008BD5', anchor='mm')
+
+img.save('${outputPath}')
+print('overlay ok')
+`;
 }
 
 function generatePillowScript(storeName, slotLines, outputPath, storeUploadPath) {

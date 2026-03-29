@@ -11,6 +11,7 @@ const DEFAULT_QUICK_REPLY = `🔸近期人氣No.1 👉 活氧泡泡課程 🔸
 `;
 
 let currentBotId = null;
+let _refreshGeneration = 0; // 防止並行 fetchMsgList 重複渲染
 
 /**
  * @param {number} unprocessedCount - 未處理總筆數
@@ -112,10 +113,11 @@ async function refreshData() {
   listDiv.innerHTML = '';
   loadingDiv.style.display = 'block';
 
-  fetchMsgList(newBotId);
+  const gen = ++_refreshGeneration;
+  fetchMsgList(newBotId, gen);
 }
 
-async function fetchMsgList(botId) {
+async function fetchMsgList(botId, gen) {
   const storeNameDiv = document.getElementById('store-name');
   const listDiv = document.getElementById('msg-list');
   const loadingDiv = document.getElementById('loading');
@@ -124,6 +126,9 @@ async function fetchMsgList(botId) {
     const timestamp = new Date().getTime();
     const response = await fetch(`${GAS_API_URL}?action=getList&botId=${botId}&_t=${timestamp}`);
     const data = await response.json();
+
+    // 如果在 fetch 期間又有新的 refreshData() 被觸發，放棄這次渲染
+    if (gen !== _refreshGeneration) return;
 
     loadingDiv.style.display = 'none';
 

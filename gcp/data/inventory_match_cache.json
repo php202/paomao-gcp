@@ -1,0 +1,517 @@
+[
+  {
+    "sheetName": "I PAD／",
+    "odooId": 394,
+    "odooName": "I PAD"
+  },
+  {
+    "sheetName": "美容儀器空瓶(一組三個)／",
+    "odooId": 493,
+    "odooName": "美容儀器空瓶(一組三個)"
+  },
+  {
+    "sheetName": "藍色制服／XL",
+    "odooId": 538,
+    "odooName": "藍色制服／2XL"
+  },
+  {
+    "sheetName": "藍色制服／M",
+    "odooId": 474,
+    "odooName": "藍色制服／M"
+  },
+  {
+    "sheetName": "藍色制服／L",
+    "odooId": 594,
+    "odooName": "藍色制服/L"
+  },
+  {
+    "sheetName": "刮棒(一組10支)／",
+    "odooId": 613,
+    "odooName": "刮棒(一組10支)"
+  },
+  {
+    "sheetName": "藍色制服／2XL",
+    "odooId": 538,
+    "odooName": "藍色制服／2XL"
+  },
+  {
+    "sheetName": "藍色制服／S",
+    "odooId": 593,
+    "odooName": "藍色制服/S"
+  },
+  {
+    "sheetName": "Slogan LED燈(橫)／",
+    "odooId": 391,
+    "odooName": "Slogan LED燈(橫)"
+  },
+  {
+    "sheetName": "肌膚檢測儀(新版)／",
+    "odooId": 512,
+    "odooName": "肌膚檢測儀(新版)"
+  },
+  {
+    "sheetName": "防曬150ml(一箱12瓶)／",
+    "odooId": 702,
+    "odooName": "小防曬(30ml)"
+  },
+  {
+    "sheetName": "Slogan LED燈(直)／",
+    "odooId": 392,
+    "odooName": "Slogan LED燈(直)"
+  },
+  {
+    "sheetName": "大碗(一組5個)／",
+    "odooId": 541,
+    "odooName": "大碗(一組5個)"
+  },
+  {
+    "sheetName": "水嫩唇包裝(含水嫩唇卡片)／",
+    "odooId": 600,
+    "odooName": "水嫩唇包裝(含水嫩唇卡片)"
+  },
+  {
+    "sheetName": "Pow Led字體／",
+    "odooId": 400,
+    "odooName": "Pow Led字體"
+  },
+  {
+    "sheetName": "變壓器／",
+    "odooId": 634,
+    "odooName": "變壓器"
+  },
+  {
+    "sheetName": "小碗(一組5個)／",
+    "odooId": 527,
+    "odooName": "小碗(一組5個)"
+  },
+  {
+    "sheetName": "泡沖機水箱／",
+    "odooId": 615,
+    "odooName": "泡沖機水箱"
+  },
+  {
+    "sheetName": "水潤精華膜(一箱300片)／",
+    "odooId": 646,
+    "odooName": "水潤精華膜(一箱300片)"
+  },
+  {
+    "sheetName": "水光導潤凍膜(50組)／",
+    "odooId": 635,
+    "odooName": "水光導潤凍膜(50組)"
+  },
+  {
+    "sheetName": "講義／",
+    "odooId": 487,
+    "odooName": "講義"
+  },
+  {
+    "sheetName": "電視(50吋)／",
+    "odooId": 387,
+    "odooName": "電視(32吋)"
+  },
+  {
+    "sheetName": "電視(32吋)／",
+    "odooId": 387,
+    "odooName": "電視(32吋)"
+  },
+  {
+    "sheetName": "無線開關／",
+    "odooId": 404,
+    "odooName": "無線開關"
+  },
+  {
+    "sheetName": "冷導／",
+    "odooId": 526,
+    "odooName": "冷導"
+  },
+  {
+    "sheetName": "小米吹風機／",
+    "odooId": 378,
+    "odooName": "小米吹風機"
+  },
+  {
+    "sheetName": "紫外線燈／",
+    "odooId": 588,
+    "odooName": "紫外線燈"
+  },
+  {
+    "sheetName": "凍乾粉(散裝99組)／",
+    "odooId": 575,
+    "odooName": "凍乾粉(100組)"
+  },
+  {
+    "sheetName": "眼罩／",
+    "odooId": 418,
+    "odooName": "眼罩"
+  },
+  {
+    "sheetName": "小鬧鐘／",
+    "odooId": 412,
+    "odooName": "小鬧鐘"
+  },
+  {
+    "sheetName": "計算機／",
+    "odooId": 408,
+    "odooName": "計算機"
+  },
+  {
+    "sheetName": "小米攝影機／",
+    "odooId": 406,
+    "odooName": "小米攝影機"
+  },
+  {
+    "sheetName": "水光槍／",
+    "odooId": 610,
+    "odooName": "水光槍"
+  },
+  {
+    "sheetName": "超聲波熱導／",
+    "odooId": 434,
+    "odooName": "超聲波熱導"
+  },
+  {
+    "sheetName": "超微小氣泡機／",
+    "odooId": 609,
+    "odooName": "超微小氣泡機"
+  },
+  {
+    "sheetName": "雙極射頻儀／",
+    "odooId": 608,
+    "odooName": "雙極射頻儀"
+  },
+  {
+    "sheetName": "超聲波鏟皮機／",
+    "odooId": 437,
+    "odooName": "超聲波鏟皮機"
+  },
+  {
+    "sheetName": "光譜儀電源線／",
+    "odooId": 573,
+    "odooName": "光譜儀電源線"
+  },
+  {
+    "sheetName": "水潤精華膜(一箱250片)／",
+    "odooId": 646,
+    "odooName": "水潤精華膜(一箱300片)"
+  },
+  {
+    "sheetName": "玻尿酸精華液(一箱40瓶)／",
+    "odooId": 421,
+    "odooName": "玻尿酸精華液(一箱40瓶)"
+  },
+  {
+    "sheetName": "白色制服XL／",
+    "odooId": 592,
+    "odooName": "白色制服/XL"
+  },
+  {
+    "sheetName": "白色制服2XL／",
+    "odooId": 592,
+    "odooName": "白色制服/XL"
+  },
+  {
+    "sheetName": "白色制服S／",
+    "odooId": 540,
+    "odooName": "白色制服／S"
+  },
+  {
+    "sheetName": "白色制服／2XL",
+    "odooId": 592,
+    "odooName": "白色制服/XL"
+  },
+  {
+    "sheetName": "白色制服／XL",
+    "odooId": 592,
+    "odooName": "白色制服/XL"
+  },
+  {
+    "sheetName": "白色制服／L",
+    "odooId": 592,
+    "odooName": "白色制服/XL"
+  },
+  {
+    "sheetName": "白色制服／M",
+    "odooId": 475,
+    "odooName": "白色制服／M"
+  },
+  {
+    "sheetName": "白色制服／S",
+    "odooId": 540,
+    "odooName": "白色制服／S"
+  },
+  {
+    "sheetName": "白色制服L／",
+    "odooId": 592,
+    "odooName": "白色制服/XL"
+  },
+  {
+    "sheetName": "天山雪蓮面膜(一箱400片)／",
+    "odooId": 574,
+    "odooName": "天山雪蓮面膜(一箱400片)"
+  },
+  {
+    "sheetName": "無暇水潤嘟嘟唇膜(一箱200片)／",
+    "odooId": 61,
+    "odooName": "無暇水潤嘟嘟唇膜(一箱200片)"
+  },
+  {
+    "sheetName": "水潤精華膜(一箱280片)／",
+    "odooId": 646,
+    "odooName": "水潤精華膜(一箱300片)"
+  },
+  {
+    "sheetName": "床頭櫃／",
+    "odooId": 359,
+    "odooName": "床頭櫃"
+  },
+  {
+    "sheetName": "美容儀器推車／",
+    "odooId": 357,
+    "odooName": "美容儀器推車"
+  },
+  {
+    "sheetName": "拱型陶瓷紙巾盒／",
+    "odooId": 356,
+    "odooName": "拱型陶瓷紙巾盒"
+  },
+  {
+    "sheetName": "水槽／",
+    "odooId": 355,
+    "odooName": "水槽"
+  },
+  {
+    "sheetName": "棉花棒／",
+    "odooId": 582,
+    "odooName": "棉花棒"
+  },
+  {
+    "sheetName": "美容燈／",
+    "odooId": 589,
+    "odooName": "美容燈"
+  },
+  {
+    "sheetName": "110蒸臉器／",
+    "odooId": 402,
+    "odooName": "110蒸臉器"
+  },
+  {
+    "sheetName": "櫃檯燈／",
+    "odooId": 369,
+    "odooName": "櫃檯燈"
+  },
+  {
+    "sheetName": "肌膚檢測儀／",
+    "odooId": 512,
+    "odooName": "肌膚檢測儀(新版)"
+  },
+  {
+    "sheetName": "美容儀器／",
+    "odooId": 410,
+    "odooName": "美容儀器"
+  },
+  {
+    "sheetName": "紙杯／",
+    "odooId": 361,
+    "odooName": "紙杯"
+  },
+  {
+    "sheetName": "Ikea推車／",
+    "odooId": 417,
+    "odooName": "Ikea推車"
+  },
+  {
+    "sheetName": "小掛籃／",
+    "odooId": 362,
+    "odooName": "小掛籃"
+  },
+  {
+    "sheetName": "大掛籃／",
+    "odooId": 385,
+    "odooName": "大掛籃"
+  },
+  {
+    "sheetName": "門鈴／",
+    "odooId": 363,
+    "odooName": "門鈴"
+  },
+  {
+    "sheetName": "光譜儀／",
+    "odooId": 364,
+    "odooName": "光譜儀"
+  },
+  {
+    "sheetName": "海綿／",
+    "odooId": 585,
+    "odooName": "海綿"
+  },
+  {
+    "sheetName": "潔顏巾／",
+    "odooId": 55,
+    "odooName": "潔顏巾"
+  },
+  {
+    "sheetName": "負氫離子機／",
+    "odooId": 367,
+    "odooName": "負氫離子機"
+  },
+  {
+    "sheetName": "吹風機置物架／",
+    "odooId": 425,
+    "odooName": "吹風機置物架"
+  },
+  {
+    "sheetName": "消毒箱／",
+    "odooId": 586,
+    "odooName": "消毒箱"
+  },
+  {
+    "sheetName": "展示牌A5／",
+    "odooId": 583,
+    "odooName": "展示牌A5"
+  },
+  {
+    "sheetName": "櫃檯燈／",
+    "odooId": 369,
+    "odooName": "櫃檯燈"
+  },
+  {
+    "sheetName": "圍裙／",
+    "odooId": 370,
+    "odooName": "圍裙"
+  },
+  {
+    "sheetName": "投影燈／",
+    "odooId": 372,
+    "odooName": "投影燈"
+  },
+  {
+    "sheetName": "潔面刷／",
+    "odooId": 373,
+    "odooName": "潔面刷"
+  },
+  {
+    "sheetName": "泡沖機／",
+    "odooId": 390,
+    "odooName": "泡沖機"
+  },
+  {
+    "sheetName": "桌面收納櫃／",
+    "odooId": 393,
+    "odooName": "桌面收納櫃"
+  },
+  {
+    "sheetName": "泡沖頭／",
+    "odooId": 411,
+    "odooName": "泡沖頭"
+  },
+  {
+    "sheetName": "手持燈／",
+    "odooId": 447,
+    "odooName": "手持燈"
+  },
+  {
+    "sheetName": "櫃檯燈／",
+    "odooId": 369,
+    "odooName": "櫃檯燈"
+  },
+  {
+    "sheetName": "鏡子／",
+    "odooId": 374,
+    "odooName": "鏡子"
+  },
+  {
+    "sheetName": "碗／",
+    "odooId": 541,
+    "odooName": "大碗(一組5個)"
+  },
+  {
+    "sheetName": "布丁杯(方形)／",
+    "odooId": 375,
+    "odooName": "布丁杯(方形)"
+  },
+  {
+    "sheetName": "浴室鏡／",
+    "odooId": 388,
+    "odooName": "浴室鏡"
+  },
+  {
+    "sheetName": "梔子花擴香／",
+    "odooId": 427,
+    "odooName": "梔子花擴香"
+  },
+  {
+    "sheetName": "220熱蒸／",
+    "odooId": 712,
+    "odooName": "熱蒸維修"
+  },
+  {
+    "sheetName": "水感潤澤精華霜冬季版(一箱12瓶)／",
+    "odooId": 457,
+    "odooName": "水感潤澤精華霜冬季版(一箱12瓶)"
+  },
+  {
+    "sheetName": "美容床／",
+    "odooId": 410,
+    "odooName": "美容儀器"
+  },
+  {
+    "sheetName": "淨膚卸妝液(一箱12瓶)／",
+    "odooId": 550,
+    "odooName": "淨膚卸妝液(一箱12瓶)"
+  },
+  {
+    "sheetName": "保濕柔膚水(一箱12瓶)／",
+    "odooId": 59,
+    "odooName": "保濕柔膚水(一箱12瓶)"
+  },
+  {
+    "sheetName": "淨顏倍潤精華液(一箱12瓶)／",
+    "odooId": 398,
+    "odooName": "淨顏倍潤精華液(一箱12瓶)"
+  },
+  {
+    "sheetName": "潔顏慕絲(一箱12罐)／",
+    "odooId": 591,
+    "odooName": "潔顏慕絲(一箱12罐)今年9月到期，75折"
+  },
+  {
+    "sheetName": "水感潤澤精華霜(一箱12瓶)／",
+    "odooId": 397,
+    "odooName": "水感潤澤精華霜(一箱12瓶)"
+  },
+  {
+    "sheetName": "氣泡精華水AS1(新的5000ml，一箱3罐)，請訂購新版／",
+    "odooId": 640,
+    "odooName": "氣泡精華水AS1 5000ml，一箱(3罐)新版"
+  },
+  {
+    "sheetName": "氣泡精華水AS1／",
+    "odooId": 640,
+    "odooName": "氣泡精華水AS1 5000ml，一箱(3罐)新版"
+  },
+  {
+    "sheetName": "氣泡精華SA2(新的5000ml，一箱3罐)如遇缺貨最快兩週到貨／",
+    "odooId": 568,
+    "odooName": "氣泡精華SA2(新的5000ml，一箱3罐)"
+  },
+  {
+    "sheetName": "氣泡精華SA2(舊包裝2000ml，一箱6罐)／",
+    "odooId": 568,
+    "odooName": "氣泡精華SA2(新的5000ml，一箱3罐)"
+  },
+  {
+    "sheetName": "氣泡精華水AO3(新的5000ml，一箱3罐)／",
+    "odooId": 384,
+    "odooName": "氣泡精華水AO3(新的5000ml，一箱3罐)"
+  },
+  {
+    "sheetName": "氣泡精華水AO3(舊包裝2000ml，一箱6罐)／",
+    "odooId": 384,
+    "odooName": "氣泡精華水AO3(新的5000ml，一箱3罐)"
+  },
+  {
+    "sheetName": "黑頭粉刺清潔液(一箱12瓶)／",
+    "odooId": 544,
+    "odooName": "黑頭粉刺清潔液(一箱12瓶)"
+  }
+]

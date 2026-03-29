@@ -6,6 +6,7 @@
 
 import { getAuth } from '../lib/auth.js';
 import { writeSheet } from '../lib/sheets.js';
+import { invalidateTokenCache } from '../lib/saydou.js';
 
 const TOKEN_SHEET_NAME = '預約表單';
 const TOKEN_CELL = 'C2';
@@ -54,6 +55,7 @@ export async function handleSaydouTokenSync(req, res, { rawBody }) {
   try {
     const auth = await getAuth();
     await writeSheet(auth, TOKEN_SHEET_SS_ID, `'${TOKEN_SHEET_NAME}'!${TOKEN_CELL}`, [[token]]);
+    invalidateTokenCache(); // 立即清除記憶體快取，新 token 馬上生效
     send(res, 200, { status: 'ok', message: 'Token synced' });
   } catch (e) {
     console.error('[saydou-token-sync] writeSheet failed:', e?.message || e);

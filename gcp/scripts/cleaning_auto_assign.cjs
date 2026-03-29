@@ -35,35 +35,56 @@ async function main() {
       'SELECT id FROM cleaning_assignments WHERE store_name=$1 AND date=$2 LIMIT 1', [store, today]);
     if (existing.length) { console.log('  → Already assigned, skip'); continue; }
 
-    // ── Get workers from SayDou ──
+    // ── Get workers from SayDou → fallback to checkin_records ──
+    let workers = [];
     const { rows: storeInfo } = await pool.query(
       "SELECT saydou_id FROM stores WHERE store_name=$1 AND saydou_id IS NOT NULL AND saydou_id != '' LIMIT 1", [store]);
     const saydouId = storeInfo[0]?.saydou_id;
-    if (!saydouId) { console.log('  → No saydou_id, skip'); continue; }
 
-    // Pull distinct employee_codes from today's transaction remarks
-    const { rows: remarkRows } = await pool.query(`
-      SELECT DISTINCT LOWER(TRIM(SPLIT_PART(remark, ' ', 1))) AS code
-      FROM saydou_transactions
-      WHERE storid = $1::int AND rectim::date = $2::date
-        AND remark IS NOT NULL AND remark != ''
-    `, [saydouId, today]);
+    if (saydouId) {
+      // Pull distinct employee_codes from today's transaction remarks
+      const { rows: remarkRows } = await pool.query(`
+        SELECT DISTINCT LOWER(TRIM(SPLIT_PART(remark, ' ', 1))) AS code
+        FROM saydou_transactions
+        WHERE storid = $1::int AND rectim::date = $2::date
+          AND remark IS NOT NULL AND remark != ''
+      `, [saydouId, today]);
 
-    // Filter valid employee_code patterns (letters + digits)
-    const codes = remarkRows.map(r => r.code).filter(c => /^[a-z]{1,5}\d{1,4}$/i.test(c));
-    if (!codes.length) { console.log('  → No valid employee codes in remarks'); continue; }
+      // Extract employee code: strip parentheses, Chinese chars, and extra text after the code
+      const codes = remarkRows.map(r => {
+        const match = r.code.match(/^([a-z]{1,5}\d{1,4})/i);
+        return match ? match[1].toLowerCase() : null;
+      }).filter(Boolean);
+      const uniqueCodes = [...new Set(codes)];
 
-    // Match to employees table
-    const { rows: workers } = await pool.query(`
-      SELECT DISTINCT ON (LOWER(employee_code)) id, name, employee_code, title
-      FROM employees
-      WHERE store_name = $1 AND is_active = true
-        AND LOWER(employee_code) = ANY($2)
-        AND title NOT LIKE '%離職%'
-        AND title NOT IN ('店長','加盟主','管理者')
-      ORDER BY LOWER(employee_code), id
-    `, [store, codes]);
-    if (!workers.length) { console.log(`  → No employees matched codes: ${codes.join(', ')}`); continue; }
+      if (uniqueCodes.length) {
+        const { rows: matched } = await pool.query(`
+          SELECT DISTINCT ON (LOWER(employee_code)) id, name, employee_code, title
+          FROM employees
+          WHERE store_name = $1 AND is_active = true
+            AND LOWER(employee_code) = ANY($2)
+            AND title NOT LIKE '%離職%'
+            AND title NOT IN ('店長','加盟主','管理者')
+          ORDER BY LOWER(employee_code), id
+        `, [store, uniqueCodes]);
+        workers = matched;
+      }
+    }
+
+    // Fallback: checkin_records
+    if (!workers.length) {
+      console.log(`  → SayDou lookup failed, trying checkin_records fallback`);
+      const { rows: checkedIn } = await pool.query(
+        `SELECT DISTINCT e.id, e.name, e.employee_code, e.title
+         FROM checkin_records cr JOIN employees e ON cr.line_user_id = e.line_user_id
+         WHERE cr.store_name=$1 AND cr.checked_at::date=$2::date AND cr.check_type='in'
+           AND e.store_name=$1 AND e.is_active=true
+           AND e.title NOT LIKE '%離職%' AND e.title NOT IN ('店長','加盟主','管理者')
+         ORDER BY e.id`, [store, today]);
+      workers = checkedIn;
+    }
+
+    if (!workers.length) { console.log('  → No workers found (SayDou + checkin fallback both empty)'); continue; }
     console.log(`  → ${workers.length} workers: ${workers.map(w => `${w.name}(${w.employee_code})`).join(', ')}`);
 
     const empIds = workers.map(w => w.id);
@@ -89,7 +110,7 @@ async function main() {
       return true;
     }
 
-    const dailyShared = allZones.filter(z => 'ABCDEFGH'.includes(z.zone_code) && isDue(z));
+    const dailyShared = allZones.filter(z => 'ABCDFGH'.includes(z.zone_code) && isDue(z)); // A-H except E
     const zoneI = allZones.find(z => z.zone_code === 'I' && isDue(z));
     const periodic = allZones.filter(z => 'JKLMN'.includes(z.zone_code) && isDue(z));
 
@@ -103,24 +124,30 @@ async function main() {
     const assignments = [];
     const empZoneCount = Object.fromEntries(empIds.map(id => [id, 0]));
 
-    // ═══ 0. E 區: 固定雙人負責（優先分派） ═══
-    const zoneE = allZones.find(z => z.zone_code === 'E' && isDue(z));
-    if (zoneE && empCount >= 2) {
-      const candidates = [...empIds].sort((a, b) => (histMap[`${a}_E`] || 0) - (histMap[`${b}_E`] || 0));
-      [candidates[0], candidates[1]].forEach(eid => {
-        assignments.push({ eid, zone_code: 'E', zone_name: zoneE.zone_name, is_primary: true, assigned_items: zoneE.checklist_items || [] });
-        empZoneCount[eid]++;
-      });
-    } else if (zoneE) {
-      assignments.push({ eid: empIds[0], zone_code: 'E', zone_name: zoneE.zone_name, is_primary: true, assigned_items: zoneE.checklist_items || [] });
-      empZoneCount[empIds[0]]++;
+    // ═══ 0. E/F/G 區: 固定雙人負責（優先分派）；人數不足時單人 ═══
+    // 人數 ≤ 2 時不分派 D 和 H
+    const skipZones = empCount <= 2 ? new Set(['D', 'H']) : new Set();
+
+    for (const dualCode of ['E', 'F', 'G']) {
+      const dualZone = allZones.find(z => z.zone_code === dualCode && isDue(z));
+      if (!dualZone) continue;
+      if (empCount >= 2) {
+        const candidates = [...empIds].sort((a, b) => (histMap[`${a}_${dualCode}`] || 0) - (histMap[`${b}_${dualCode}`] || 0));
+        [candidates[0], candidates[1]].forEach(eid => {
+          assignments.push({ eid, zone_code: dualCode, zone_name: dualZone.zone_name, is_primary: true, assigned_items: dualZone.checklist_items || [] });
+          empZoneCount[eid]++;
+        });
+      } else {
+        assignments.push({ eid: empIds[0], zone_code: dualCode, zone_name: dualZone.zone_name, is_primary: true, assigned_items: dualZone.checklist_items || [] });
+        empZoneCount[empIds[0]]++;
+      }
     }
 
-    // ═══ 1. A-D, F-H: 平均分派 ═══
-    const dailySharedNoE = dailyShared.filter(z => z.zone_code !== 'E');
-    if (empCount >= dailySharedNoE.length) {
+    // ═══ 1. A-D, H: 平均分派（E/F/G 已單獨處理；D/H 在人數≤2時跳過） ═══
+    const dailySharedFiltered = dailyShared.filter(z => !['E', 'F', 'G'].includes(z.zone_code) && !skipZones.has(z.zone_code));
+    if (empCount >= dailySharedFiltered.length) {
       const used = new Set();
-      for (const zone of dailySharedNoE) {
+      for (const zone of dailySharedFiltered) {
         let best = null, bestCnt = Infinity;
         for (const eid of empIds) {
           if (used.has(eid)) continue;
@@ -130,7 +157,7 @@ async function main() {
         if (best) { used.add(best); assignments.push({ eid: best, zone_code: zone.zone_code, zone_name: zone.zone_name, is_primary: true, assigned_items: zone.checklist_items || [] }); empZoneCount[best]++; }
       }
     } else {
-      for (const zone of dailySharedNoE) {
+      for (const zone of dailySharedFiltered) {
         let best = null, bestZones = Infinity;
         for (const eid of empIds) { if (empZoneCount[eid] < bestZones) { bestZones = empZoneCount[eid]; best = eid; } }
         if (best) {
@@ -143,11 +170,15 @@ async function main() {
     // ═══ 2. I: 每人必做，依星期過濾細項 ═══
     if (zoneI) {
       const allItems = zoneI.checklist_items || [];
-      const dow = now.getDay();
+      const dow = now.getDay(); // 0=Sun 1=Mon ... 6=Sat
       const filteredItems = allItems.filter(item => {
-        if (item.includes('椅輪')) return [1, 3, 5].includes(dow);
-        if (item.includes('台車')) return [2, 4, 6].includes(dow);
-        return true;
+        if (item.includes('椅輪')) return [1, 3, 5].includes(dow);        // Mon/Wed/Fri
+        if (item.includes('台車輪子')) return [2, 6].includes(dow);       // Tue/Sat
+        if (item.includes('台車')) return [2, 4, 6].includes(dow);        // Tue/Thu/Sat
+        if (item.includes('燈座')) return [1, 3, 5].includes(dow);        // Mon/Wed/Fri
+        if (item.includes('美容床')) return [2, 4, 6].includes(dow);      // Tue/Thu/Sat
+        if (item.includes('補光燈')) return [4, 0].includes(dow);         // Thu/Sun
+        return true;                                                       // always
       });
       for (const eid of empIds) {
         assignments.push({ eid, zone_code: 'I', zone_name: zoneI.zone_name, is_primary: true, assigned_items: filteredItems });
@@ -177,13 +208,34 @@ async function main() {
     }
 
     // ─── Insert ───
+    const insertedIds = [];
     for (const a of assignments) {
       const items = Array.isArray(a.assigned_items) ? JSON.stringify(a.assigned_items) : null;
-      await pool.query(
+      const result = await pool.query(
         `INSERT INTO cleaning_assignments (date, store_name, employee_id, employee_name, zone_code, zone_name, is_primary, checklist_items)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING RETURNING id`,
         [today, store, a.eid, empMap[a.eid], a.zone_code, a.zone_name, a.is_primary, items]);
+      if (result.rows[0]) insertedIds.push({ id: result.rows[0].id, eid: a.eid });
     }
+
+    // ─── Assign peer reviewers (round-robin, evenly distributed) ───
+    const byEmployee = {};
+    for (const a of insertedIds) {
+      if (!byEmployee[a.eid]) byEmployee[a.eid] = [];
+      byEmployee[a.eid].push(a.id);
+    }
+    const allEmpIds = Object.keys(byEmployee).map(Number);
+    if (allEmpIds.length > 1) {
+      for (const empId of allEmpIds) {
+        const zones = byEmployee[empId];
+        const otherEmps = allEmpIds.filter(e => e !== empId);
+        for (let i = 0; i < zones.length; i++) {
+          const reviewer = otherEmps[i % otherEmps.length];
+          await pool.query('UPDATE cleaning_assignments SET assigned_reviewer_id=$1 WHERE id=$2', [reviewer, zones[i]]);
+        }
+      }
+    }
+
     console.log(`  → Assigned ${assignments.length} total (A-H: ${dailyShared.length}, I: ${zoneI ? empCount : 0}, periodic: ${periodic.reduce((s, z) => s + (z.checklist_items||[]).length, 0)} items)`);
   }
 

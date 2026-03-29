@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import { verifyLineSignature, isDuplicateLineEvent } from './lib/line-webhook.js';
 import { getAuth } from './lib/auth.js';
+import pool from './lib/db.js';
 import { handleCheckInRequest, handleRegisterRequest } from './scripts/line-checkin-handler.js';
 import { handleStaffCommand } from './scripts/line-staff-handler.js';
 import { handleCore } from './api/core-api.js';
@@ -500,6 +501,87 @@ export function startServer() {
     if (method === 'POST' && url === '/saydou-token') {
       const rawBody = await parseBody(req);
       await handleSaydouTokenSync(req, res, { rawBody });
+      return;
+    }
+
+    // ─── SayDou Resync API：店長改單後觸發重跑 ───
+    if (method === 'POST' && url === '/saydou-resync') {
+      const rawBody = await parseBody(req);
+      const body = JSON.parse(rawBody.toString());
+      const { store_id, store_name, date, requested_by } = body || {};
+      if (!store_id || !date) {
+        send(res, 400, { error: 'store_id and date required' });
+        return;
+      }
+      const { rows } = await pool.query(
+        `INSERT INTO saydou_resync_requests (store_id, store_name, resync_date, requested_by)
+         VALUES ($1, $2, $3, $4) RETURNING id, status`,
+        [store_id, store_name || `store_${store_id}`, date, requested_by || 'api']
+      );
+      // 立即觸發 resync（背景）
+      const { spawn } = await import('child_process');
+      const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+      const cp = spawn('node', [
+        'scripts/sync_saydou_data.cjs', '--resync'
+      ], { cwd: scriptDir, stdio: 'ignore', detached: true });
+      cp.unref();
+      send(res, 200, { ok: true, resync_id: rows[0].id, message: `Resync queued for store ${store_id} @ ${date}` });
+      return;
+    }
+    if (method === 'GET' && url === '/saydou-resync') {
+      const { rows } = await pool.query(
+        "SELECT * FROM saydou_resync_requests ORDER BY requested_at DESC LIMIT 20"
+      );
+      send(res, 200, { requests: rows });
+      return;
+    }
+
+    // ─── Daily Accounting API：從 VIEW 查帳表（僅限有 daily_report 權限的門市）───
+    if (method === 'GET' && fullUrl.pathname === '/daily-accounting') {
+      const qs = fullUrl.searchParams;
+      const storeId = qs.get('store_id');
+      const date = qs.get('date');
+      const from = qs.get('from');
+      const to = qs.get('to');
+      const isAdmin = qs.get('admin') === 'true'; // admin 看全部（Dashboard 後台用）
+
+      // 取得有 daily_report 權限的門市
+      const { rows: enabledStores } = await pool.query(
+        "SELECT store_name FROM store_features WHERE feature_key = 'daily_report' AND enabled = true"
+      );
+      const allowedStoreNames = enabledStores.map(r => r.store_name);
+
+      if (allowedStoreNames.length === 0 && !isAdmin) {
+        send(res, 200, { date: date || '', rows: [], note: 'No stores have daily_report enabled' });
+        return;
+      }
+
+      let query, params;
+      if (storeId && date) {
+        query = 'SELECT * FROM daily_accounting WHERE store_id = $1 AND date = $2';
+        params = [storeId, date];
+      } else if (storeId && from && to) {
+        query = 'SELECT * FROM daily_accounting WHERE store_id = $1 AND date BETWEEN $2 AND $3 ORDER BY date';
+        params = [storeId, from, to];
+      } else if (date && !isAdmin) {
+        // 非 admin：只回傳有權限的門市
+        query = 'SELECT * FROM daily_accounting WHERE date = $1 AND store_name = ANY($2) ORDER BY total_amount DESC';
+        params = [date, allowedStoreNames];
+      } else if (date) {
+        query = 'SELECT * FROM daily_accounting WHERE date = $1 ORDER BY total_amount DESC';
+        params = [date];
+      } else {
+        const yesterday = new Date(Date.now() + 8*3600000 - 86400000).toISOString().substring(0, 10);
+        if (!isAdmin) {
+          query = 'SELECT * FROM daily_accounting WHERE date = $1 AND store_name = ANY($2) ORDER BY total_amount DESC';
+          params = [yesterday, allowedStoreNames];
+        } else {
+          query = 'SELECT * FROM daily_accounting WHERE date = $1 ORDER BY total_amount DESC';
+          params = [yesterday];
+        }
+      }
+      const { rows } = await pool.query(query, params);
+      send(res, 200, { date: date || params[0], rows, enabledStores: allowedStoreNames });
       return;
     }
 

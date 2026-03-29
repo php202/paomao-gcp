@@ -37,6 +37,10 @@ const CIRCUIT_BREAKER = {
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const TEST_LIMIT = parseInt(args.find(a => a.startsWith('--test='))?.split('=')[1] || '0');
+const RESYNC_MODE = args.includes('--resync');  // 處理 resync_requests
+const BACKFILL = args.find(a => a.startsWith('--backfill='))?.split('=')[1]; // e.g. --backfill=2025-01
+const RESYNC_STORE = args.find(a => a.startsWith('--store='))?.split('=')[1]; // e.g. --store=1437
+const RESYNC_DATE = args.find(a => a.startsWith('--date='))?.split('=')[1];   // e.g. --date=2026-03-22
 
 function getToken() {
   return fs.readFileSync(TOKEN_PATH, 'utf8').trim();
@@ -177,16 +181,24 @@ async function upsertTransactions(transactions, storeName, yearMonth, kpi) {
       await pool.query(`
         INSERT INTO saydou_transactions 
           (ordcid, ordrsn, membid, memnam, storid, store_name, rectim, rprice,
-           cash, card, ticket, rpcash, give, free, remark, items, raw_data, year_month)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+           cash, card, ticket, rpcash, give, free, remark, items, raw_data, year_month,
+           order_date, order_time, updated_at, is_deleted)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW(),FALSE)
         ON CONFLICT (ordcid) DO UPDATE SET
-          rprice=EXCLUDED.rprice, items=EXCLUDED.items, raw_data=EXCLUDED.raw_data, synced_at=NOW()
+          rprice=EXCLUDED.rprice, cash=EXCLUDED.cash, card=EXCLUDED.card,
+          ticket=EXCLUDED.ticket, rpcash=EXCLUDED.rpcash, give=EXCLUDED.give, free=EXCLUDED.free,
+          memnam=EXCLUDED.memnam, remark=EXCLUDED.remark,
+          items=EXCLUDED.items, raw_data=EXCLUDED.raw_data,
+          order_date=EXCLUDED.order_date, order_time=EXCLUDED.order_time,
+          synced_at=NOW(), updated_at=NOW(), is_deleted=FALSE
       `, [
         ordcid, tx.ordrsn, tx.membid || tx.memb?.membid, memnam,
         tx.storid, storeName || tx.stor?.stonam,
         tx.rectim, tx.rprice || 0,
         tx.cash || 0, tx.card || 0, tx.ticket || 0, tx.rpcash || 0, tx.give || 0, tx.free || 0,
         tx.remark || '', JSON.stringify(items), JSON.stringify(tx), yearMonth,
+        tx.rectim ? tx.rectim.substring(0, 10) : null,
+        tx.rectim ? tx.rectim.substring(11, 16) : null,
       ]);
       count++;
     } catch (e) {
@@ -257,6 +269,28 @@ async function syncStore(token, storeId, storeName, startDate, endDate, yearMont
     // Transactions
     const txItems = await fetchTransactions(token, storeId, startDate, endDate, kpi);
     const txCount = await upsertTransactions(txItems, storeName, yearMonth, kpi);
+
+    // 刪單偵測：SayDou 回來的 ordcid 集合 vs DB 中該門市該期間的 ordcid
+    // 如果 DB 有但 SayDou 沒有 → 標記 is_deleted（店長改單/刪單）
+    if (txItems.length > 0) {
+      const apiOrdcids = txItems.map(t => t.ordcid).filter(Boolean);
+      const { rows: dbRows } = await pool.query(
+        `SELECT ordcid FROM saydou_transactions WHERE storid = $1 AND year_month = $2 AND is_deleted = FALSE`,
+        [parseInt(storeId), yearMonth]
+      );
+      const dbOrdcids = dbRows.map(r => r.ordcid);
+      const apiSet = new Set(apiOrdcids.map(String));
+      const deletedOrdcids = dbOrdcids.filter(id => !apiSet.has(String(id)));
+      
+      if (deletedOrdcids.length > 0) {
+        await pool.query(
+          `UPDATE saydou_transactions SET is_deleted = TRUE, updated_at = NOW() WHERE ordcid = ANY($1::bigint[])`,
+          [deletedOrdcids]
+        );
+        kpi.deletedCount = deletedOrdcids.length;
+        console.log(`  🗑️ ${storeName.replace('泡泡貓｜', '')}: ${deletedOrdcids.length} 筆已刪單標記`);
+      }
+    }
 
     // Storecash
     const scItems = await fetchStorecash(token, storeId, startDate, endDate, kpi);
@@ -378,7 +412,7 @@ async function main() {
   const specificMonth = args.find(a => a.startsWith('--month='))?.split('=')[1];
   const fullSync = args.includes('--full');
 
-  console.log('🔄 SayDou Data Sync v2.0');
+  console.log('🔄 SayDou Data Sync v2.1 (resync + backfill)');
   console.log(`   Concurrency: ${CONCURRENCY} workers | API timeout: ${API_TIMEOUT_MS}ms`);
   console.log('='.repeat(60));
 
@@ -403,6 +437,70 @@ async function main() {
       console.log('❌ No store IDs available.');
       process.exit(1);
     }
+  }
+
+  // ─── Resync 模式：處理 pending 的重跑請求 ───
+  if (RESYNC_MODE) {
+    const { rows: reqs } = await pool.query(
+      "SELECT * FROM saydou_resync_requests WHERE status = 'pending' ORDER BY requested_at LIMIT 20"
+    );
+    if (reqs.length === 0) {
+      console.log('✅ No pending resync requests');
+      await pool.end();
+      return;
+    }
+    console.log(`🔄 Processing ${reqs.length} resync requests`);
+    for (const req of reqs) {
+      await pool.query("UPDATE saydou_resync_requests SET status='processing' WHERE id=$1", [req.id]);
+      const ym = req.resync_date.toISOString().substring(0, 7);
+      const dateStr = req.resync_date.toISOString().substring(0, 10);
+      // Resync 只跑指定日期（不是整月），更精準
+      try {
+        const result = await syncStore(token, String(req.store_id), req.store_name, dateStr, dateStr, ym);
+        await pool.query("UPDATE saydou_resync_requests SET status='done', processed_at=NOW(), note=$1 WHERE id=$2",
+          [`tx:${result.tx} sc:${result.sc}`, req.id]);
+        console.log(`  ✅ Resync ${req.store_name} ${dateStr}: tx:${result.tx}`);
+      } catch (e) {
+        await pool.query("UPDATE saydou_resync_requests SET status='error', processed_at=NOW(), note=$1 WHERE id=$2",
+          [e.message, req.id]);
+        console.log(`  ❌ Resync ${req.store_name} ${dateStr}: ${e.message}`);
+      }
+    }
+    await pool.end();
+    return;
+  }
+
+  // ─── 單店單日 resync（CLI 直接指定）───
+  if (RESYNC_STORE && RESYNC_DATE) {
+    const storeName = storeMap.get(RESYNC_STORE) || `store_${RESYNC_STORE}`;
+    const ym = RESYNC_DATE.substring(0, 7);
+    console.log(`🔄 Resync: ${storeName} (${RESYNC_STORE}) @ ${RESYNC_DATE}`);
+    const result = await syncStore(token, RESYNC_STORE, storeName, RESYNC_DATE, RESYNC_DATE, ym);
+    console.log(`✅ Done: tx:${result.tx} sc:${result.sc}`);
+    await pool.end();
+    return;
+  }
+
+  // ─── Backfill 模式：歷史回填（指定起始月到今天）───
+  if (BACKFILL) {
+    const [startYear, startMonth] = BACKFILL.split('-').map(Number);
+    const endDate = new Date();
+    const months = [];
+    let cur = new Date(startYear, startMonth - 1, 1);
+    while (cur <= endDate) {
+      months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
+      cur.setMonth(cur.getMonth() + 1);
+    }
+    console.log(`📦 Backfill: ${months[0]} → ${months[months.length - 1]} (${months.length} months)`);
+    let grandTx = 0, grandSc = 0;
+    for (const ym of months) {
+      const { totalTx, totalSc } = await syncMonth(token, storeMap, ym);
+      grandTx += totalTx;
+      grandSc += totalSc;
+    }
+    console.log(`\n✅ Backfill complete: tx:${grandTx} sc:${grandSc}`);
+    await pool.end();
+    return;
   }
 
   const now = new Date();
