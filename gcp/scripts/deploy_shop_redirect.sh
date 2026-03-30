@@ -71,7 +71,7 @@ ingress:
     service: http://localhost:3800
   - hostname: gcp.paopaomao.tw
     service: http://localhost:3850
-  - hostname: api.paopaomao.tw
+  - hostname: api.paopaomao.tw  # DEPRECATED - use paopaomaoapi.com
     service: http://localhost:3860
   - hostname: site.paopaomao.tw
     service: http://localhost:8088

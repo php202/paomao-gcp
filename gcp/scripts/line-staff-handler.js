@@ -1043,9 +1043,9 @@ async function handleAttendanceCommand({
 }
 
 async function handleLineQuestion(replyText, authClient, sheetReader) {
-  // 改讀 PostgreSQL API（api.paopaomao.tw）
+  // 改讀 PostgreSQL API（本機直連）
   try {
-    const resp = await fetch('https://api.paopaomao.tw/api/issues/pending?key=paomao-issues-2026&limit=50');
+    const resp = await fetch('http://localhost:3860/api/issues/pending?key=paomao-issues-2026&limit=50');
     if (!resp.ok) throw new Error(`API ${resp.status}`);
     const data = await resp.json();
     const pending = (data.issues || []).map(i => ({

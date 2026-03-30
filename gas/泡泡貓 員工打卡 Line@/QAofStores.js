@@ -5,7 +5,7 @@ function sendStoreLineQuestionRequest(replyToken) {
   try {
     // 呼叫 Issues API
     var resp = UrlFetchApp.fetch(
-      "https://api.paopaomao.tw/api/issues/pending?key=paomao-issues-2026&limit=50",
+      "https://paopaomaoapi.com/api/issues/pending?key=paomao-issues-2026&limit=50",
       { muteHttpExceptions: true }
     );
 
