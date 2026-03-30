@@ -25,6 +25,50 @@
     const CHECKOUT_RE = /checkout\/add|management\/checkout/;
     const UPDATE_RE   = /checkout\/update/;
 
+    /**
+     * checkout/update request body → checkout/add response.order 格式轉換
+     * update body: items[], cashPay, creditCard, linePay, ordcid, storid, membid...
+     * add response: ordds[], cash, card, rprice, ordrsn, storid...
+     */
+    function normalizeUpdateBody(raw) {
+        const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!data || !data.storid) return null;
+
+        // items → ordds
+        const ordds = (data.items || []).map(item => ({
+            godnam: item.godnam || '',
+            rprice: item.price_ || 0,
+            price_: item.price_ || 0,
+            amount: item.amount || 1,
+        }));
+
+        // 總價 = items 的 price_ × amount 總和
+        const rprice = ordds.reduce((sum, d) => sum + (d.rprice * (d.amount || 1)), 0);
+
+        // 付款方式映射
+        const card = Number(data.creditCard || 0);
+        const cash = Number(data.cashPay || 0);
+        const linepay = Number(data.linePay || 0);
+
+        return {
+            storid: data.storid,
+            ordcid: data.ordcid || '',
+            ordrsn: data.ordcid || '',   // update 沒有 ordrsn，用 ordcid
+            membid: data.membid || '',
+            rprice: rprice,
+            price_: rprice,
+            ordds: ordds,
+            cash: cash,
+            card: card,
+            linepay: linepay,
+            creditcard: card,
+            voucher: Number(data.voucher || 0),
+            // update body 沒有 memnam/phone_，Modal 會顯示空白，可手動輸入
+            memnam: '',
+            phone_: '',
+        };
+    }
+
     function tryOpenInvoiceFromResponse(text, requestBody, url) {
         try {
             const json = JSON.parse(text);
@@ -32,21 +76,15 @@
 
             let order = json.order;
 
-            // checkout/update：response 可能沒有完整 order，從 request body 補齊
+            // checkout/update：response 沒有完整 order，從 request body 轉換
             if (!order && UPDATE_RE.test(url || '')) {
                 try {
-                    const reqData = typeof requestBody === 'string' ? JSON.parse(requestBody) : requestBody;
-                    if (reqData) {
-                        // update request body 通常包含 ordcid/storid 等欄位
-                        order = reqData.order || reqData;
-                    }
+                    order = normalizeUpdateBody(requestBody);
                 } catch (_) {}
             }
 
             if (!order) return;
-            // update 可能缺 storid，嘗試多個可能的欄位
-            const storid = order.storid != null ? String(order.storid).trim()
-                         : (order.stoid != null ? String(order.stoid).trim() : '');
+            const storid = order.storid != null ? String(order.storid).trim() : '';
             if (!storid) return;
 
             GM_xmlhttpRequest({
