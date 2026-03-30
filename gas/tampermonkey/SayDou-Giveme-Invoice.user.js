@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SayDou 結帳同步 Giveme 發票
 // @namespace    http://tampermonkey.net/
-// @version      2026.2.21
-// @description  Saydou 結帳成功時跳出發票綁定視窗，開立 Giveme 電子發票（可連動印表機）
+// @version      2026.3.30
+// @description  Saydou 結帳成功或修改結帳時跳出發票綁定視窗，開立 Giveme 電子發票（可連動印表機）
 // @author       You
 // @match        *://m.saydou.com/*
 // @match        *://saywebdatafeed.saydou.com/*
@@ -17,12 +17,38 @@
     // 請改成你的 GCP Cloud Run 網址（與 set-env.sh REPORT_API_BASE 同服務、不含路徑）
     const GCP_BASE = "https://gcp.paopaomao.tw";
 
-    function tryOpenInvoiceFromResponse(text) {
+    /**
+     * 攔截 checkout 相關 API，觸發開發票視窗
+     * - checkout/add: 新結帳 → response.order 有完整訂單
+     * - management/checkout/update: 修改結帳 → response 可能沒有 order，需從 request body 補
+     */
+    const CHECKOUT_RE = /checkout\/add|management\/checkout/;
+    const UPDATE_RE   = /checkout\/update/;
+
+    function tryOpenInvoiceFromResponse(text, requestBody, url) {
         try {
             const json = JSON.parse(text);
-            if (!json || json.status !== true || !json.order) return;
-            const order = json.order;
-            const storid = order.storid != null ? String(order.storid).trim() : '';
+            if (!json || json.status !== true) return;
+
+            let order = json.order;
+
+            // checkout/update：response 可能沒有完整 order，從 request body 補齊
+            if (!order && UPDATE_RE.test(url || '')) {
+                try {
+                    const reqData = typeof requestBody === 'string' ? JSON.parse(requestBody) : requestBody;
+                    if (reqData) {
+                        // update request body 通常包含 ordcid/storid 等欄位
+                        order = reqData.order || reqData;
+                    }
+                } catch (_) {}
+            }
+
+            if (!order) return;
+            // update 可能缺 storid，嘗試多個可能的欄位
+            const storid = order.storid != null ? String(order.storid).trim()
+                         : (order.stoid != null ? String(order.stoid).trim() : '');
+            if (!storid) return;
+
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: GCP_BASE + '/giveme-invoice/check?storid=' + encodeURIComponent(storid),
@@ -46,11 +72,13 @@
         const url = typeof resource === 'string' ? resource : (resource && resource.url) || '';
         const res = await originalFetch.apply(this, args);
 
-        if (/checkout\/add|management\/checkout/.test(url)) {
+        if (CHECKOUT_RE.test(url)) {
             try {
                 const clone = res.clone();
                 const text = await clone.text();
-                tryOpenInvoiceFromResponse(text);
+                // 取 request body 給 update 用
+                const reqBody = config?.body || null;
+                tryOpenInvoiceFromResponse(text, reqBody, url);
             } catch (_) {}
         }
         return res;
@@ -65,9 +93,10 @@
     };
     XHR.send = function(body) {
         const url = this._url || '';
-        if (/checkout\/add|management\/checkout/.test(url)) {
+        if (CHECKOUT_RE.test(url)) {
+            this._reqBody = body; // 存下 request body
             this.addEventListener('load', function() {
-                if (this.responseText) tryOpenInvoiceFromResponse(this.responseText);
+                if (this.responseText) tryOpenInvoiceFromResponse(this.responseText, this._reqBody, url);
             });
         }
         return origSend.apply(this, arguments);
