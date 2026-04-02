@@ -11,6 +11,7 @@ import https from 'node:https';
 import fetch from 'node-fetch';
 import { getAuth } from '../lib/auth.js';
 import { readSheet } from '../lib/sheets.js';
+import pool from '../lib/db.js';
 
 // 與 VM 中繼一致：強制 IPv4 連線，避免 Cloud Run 走 IPv6 導致 Giveme 連線慢或逾時
 const GIVEME_HTTPS_AGENT = new https.Agent({ family: 4 });
@@ -167,76 +168,121 @@ function getInvoiceDate(order) {
 }
 
 /**
- * 從試算表「店家基本資料」依 storid 取 Giveme 憑證：F 欄=神美(storid)，M 欄=帳號密碼，N 欄=統一編號
- * M 欄可為 JSON {"idno","password"} 或 "idno,password" / "idno|password"
+ * 解析 giveme_config 字串 → { idno, password }
+ * 支援格式：JSON {"idno","password"} 或 "idno,password" / "idno|password"
+ */
+function parseGivemeConfig(configStr) {
+  if (!configStr) return null;
+  const s = String(configStr).trim();
+  if (!s) return null;
+  try {
+    const parsed = JSON.parse(s);
+    if (parsed?.idno && parsed?.password) return { idno: parsed.idno.trim(), password: parsed.password.trim() };
+  } catch { /* not JSON */ }
+  const parts = s.split(/[,|]/).map(p => p.trim());
+  if (parts.length >= 2 && parts[0] && parts[1]) return { idno: parts[0], password: parts[1] };
+  return null;
+}
+
+/**
+ * 依 storid (SayDou store ID) 取 Giveme 憑證
+ * 優先讀 DB stores 表（saydou_id + tax_id + giveme_config），
+ * DB 找不到則 fallback Google Sheet。
  */
 async function getCredentialByStorid(auth, storid) {
-  if (!LINE_STORE_SS_ID || !storid) return null;
-  const now = Date.now();
-  if (credCache.storid === String(storid).trim() && credCache.expiresAt > now) return credCache.cred;
-
-  const rows = await readSheet(auth, LINE_STORE_SS_ID, "'店家基本資料'!A:N");
+  if (!storid) return null;
   const needle = String(storid).trim();
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    if (String(row[5] ?? '').trim() !== needle) continue;
-    const uncode = String(row[13] ?? '').trim();
-    const mCell = String(row[12] ?? '').trim();
-    if (!uncode || !mCell) continue;
+  const now = Date.now();
+  if (credCache.storid === needle && credCache.expiresAt > now) return credCache.cred;
 
-    let idno = '';
-    let password = '';
-    try {
-      const parsed = JSON.parse(mCell);
-      if (parsed && typeof parsed.idno === 'string' && typeof parsed.password === 'string') {
-        idno = parsed.idno.trim();
-        password = parsed.password.trim();
-      }
-    } catch {
-      const parts = mCell.split(/[,|]/).map((s) => s.trim());
-      if (parts.length >= 2) {
-        idno = parts[0];
-        password = parts[1];
+  // ── 1. 讀 DB ──
+  try {
+    const { rows } = await pool.query(
+      `SELECT tax_id, giveme_config FROM stores WHERE saydou_id = $1 AND is_active = true LIMIT 1`,
+      [needle]
+    );
+    if (rows.length > 0) {
+      const { tax_id, giveme_config } = rows[0];
+      const uncode = (tax_id || '').trim();
+      const parsed = parseGivemeConfig(giveme_config);
+      if (uncode && parsed) {
+        const cred = { uncode, idno: parsed.idno, password: parsed.password };
+        credCache = { storid: needle, cred, expiresAt: now + CRED_CACHE_TTL_MS };
+        console.log('[giveme-invoice] cred from DB for storid', needle, '→ uncode', uncode);
+        return cred;
       }
     }
-    if (!idno || !password) continue;
+  } catch (e) {
+    console.warn('[giveme-invoice] DB getCredentialByStorid error:', e?.message);
+  }
 
-    const cred = { uncode, idno, password };
-    credCache = { storid: needle, cred, expiresAt: now + CRED_CACHE_TTL_MS };
-    return cred;
+  // ── 2. Fallback: Google Sheet ──
+  if (LINE_STORE_SS_ID) {
+    try {
+      const rows = await readSheet(auth, LINE_STORE_SS_ID, "'店家基本資料'!A:N");
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (String(row[5] ?? '').trim() !== needle) continue;
+        const uncode = String(row[13] ?? '').trim();
+        const mCell = String(row[12] ?? '').trim();
+        if (!uncode || !mCell) continue;
+        const parsed = parseGivemeConfig(mCell);
+        if (!parsed) continue;
+        const cred = { uncode, idno: parsed.idno, password: parsed.password };
+        credCache = { storid: needle, cred, expiresAt: now + CRED_CACHE_TTL_MS };
+        console.log('[giveme-invoice] cred from Sheet for storid', needle, '→ uncode', uncode);
+        return cred;
+      }
+    } catch (e) {
+      console.warn('[giveme-invoice] Sheet getCredentialByStorid error:', e?.message);
+    }
   }
   return null;
 }
 
 /**
- * 依 uncode（統一編號）從試算表找該店 Giveme 憑證（用於列印時查詢）
+ * 依 uncode（統一編號）取 Giveme 憑證（用於列印時查詢）
+ * 優先讀 DB，fallback Google Sheet。
  */
 async function getCredentialByUncode(auth, uncode) {
-  if (!LINE_STORE_SS_ID || !uncode) return null;
+  if (!uncode) return null;
   const needle = String(uncode).trim();
-  const rows = await readSheet(auth, LINE_STORE_SS_ID, "'店家基本資料'!A:N");
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    if (String(row[13] ?? '').trim() !== needle) continue;
-    const mCell = String(row[12] ?? '').trim();
-    if (!mCell) continue;
-    let idno = '';
-    let password = '';
-    try {
-      const parsed = JSON.parse(mCell);
-      if (parsed && typeof parsed.idno === 'string' && typeof parsed.password === 'string') {
-        idno = parsed.idno.trim();
-        password = parsed.password.trim();
-      }
-    } catch {
-      const parts = mCell.split(/[,|]/).map((s) => s.trim());
-      if (parts.length >= 2) {
-        idno = parts[0];
-        password = parts[1];
+
+  // ── 1. 讀 DB ──
+  try {
+    const { rows } = await pool.query(
+      `SELECT tax_id, giveme_config FROM stores WHERE tax_id = $1 AND is_active = true LIMIT 1`,
+      [needle]
+    );
+    if (rows.length > 0) {
+      const parsed = parseGivemeConfig(rows[0].giveme_config);
+      if (parsed) {
+        console.log('[giveme-invoice] cred from DB for uncode', needle);
+        return { uncode: needle, idno: parsed.idno, password: parsed.password };
       }
     }
-    if (idno && password) return { uncode: needle, idno, password };
+  } catch (e) {
+    console.warn('[giveme-invoice] DB getCredentialByUncode error:', e?.message);
   }
+
+  // ── 2. Fallback: Google Sheet ──
+  if (LINE_STORE_SS_ID) {
+    try {
+      const rows = await readSheet(auth, LINE_STORE_SS_ID, "'店家基本資料'!A:N");
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (String(row[13] ?? '').trim() !== needle) continue;
+        const mCell = String(row[12] ?? '').trim();
+        if (!mCell) continue;
+        const parsed = parseGivemeConfig(mCell);
+        if (parsed) return { uncode: needle, idno: parsed.idno, password: parsed.password };
+      }
+    } catch (e) {
+      console.warn('[giveme-invoice] Sheet getCredentialByUncode error:', e?.message);
+    }
+  }
+
+  // ── 3. Fallback: 環境變數 ──
   if (GIVEME_UNCODE === needle && GIVEME_IDNO && GIVEME_PASSWORD) {
     return { uncode: GIVEME_UNCODE, idno: GIVEME_IDNO, password: GIVEME_PASSWORD };
   }
@@ -344,9 +390,9 @@ export async function handleGivemeInvoiceCheck(req, res) {
   const u = new URL(req.url || '', 'http://localhost');
   const storid = (u.searchParams.get('storid') || '').trim();
   let configured = false;
-  if (LINE_STORE_SS_ID && storid) {
+  if (storid) {
     try {
-      const auth = await getAuth();
+      const auth = LINE_STORE_SS_ID ? await getAuth() : null;
       const cred = await getCredentialByStorid(auth, storid);
       if (cred) configured = true;
     } catch {
@@ -422,9 +468,9 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
   }
 
   let cred = null;
-  if (LINE_STORE_SS_ID && storid) {
+  if (storid) {
     try {
-      const auth = await getAuth();
+      const auth = LINE_STORE_SS_ID ? await getAuth() : null;
       cred = await getCredentialByStorid(auth, storid);
     } catch (e) {
       console.warn('[giveme-invoice]', reqId, 'getCredentialByStorid failed:', e?.message || e);
@@ -435,7 +481,7 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
   }
   if (!cred) {
     console.warn('[giveme-invoice]', reqId, 'no cred');
-    send(res, 503, { success: false, msg: 'Giveme 設定未完成（試算表 M/N 欄或環境變數 GIVEME_UNCODE/IDNO/PASSWORD）' });
+    send(res, 503, { success: false, msg: 'Giveme 設定未完成（DB stores 表或環境變數 GIVEME_UNCODE/IDNO/PASSWORD）' });
     return;
   }
 
@@ -626,14 +672,11 @@ export async function handleGivemeInvoicePrint(req, res) {
     return;
   }
   const typeNum = ['1', '2', '3'].includes(type) ? type : '1';
-  let auth;
+  let auth = null;
   try {
-    auth = await getAuth();
+    if (LINE_STORE_SS_ID) auth = await getAuth();
   } catch (e) {
-    console.error('[giveme-invoice-print] getAuth:', e?.message || e);
-    res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify({ success: false, msg: '無法取得憑證' }));
-    return;
+    console.warn('[giveme-invoice-print] getAuth (non-fatal):', e?.message || e);
   }
   const cred = await getCredentialByUncode(auth, uncode);
   if (!cred) {

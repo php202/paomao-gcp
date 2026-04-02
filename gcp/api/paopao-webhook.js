@@ -985,26 +985,31 @@ async function handleSOConfirmPostback(authClient, event) {
   try {
     // Using shared pgPool
 
-    // 找 ach_records by odoo_quote_id
+    // 找 ach_records by odoo_quote_id — 優先找「未確認」的那筆
     const dbResult = await pgPool.query(
-      'SELECT id, store_name, customer_confirmed FROM ach_records WHERE odoo_quote_id = $1 AND year = 2026 LIMIT 1',
+      `SELECT id, store_name, customer_confirmed, odoo_invoice_id FROM ach_records 
+       WHERE odoo_quote_id = $1 AND year = 2026 AND is_active = true
+       ORDER BY CASE WHEN (customer_confirmed IS NULL OR TRIM(customer_confirmed) = '') THEN 0 ELSE 1 END, id DESC`,
       [orderName]
     );
     achRows = dbResult.rows;
 
     if (achRows.length > 0) {
-      if (achRows[0].customer_confirmed && String(achRows[0].customer_confirmed).trim()) {
-        await replyText(event.replyToken, `⚠️ ${userName} 您好，\n這筆資料已經確認過囉！\n\n紀錄：\n${achRows[0].customer_confirmed}`);
-        return;
+      // 找到未確認的那筆
+      const unconfirmed = achRows.find(r => !r.customer_confirmed || !String(r.customer_confirmed).trim());
+      if (unconfirmed) {
+        // 寫入確認
+        const now = formatTaiwanDateTime(new Date());
+        const confirmText = `${now} 由 ${userName} 確認`;
+        await pgPool.query(
+          'UPDATE ach_records SET customer_confirmed = $1 WHERE id = $2',
+          [confirmText, unconfirmed.id]
+        );
+        console.log(`[paopao-webhook] ✅ so_confirm: ${orderName} (ach id=${unconfirmed.id}) by ${userName}`);
+      } else {
+        // 全部已確認 — 但不擋住！繼續做 Odoo 確認（可能是新月份重複使用同 SO）
+        console.log(`[paopao-webhook] so_confirm: ${orderName} 所有 ach_records 已確認，繼續 Odoo 確認`);
       }
-      // 寫入確認
-      const now = formatTaiwanDateTime(new Date());
-      const confirmText = `${now} 由 ${userName} 確認`;
-      await pgPool.query(
-        'UPDATE ach_records SET customer_confirmed = $1 WHERE id = $2 AND year = 2026',
-        [confirmText, achRows[0].id]
-      );
-      console.log(`[paopao-webhook] ✅ so_confirm: ${orderName} (ach id=${achRows[0].id}) by ${userName}`);
     } else {
       console.log(`[paopao-webhook] so_confirm: ${orderName} 不在 ach_records 中，僅做 Odoo 確認`);
     }
@@ -1124,6 +1129,54 @@ async function handleSOCancelPostback(event) {
   console.log(`[paopao-webhook] so_cancel: ${orderName} by ${userName}`);
 }
 
+/** 票券折抵確認 postback：ticket_confirm:batchId:storeCode */
+async function handleTicketConfirmPostback(event) {
+  const data = event?.postback?.data || '';
+  const parts = data.split(':');
+  if (parts.length < 3) {
+    console.warn(`[ticket-confirm] invalid postback data: ${data}`);
+    return;
+  }
+  const [, batchId, storeCode] = parts;
+
+  const source = event.source || {};
+  const userId = source.userId;
+  let userName = await fetchDisplayNameInSource(userId, source);
+  if (!userName) userName = 'LINE用戶';
+
+  try {
+    // 直接更新 DB（共用同一台 PostgreSQL）
+    const { rowCount } = await pgPool.query(
+      `UPDATE ticket_items
+       SET status = 'confirmed', confirmed_at = NOW(), confirmed_by = $1
+       WHERE batch_id = $2 AND store_code = $3 AND status != 'confirmed'`,
+      [userName, batchId, storeCode]
+    );
+
+    if (rowCount === 0) {
+      await replyText(event.replyToken, `ℹ️ ${userName} 您好，這筆票券折抵已經確認過囉！`);
+      return;
+    }
+
+    // 確認是否全部完成
+    const { rows: pendingRows } = await pgPool.query(
+      `SELECT COUNT(*) as cnt FROM ticket_items WHERE batch_id = $1 AND status != 'confirmed'`,
+      [batchId]
+    );
+    const pendingCount = parseInt(pendingRows[0].cnt);
+    if (pendingCount === 0) {
+      await pgPool.query(`UPDATE ticket_batches SET status = 'done' WHERE id = $1`, [batchId]);
+    }
+
+    const pendingMsg = pendingCount > 0 ? `\n\n目前還有 ${pendingCount} 間店待確認。` : '\n\n✅ 所有店家均已確認完畢！';
+    await replyText(event.replyToken, `✅ 票券折抵已確認！\n\n確認者：${userName}\n批次 #${batchId} 店家 ${storeCode}${pendingMsg}`);
+    console.log(`[ticket-confirm] ✅ batch=${batchId} store=${storeCode} by=${userName} remaining=${pendingCount}`);
+  } catch (e) {
+    console.error('[ticket-confirm] DB error:', e.message);
+    await replyText(event.replyToken, '⚠️ 系統錯誤，請稍後再試或聯繫總公司。');
+  }
+}
+
 export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
   if (!PAOPAO_STORE_SS_ID) {
     sendJson(res, 200, { status: 'error', message: 'PAOPAO_STORE_SS_ID missing' });
@@ -1173,6 +1226,11 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     if (event?.type === 'postback' && event?.postback?.data) {
       const params = parsePostbackParams(event.postback.data);
       console.log(`[paopao-webhook] postback action=${params.action} dbId=${params.dbId || ''} odoo=${params.odoo || ''}`);
+      // 票券折抵確認 postback：格式 ticket_confirm:batchId:storeCode
+      if (event.postback.data.startsWith('ticket_confirm:')) {
+        await handleTicketConfirmPostback(event);
+        continue;
+      }
       if (params.action === 'confirm') {
         await handleConfirmPostback(authClient, event);
       } else if (params.action === 'direct_confirm') {

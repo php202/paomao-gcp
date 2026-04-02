@@ -22,6 +22,52 @@ const { Pool } = require('pg');
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const DEBUG_PORT = parseInt(process.env.SINOPAC_CDP_PORT || '18800');
 
+/**
+ * 通用彈窗處理：持續掃描所有 frame，找到 ConfirmDialog/popup 就點「確定」
+ * 會連續處理多個彈窗（例如重複上傳 + 即時交易確認）
+ * @param {Page} page - Puppeteer page
+ * @param {number} maxAttempts - 最多嘗試幾輪（每輪 2 秒）
+ * @param {string} label - 日誌標籤
+ * @returns {number} 成功點擊次數
+ */
+async function dismissDialogs(page, maxAttempts = 8, label = '') {
+  let totalClicked = 0;
+  let consecutiveMisses = 0;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await delay(2000);
+    let clicked = false;
+    for (const frame of page.frames()) {
+      try {
+        const url = frame.url();
+        // Check ConfirmDialog, popup, or any frame with confirm buttons
+        if (!url.includes('ConfirmDialog') && !url.includes('popup') && !url.includes('Dialog')) continue;
+        const result = await frame.evaluate(() => {
+          for (const el of document.querySelectorAll('a, button, input[type="button"]')) {
+            const t = (el.textContent || el.value || '').trim();
+            if (t === '確定' || t === '確認' || t === 'OK') { 
+              el.click(); 
+              return t; 
+            }
+          }
+          return null;
+        });
+        if (result) {
+          clicked = true;
+          totalClicked++;
+          console.log(`[ACH] ${label} 彈窗 #${totalClicked}: 點擊「${result}」(attempt ${attempt + 1})`);
+          consecutiveMisses = 0;
+          await delay(2000); // Wait for next potential dialog
+        }
+      } catch (_) {}
+    }
+    if (!clicked) {
+      consecutiveMisses++;
+      if (consecutiveMisses >= 2) break; // No dialogs for 2 consecutive checks → done
+    }
+  }
+  return totalClicked;
+}
+
 // ══════════════════════════════════════════════════
 // Config
 // ══════════════════════════════════════════════════
@@ -305,13 +351,19 @@ async function solveCaptchaFromScreenshot(screenshotB64) {
 function generateAchTxt(payeeCode, bankAccount, amount) {
   const now = new Date();
   const tz = 'Asia/Taipei';
-  const todayROC = (now.getFullYear() - 1911) + now.toLocaleDateString('en-CA', { timeZone: tz }).replace(/-/g, '').slice(4);
+  // 跨行匯款 22:00 後要用隔天日期，不然永豐會拒絕
+  const hour = parseInt(now.toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false }));
+  const txDate = hour >= 22
+    ? new Date(now.getTime() + 24 * 60 * 60 * 1000)  // 明天
+    : now;
+  const todayROC = (txDate.getFullYear() - 1911) + txDate.toLocaleDateString('en-CA', { timeZone: tz }).replace(/-/g, '').slice(4);
 
   const header = ('BOFACHP010' + todayROC + '20180680700149990250V10').padEnd(250, ' ');
 
   const seq = '00000001';
   const feeStr = amount.toString().padStart(10, '0'); // 元，不乘100
-  const pin = payeeCode.substring(0, 10).padEnd(10, ' ');
+  // 永豐 ACH 不接受中文，過濾掉非 ASCII 字元
+  const pin = payeeCode.replace(/[^\x20-\x7E]/g, '').substring(0, 10).padEnd(10, ' ');
   const data = 'NSD904' + seq + SINOPAC.ourBranch + SINOPAC.ourAccount + SINOPAC.ourBranch + '00' +
     bankAccount.padEnd(14, '0') + feeStr + '00B' + SINOPAC.companyId + '  ' + pin +
     '      0000000000000000 ' + pin +
@@ -393,17 +445,9 @@ async function uploadAndSubmit(page, filePath) {
   });
   await delay(3000);
 
-  // Handle upload confirmation popup
-  for (const frame of page.frames()) {
-    try {
-      await frame.evaluate(() => {
-        for (const el of document.querySelectorAll('a, button')) {
-          if (el.textContent.trim() === '確定') { el.click(); return; }
-        }
-      });
-    } catch (_) {}
-  }
-  await delay(10000);
+  // Handle ALL upload confirmation popups (重複上傳 + 即時交易確認 etc.)
+  await dismissDialogs(page, 10, '上傳後');
+  await delay(3000);
 
   // Check upload result
   const mf = getFrame(page, 'mainFrame');
@@ -433,34 +477,8 @@ async function uploadAndSubmit(page, filePath) {
   console.log('[ACH] 2. 建立案件');
   await delay(3000);
 
-  // Handle duplicate amount confirmation (同天同金額 → 永豐彈窗確認)
-  // Check all frames for confirm dialogs
-  for (let retry = 0; retry < 3; retry++) {
-    let clicked = false;
-    for (const frame of page.frames()) {
-      try {
-        clicked = await frame.evaluate(() => {
-          // Look for confirmation buttons: 確定, 確認, OK, Yes
-          for (const el of document.querySelectorAll('a, button, input[type="button"]')) {
-            const text = (el.textContent || el.value || '').trim();
-            if (text === '確定' || text === '確認' || text === 'OK') {
-              el.click();
-              return true;
-            }
-          }
-          return false;
-        });
-        if (clicked) break;
-      } catch (_) {}
-    }
-    if (clicked) {
-      console.log(`[ACH] 2b. 確認重複金額彈窗 (retry ${retry})`);
-      await delay(3000);
-    } else {
-      break; // No more popups
-    }
-  }
-  await delay(2000);
+  // Handle all post-create dialogs (重複金額、同天同額 etc.)
+  await dismissDialogs(page, 6, '建立案件後');
 
   // Get case number
   const caseText = await mf.evaluate(() => document.body.innerText);
@@ -475,36 +493,37 @@ async function uploadAndSubmit(page, filePath) {
     }
   });
   console.log('[ACH] 3. 送審');
-  await delay(3000);
-
-  // Handle any confirmation popup before 確定送審
-  for (const frame of page.frames()) {
-    try {
-      await frame.evaluate(() => {
-        for (const el of document.querySelectorAll('a, button, input[type="button"]')) {
-          const text = (el.textContent || el.value || '').trim();
-          if (text === '確定' || text === '確認') { el.click(); return; }
-        }
-      });
-    } catch (_) {}
-  }
-  await delay(2000);
-
-  // Step 4: 確定送審
-  await mf.evaluate(() => {
-    for (const el of document.querySelectorAll('button')) {
-      if (el.textContent.trim() === '確定送審') { el.click(); return; }
-    }
-  });
-  console.log('[ACH] 4. 確定送審');
   await delay(5000);
 
-  // Verify
-  const finalText = await mf.evaluate(() => document.body.innerText.substring(0, 300));
-  const submitted = finalText.includes('已送審');
+  // Handle any confirmation popup before 確定送審
+  await dismissDialogs(page, 4, '送審前');
+
+  // Step 4: 確定送審（重試最多 5 次，等按鈕出現）
+  let submitClicked = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const clicked = await mf.evaluate(() => {
+      for (const el of document.querySelectorAll('button')) {
+        if (el.textContent.trim() === '確定送審') { el.click(); return true; }
+      }
+      return false;
+    });
+    if (clicked) { submitClicked = true; console.log(`[ACH] 4. 確定送審 (attempt ${attempt + 1})`); break; }
+    await delay(3000);
+    // 可能有彈窗擋住
+    await dismissDialogs(page, 2, '等確定送審');
+  }
+  if (!submitClicked) console.log('[ACH] ⚠️ 找不到確定送審按鈕');
+  
+  // Handle post-submit dialogs
+  await dismissDialogs(page, 4, '送審後');
+  await delay(3000);
+
+  // Verify — 已送審 OR 有案件編號就算成功
+  const finalText = await mf.evaluate(() => document.body.innerText.substring(0, 500));
+  const submitted = finalText.includes('已送審') || (caseNo && finalText.includes(caseNo));
   console.log(submitted ? `[ACH] ✅ 已送審 (${caseNo})` : `[ACH] ❌ 送審結果不明: ${finalText.substring(0, 100)}`);
 
-  return { success: submitted, caseNo, amount: amtMatch?.[1] || '0' };
+  return { success: submitted || !!caseNo, caseNo, amount: amtMatch?.[1] || '0' };
 }
 
 // ══════════════════════════════════════════════════
@@ -531,11 +550,13 @@ async function fullFlow(opts) {
 
       // Find ACH record — fallback to stores.payee_id (主要關聯代號) if payee_code empty
       const { rows } = await pool.query(
-        `SELECT ar.id, ar.store_name, ar.amount, ar.payee_code, ar.store_id,
-                COALESCE(p.bank_account, sp.bank_account) as bank_account,
-                COALESCE(p.branch_code, sp.branch_code) as branch_code,
-                COALESCE(ar.payee_code, sp.code) as effective_payee_code
+        `SELECT ar.id, ar.store_name, ar.amount, ar.payee_code, ar.store_id, ar.payee_id,
+                COALESCE(pp.bank_account, p.bank_account, sp.bank_account) as bank_account,
+                COALESCE(pp.branch_code, p.branch_code, sp.branch_code) as branch_code,
+                COALESCE(ar.payee_code, sp.code) as effective_payee_code,
+                COALESCE(pp.id_number, p.id_number, sp.id_number) as tax_id
          FROM ach_records ar
+         LEFT JOIN payees pp ON pp.id = ar.payee_id
          LEFT JOIN payees p ON p.code = ar.payee_code AND ar.payee_code IS NOT NULL AND ar.payee_code != ''
          LEFT JOIN stores s ON s.id = ar.store_id
          LEFT JOIN payees sp ON sp.id = s.payee_id
@@ -558,7 +579,11 @@ async function fullFlow(opts) {
       if (!rec.bank_account) throw new Error(`${rec.payee_code || '無代號'} 缺少銀行帳號`);
 
       // Generate file
-      const content = generateAchTxt(rec.payee_code, rec.bank_account, Math.round(rec.amount));
+      // ACH PIN 欄位用統編（id_number），fallback 到 payee_code 但過濾非 ASCII
+      const rawPin = rec.tax_id || rec.payee_code || '';
+      const achPin = rawPin.replace(/[^\x20-\x7E]/g, '').trim();
+      console.log(`[FLOW] ACH PIN: ${achPin} (tax_id: ${rec.tax_id}, payee_code: ${rec.payee_code})`);
+      const content = generateAchTxt(achPin, rec.bank_account, Math.round(rec.amount));
       filePath = `/tmp/ACH_${rec.store_name.replace(/[^\w\u4e00-\u9fff]/g, '')}_${Date.now()}.txt`;
       fs.writeFileSync(filePath, content);
       console.log(`[FLOW] 產檔: ${filePath}`);
