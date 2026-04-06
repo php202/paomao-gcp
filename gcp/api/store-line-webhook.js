@@ -906,6 +906,35 @@ export async function handleStoreLineWebhook(req, res, { authClient, rawBody }) 
       } catch (e) { console.error('[ticket38-phone] error:', e.message); }
     }
 
+    // ── 應徵者手機號碼綁定 store_line_uid ──
+    if (msgType === 'text' && /^09\d{8}$/.test(msg.replace(/[-\s]/g, ''))) {
+      try {
+        const cleanPhone = msg.replace(/[-\s]/g, '');
+        const bindRes = await fetch('http://localhost:3000/api/candidate-line-bind', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            phone: cleanPhone,
+            store_line_uid: userId,
+            store_name: store.storeName,
+            secret: 'paopaomao_internal'
+          }),
+          signal: AbortSignal.timeout(5000)
+        });
+        const bindJson = await bindRes.json();
+        if (bindJson.status) {
+          // 綁定成功！回覆確認訊息
+          const bindMsg = [{ type: 'text', text: `✅ 綁定成功！\n${bindJson.candidate_name} 您好，面試通知會透過此帳號發送給您。\n\n如有任何問題，請直接回覆此訊息或聯繫門市。` }];
+          let replied = false;
+          try { replied = await lineReplyMessages(replyToken, bindMsg, accessToken); } catch {}
+          if (!replied) try { await linePushMessages(userId, bindMsg, accessToken); } catch {}
+          console.log(`[store-webhook] 📱 candidate bind: ${cleanPhone} → ${userId.slice(-8)} @ ${store.storeName}`);
+          continue;
+        }
+        // 無匹配 → 不攔截，讓訊息繼續正常流程
+      } catch (e) { console.warn('[store-webhook] candidate-bind check error:', e.message); }
+    }
+
     const filterResult = messFilter(msg);
 
     if (filterResult) {
