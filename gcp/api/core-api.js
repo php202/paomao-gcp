@@ -135,18 +135,26 @@ function addDays(date, d) {
   return x;
 }
 
-/** 與 GAS getSmartSlots 一致：依服務時長間隔取精選時段，單日最多 limit 個，避免密集列表。 */
+/** 精選時段：依服務時長間隔取 limit 個，確保包含最後一個可用時段（避免截斷晚間時段）。 */
 function getSmartSlots(slots, durationMin, limit = 5) {
   if (!Array.isArray(slots) || slots.length === 0) return [];
+  if (slots.length <= limit) return [...slots];
+
+  // 保留最後一個時段，前面選 limit-1 個
+  const lastSlot = slots[slots.length - 1];
   const result = [];
   let nextAvailableMin = -1;
   for (const timeStr of slots) {
-    if (result.length >= limit) break;
+    if (result.length >= limit - 1) break;
     const currentMin = hhmmToMinutes(timeStr);
     if (nextAvailableMin === -1 || currentMin >= nextAvailableMin) {
       result.push(timeStr);
       nextAvailableMin = currentMin + durationMin;
     }
+  }
+  // 確保最後一個時段被包含（若尚未在列表中）
+  if (!result.includes(lastSlot)) {
+    result.push(lastSlot);
   }
   return result;
 }

@@ -1,22 +1,18 @@
 #!/usr/bin/env node
 /**
- * 每日環境整潔自動分派 v4.0 (API Wrapper)
- * Cron: 每天 12:00 (週一到週五)
+ * 每日環境整潔自動分派 v5.0 (Cron-safe API)
+ * Cron: 每天 16:00 (週一到週五)
  * 
- * Logic has been centralized into the dashboard server's
- * /api/cleaning/assign endpoint. This script now queries for
- * enabled stores and triggers the assignment via an API call
- * for each store, ensuring a single source of truth.
+ * Calls the dashboard's /api/cleaning/cron-assign endpoint (localhost only, no auth).
  */
 const { Pool } = require('pg');
 
-// Use dynamic import for ESM module node-fetch
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 async function main() {
-  console.log(`[cleaning] Auto-assign v4.0 starting`);
+  console.log(`[cleaning] Auto-assign v5.0 starting`);
   const pool = new Pool({ connectionString: 'postgresql://localhost/paomao' });
-  const dashboardUrl = 'http://localhost:3456'; // The main dashboard server is on 3456
+  const dashboardUrl = 'http://localhost:3000'; // Dashboard server on port 3000
 
   try {
     const { rows: features } = await pool.query(
@@ -29,40 +25,43 @@ async function main() {
     }
 
     console.log(`[cleaning] Found ${features.length} enabled stores.`);
+    const results = { success: [], skipped: [], failed: [] };
 
     for (const feature of features) {
       const store = feature.store_name;
       console.log(`\n[cleaning] Triggering assignment for: ${store}`);
       
       try {
-        // This requires the server to be running and accessible.
-        // It's assumed that the API call from localhost doesn't need auth,
-        // which is typical for internal cron jobs.
-        const response = await fetch(`${dashboardUrl}/api/cleaning/assign`, {
+        const response = await fetch(`${dashboardUrl}/api/cleaning/cron-assign`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            // This is a placeholder for how you would pass a session if needed.
-            // For this internal script, we rely on the server allowing localhost calls
-            // without a full user session. This will fail if the endpoint strictly
-            // requires an authenticated user session.
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ store_name: store }),
-          timeout: 60000, // 60 second timeout
+          timeout: 60000,
         });
 
         const result = await response.json();
 
         if (response.ok) {
           console.log(`  → Success: Assigned ${result.count || 0} tasks for ${store}.`);
+          results.success.push({ store, count: result.count || 0 });
         } else if (response.status === 409) {
-           console.log(`  → Skipped: ${store} was already assigned today.`);
+          console.log(`  → Skipped: ${store} was already assigned today.`);
+          results.skipped.push(store);
         } else {
           console.error(`  → Error for ${store} (HTTP ${response.status}):`, result.error || 'Unknown error');
+          results.failed.push({ store, error: result.error || `HTTP ${response.status}` });
         }
       } catch (apiError) {
         console.error(`  → API call failed for ${store}:`, apiError.message);
+        results.failed.push({ store, error: apiError.message });
       }
+    }
+
+    // Summary
+    console.log('\n[cleaning] === Summary ===');
+    console.log(`  Success: ${results.success.length}, Skipped: ${results.skipped.length}, Failed: ${results.failed.length}`);
+    if (results.failed.length) {
+      console.log('  Failed stores:', results.failed.map(f => `${f.store}: ${f.error}`).join('; '));
     }
   } catch (dbError) {
     console.error('[cleaning] Database query failed:', dbError);

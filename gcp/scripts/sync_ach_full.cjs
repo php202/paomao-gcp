@@ -86,7 +86,8 @@ async function main() {
           payee_id, store_id, year)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,2026)
         ON CONFLICT (sheet_row, year) DO UPDATE SET
-          record_date=EXCLUDED.record_date, store_name=EXCLUDED.store_name, amount=EXCLUDED.amount,
+          record_date=EXCLUDED.record_date, store_name=EXCLUDED.store_name,
+          amount = CASE WHEN ach_records.odoo_invoice_id IS NOT NULL AND ach_records.odoo_invoice_id != '' THEN ach_records.amount ELSE EXCLUDED.amount END,
           payee_code=EXCLUDED.payee_code, fee_type=EXCLUDED.fee_type, description=EXCLUDED.description,
           customer_confirmed=EXCLUDED.customer_confirmed, ach_registered=EXCLUDED.ach_registered,
           ach_case_no=EXCLUDED.ach_case_no, ach_released=EXCLUDED.ach_released,

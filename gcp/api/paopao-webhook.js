@@ -960,6 +960,10 @@ async function handleDirectConfirmPostback(event) {
   return true;
 }
 
+// Dedup: 防止 LINE webhook retry 重複觸發 so_confirm
+const _soConfirmInProgress = new Set();
+setInterval(() => _soConfirmInProgress.clear(), 60000); // 每 60 秒清一次
+
 /** Dashboard「發送」按鈕 postback：action=so_confirm&orderId=xxx&orderName=S01xxx
  *  1. 在 ach_records 裡找對應紀錄（by odoo_quote_id = orderName）
  *  2. 寫 customer_confirmed
@@ -980,6 +984,13 @@ async function handleSOConfirmPostback(authClient, event) {
     await replyText(event.replyToken, '⚠️ 無法取得訂單號碼，請重試。');
     return;
   }
+
+  // Dedup: 同一筆訂單 60 秒內不重複處理
+  if (_soConfirmInProgress.has(orderName)) {
+    console.log(`[paopao-webhook] so_confirm: ${orderName} dedup 跳過（重複 postback）`);
+    return;
+  }
+  _soConfirmInProgress.add(orderName);
 
   let achRows = [];
   try {
@@ -1007,14 +1018,158 @@ async function handleSOConfirmPostback(authClient, event) {
         );
         console.log(`[paopao-webhook] ✅ so_confirm: ${orderName} (ach id=${unconfirmed.id}) by ${userName}`);
       } else {
-        // 全部已確認 — 但不擋住！繼續做 Odoo 確認（可能是新月份重複使用同 SO）
-        console.log(`[paopao-webhook] so_confirm: ${orderName} 所有 ach_records 已確認，繼續 Odoo 確認`);
+        // 全部已確認 — 回覆已處理，不重複執行
+        console.log(`[paopao-webhook] so_confirm: ${orderName} 所有 ach_records 已確認，跳過重複`);
+        await replyText(event.replyToken, `ℹ️ ${orderName} 已經確認過囉，${userName}！`);
+        return;
       }
     } else {
       console.log(`[paopao-webhook] so_confirm: ${orderName} 不在 ach_records 中，僅做 Odoo 確認`);
     }
   } catch (dbErr) {
     console.error('[paopao-webhook] so_confirm DB error:', dbErr?.message);
+  }
+
+  // 判斷 fee_type：服務費只留 sent，不做 Odoo confirm/invoice/ACH
+  let feeType = '';
+  try {
+    const { rows: ftRows } = await pgPool.query(
+      `SELECT fee_type FROM ach_records WHERE odoo_quote_id = $1 AND is_active = true ORDER BY id DESC LIMIT 1`,
+      [orderName]
+    );
+    feeType = (ftRows[0]?.fee_type || '').trim();
+  } catch (e) { /* ignore */ }
+
+  if (feeType === '服務費') {
+    // 服務費：做 Odoo confirm + create invoice + post，但不開 GiveMe 發票、不上傳 ACH
+    try {
+      const soIds = await odooCall('sale.order', 'search', [[['name', '=', orderName]]]);
+      if (soIds && soIds.length > 0) {
+        const so = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['state', 'invoice_ids'] });
+
+        // Step 1: Confirm SO
+        if (so[0].state === 'draft' || so[0].state === 'sent') {
+          await odooCall('sale.order', 'action_confirm', [soIds]);
+          console.log(`[so_confirm] ✅ 服務費 ${orderName} confirmed (was ${so[0].state})`);
+        }
+
+        // Step 2: Create Invoice
+        let invoiceIds = so[0].invoice_ids || [];
+        const soAfter = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['invoice_ids'] });
+        invoiceIds = soAfter[0].invoice_ids || [];
+        if (invoiceIds.length === 0) {
+          try {
+            const wizardId = await odooCall('sale.advance.payment.inv', 'create', [{
+              advance_payment_method: 'delivered'
+            }], { context: { active_ids: soIds, active_model: 'sale.order' } });
+            await odooCall('sale.advance.payment.inv', 'create_invoices', [wizardId], { context: { active_ids: soIds, active_model: 'sale.order' } });
+            const soInv = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['invoice_ids'] });
+            invoiceIds = soInv[0].invoice_ids || [];
+            console.log(`[so_confirm] ✅ 服務費 ${orderName} invoice created`);
+          } catch (invErr) {
+            console.error(`[so_confirm] ⚠️ 服務費 ${orderName} invoice creation failed: ${invErr.message?.slice(0, 200)}`);
+          }
+        }
+
+        // Step 3: Post Invoice
+        let invName = orderName;
+        if (invoiceIds.length > 0) {
+          const lastInvId = invoiceIds[invoiceIds.length - 1];
+          const inv = await odooCall('account.move', 'read', [lastInvId], { fields: ['name', 'state'] });
+          if (inv[0].state === 'draft') {
+            try {
+              await odooCall('account.move', 'action_post', [[lastInvId]]);
+              const invPosted = await odooCall('account.move', 'read', [lastInvId], { fields: ['name'] });
+              invName = invPosted[0].name || orderName;
+              console.log(`[so_confirm] ✅ 服務費 ${orderName} invoice posted: ${invName}`);
+            } catch (postErr) {
+              console.error(`[so_confirm] ⚠️ 服務費 ${orderName} invoice post failed: ${postErr.message?.slice(0, 200)}`);
+            }
+          } else {
+            invName = inv[0].name || orderName;
+          }
+        }
+
+        // Step 3.5: 自動沖抵貸記單（服務費也適用）
+        let creditNoteInfoSvc = '';
+        if (invoiceIds.length > 0) {
+          try {
+            const lastInvIdSvc = invoiceIds[invoiceIds.length - 1];
+            const invDataSvc = await odooCall('account.move', 'read', [lastInvIdSvc], { fields: ['partner_id', 'amount_residual', 'state'] });
+            const partnerIdSvc = invDataSvc[0]?.partner_id?.[0];
+            const invResidualSvc = invDataSvc[0]?.amount_residual || 0;
+
+            if (partnerIdSvc && invResidualSvc > 0 && invDataSvc[0].state === 'posted') {
+              const creditNotesSvc = await odooCall('account.move', 'search_read',
+                [[['partner_id', '=', partnerIdSvc], ['move_type', '=', 'out_refund'], ['state', '=', 'posted'], ['amount_residual', '>', 0]]],
+                { fields: ['id', 'name', 'amount_residual', 'ref'], order: 'date asc' }
+              );
+              if (creditNotesSvc.length > 0) {
+                const invRecSvc = await odooCall('account.move.line', 'search_read',
+                  [[['move_id', '=', lastInvIdSvc], ['account_type', '=', 'asset_receivable'], ['reconciled', '=', false]]],
+                  { fields: ['id'] }
+                );
+                if (invRecSvc.length > 0) {
+                  const appliedSvc = [];
+                  for (const cn of creditNotesSvc) {
+                    const cnRecSvc = await odooCall('account.move.line', 'search_read',
+                      [[['move_id', '=', cn.id], ['account_type', '=', 'asset_receivable'], ['reconciled', '=', false]]],
+                      { fields: ['id'] }
+                    );
+                    if (cnRecSvc.length > 0) {
+                      try {
+                        await odooCall('account.move.line', 'reconcile', [[invRecSvc[0].id, cnRecSvc[0].id]]);
+                        appliedSvc.push(`${cn.name} ($${Math.abs(cn.amount_residual)})`);
+                        console.log(`[so_confirm] ✅ 服務費貸記單沖抵: ${cn.name} → ${invName}`);
+                      } catch (recErr) {
+                        console.error(`[so_confirm] ⚠️ 服務費 reconcile ${cn.name} failed: ${recErr.message?.slice(0, 200)}`);
+                      }
+                    }
+                  }
+                  if (appliedSvc.length > 0) {
+                    const invAfterSvc = await odooCall('account.move', 'read', [lastInvIdSvc], { fields: ['amount_residual'] });
+                    const newAmtSvc = invAfterSvc[0]?.amount_residual || 0;
+                    creditNoteInfoSvc = `\n已沖抵貸記單：${appliedSvc.join('、')}\n沖抵後應收餘額：$${newAmtSvc}`;
+                    // 同步更新 ach_records 金額
+                    if (newAmtSvc > 0) {
+                      try {
+                        await pgPool.query(
+                          'UPDATE ach_records SET amount = $1 WHERE odoo_quote_id = $2 AND year = 2026 AND is_active = true',
+                          [newAmtSvc, orderName]
+                        );
+                        console.log(`[so_confirm] ✅ 服務費 ach_records 金額更新: ${orderName} $${newAmtSvc}`);
+                      } catch (e) { console.error(`[so_confirm] ach_records 金額更新失敗:`, e.message?.slice(0,100)); }
+                    }
+                  }
+                }
+              }
+            }
+          } catch (cnErrSvc) {
+            console.error(`[so_confirm] ⚠️ 服務費貸記單沖抵失敗: ${cnErrSvc.message?.slice(0, 200)}`);
+          }
+        }
+
+        // Step 4: Write INV to ach_records
+        if (invName !== orderName && achRows?.length > 0) {
+          try {
+            await pgPool.query('UPDATE ach_records SET odoo_invoice_id = $1 WHERE odoo_quote_id = $2 AND year = 2026', [invName, orderName]);
+            console.log(`[so_confirm] ✅ 服務費 ach_records: ${orderName} → ${invName}`);
+          } catch (dbErr) { console.error(`[so_confirm] DB write INV failed: ${dbErr?.message}`); }
+        }
+
+        // Step 5: Chatter
+        const now2 = formatTaiwanDateTime(new Date());
+        await odooCall('sale.order', 'message_post', [soIds[0]], {
+          body: `<p>✅ LINE 確認（服務費）：由 <b>${userName}</b> 於 ${now2} 點擊「正確」確認此訂單</p>${invName !== orderName ? `<p>📄 應收帳款：${invName}</p>` : ''}${creditNoteInfoSvc ? `<p>💰 ${creditNoteInfoSvc.replace(/\\n/g, '<br/>')}</p>` : ''}`,
+          message_type: 'comment', subtype_xmlid: 'mail.mt_note'
+        });
+      }
+      // ❌ 不開 GiveMe 電子發票、不上傳永豐 ACH
+    } catch (odooErr) {
+      console.error(`[so_confirm] 服務費 ${orderName} Odoo error:`, odooErr?.message?.slice(0, 200));
+    }
+    await replyText(event.replyToken, `✅ ${orderName} 已確認，謝謝 ${userName}！`);
+    return;
   }
 
   // Odoo: 確認 SO (odooCall imported from ../lib/odoo.js)
@@ -1048,6 +1203,40 @@ async function handleSOConfirmPostback(authClient, event) {
           }
         } catch (roErr) {
           console.error(`[so_confirm] ⚠️ Repair order confirm failed for ${roOrigin}: ${roErr.message?.slice(0, 200)}`);
+        }
+
+        // Step 1.6: Dashboard repair_orders — 更新狀態為 payment_received（可進行維修），通知維修群
+        try {
+          const { rows: roRows } = await pgPool.query(
+            `UPDATE repair_orders SET status = 'payment_received', payment_status = 'paid', updated_at = NOW()
+             WHERE odoo_so_name = $1 AND status IN ('quoted', 'confirmed')
+             RETURNING id, order_number, store_name, equipment_type, fault_description`,
+            [orderName]
+          );
+          if (roRows.length > 0) {
+            const ro = roRows[0];
+            console.log(`[so_confirm] ✅ Dashboard repair_orders ${ro.order_number} → payment_received (可進行維修)`);
+
+            // 寫入進度記錄
+            await pgPool.query(
+              `INSERT INTO repair_progress (repair_order_id, status, description, technician_name)
+               VALUES ($1, 'payment_received', $2, 'System')`,
+              [ro.id, `客人已確認報價 (${orderName})，可進行維修`]
+            ).catch(e => console.error('[so_confirm] repair_progress insert error:', e.message));
+
+            // TG 通知維修群（泡泡貓維修 -1003466360577）
+            const tgRepairMsg = `🔧 維修單可進行維修！\n\n📋 ${ro.order_number}\n🏪 ${ro.store_name}\n🔩 ${ro.equipment_type}\n📝 ${(ro.fault_description || '').slice(0, 60)}\n\n✅ 客人已確認報價 (${orderName})`;
+            const TG_TOKEN = process.env.TG_BOT_TOKEN || (() => { try { return require('fs').readFileSync(`${process.env.HOME}/.openclaw/secrets/tg-bot-token.txt`, 'utf8').trim(); } catch { return ''; } })();
+            if (TG_TOKEN) {
+              await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: '-1003466360577', text: tgRepairMsg })
+              }).catch(e => console.error('[so_confirm] TG repair notify error:', e.message));
+            }
+          }
+        } catch (dbRoErr) {
+          console.error(`[so_confirm] ⚠️ Dashboard repair_orders update failed: ${dbRoErr.message?.slice(0, 200)}`);
         }
       }
 
@@ -1087,6 +1276,80 @@ async function handleSOConfirmPostback(authClient, event) {
         }
       }
 
+      // Step 3.5: 自動沖抵貸記單（credit notes）
+      let creditNoteInfo = '';
+      if (invoiceIds.length > 0) {
+        try {
+          const lastInvId = invoiceIds[invoiceIds.length - 1];
+          const invData = await odooCall('account.move', 'read', [lastInvId], { fields: ['partner_id', 'amount_residual', 'state'] });
+          const partnerId = invData[0]?.partner_id?.[0];
+          const invResidual = invData[0]?.amount_residual || 0;
+
+          if (partnerId && invResidual > 0 && invData[0].state === 'posted') {
+            // 查該 partner 的未使用貸記單
+            const creditNotes = await odooCall('account.move', 'search_read',
+              [[['partner_id', '=', partnerId], ['move_type', '=', 'out_refund'], ['state', '=', 'posted'], ['amount_residual', '>', 0]]],
+              { fields: ['id', 'name', 'amount_residual', 'ref'], order: 'date asc' }
+            );
+
+            if (creditNotes.length > 0) {
+              // 找發票的 receivable line
+              const invReceivable = await odooCall('account.move.line', 'search_read',
+                [[['move_id', '=', lastInvId], ['account_type', '=', 'asset_receivable'], ['reconciled', '=', false]]],
+                { fields: ['id', 'amount_residual'] }
+              );
+
+              if (invReceivable.length > 0) {
+                const invLineId = invReceivable[0].id;
+                const appliedCNs = [];
+
+                for (const cn of creditNotes) {
+                  // 查貸記單的 receivable line
+                  const cnReceivable = await odooCall('account.move.line', 'search_read',
+                    [[['move_id', '=', cn.id], ['account_type', '=', 'asset_receivable'], ['reconciled', '=', false]]],
+                    { fields: ['id', 'amount_residual'] }
+                  );
+                  if (cnReceivable.length > 0) {
+                    try {
+                      // Odoo reconcile: 把發票和貸記單的 receivable lines 配對
+                      await odooCall('account.move.line', 'reconcile', [[invLineId, cnReceivable[0].id]]);
+                      appliedCNs.push(`${cn.name} ($${Math.abs(cn.amount_residual)})`);
+                      console.log(`[so_confirm] ✅ 貸記單沖抵: ${cn.name} ($${cn.amount_residual}) → ${invName}`);
+                    } catch (recErr) {
+                      console.error(`[so_confirm] ⚠️ reconcile ${cn.name} failed: ${recErr.message?.slice(0, 200)}`);
+                    }
+                  }
+                }
+
+                if (appliedCNs.length > 0) {
+                  creditNoteInfo = `\n已沖抵貸記單：${appliedCNs.join('、')}`;
+                  // 重新讀取發票餘額
+                  const invAfter = await odooCall('account.move', 'read', [lastInvId], { fields: ['amount_residual'] });
+                  const newAmount = invAfter[0]?.amount_residual || 0;
+                  creditNoteInfo += `\n沖抵後應收餘額：$${newAmount}`;
+                  console.log(`[so_confirm] ✅ 貸記單沖抵完成，剩餘: $${newAmount}`);
+
+                  // 同步更新 ach_records 的金額（確保 ACH 扣款用沖抵後的金額）
+                  if (newAmount > 0) {
+                    try {
+                      await pgPool.query(
+                        'UPDATE ach_records SET amount = $1 WHERE odoo_quote_id = $2 AND year = 2026 AND is_active = true',
+                        [newAmount, orderName]
+                      );
+                      console.log(`[so_confirm] ✅ ach_records 金額更新: ${orderName} $${newAmount}`);
+                    } catch (achAmtErr) {
+                      console.error(`[so_confirm] ⚠️ ach_records 金額更新失敗: ${achAmtErr.message?.slice(0, 100)}`);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (cnErr) {
+          console.error(`[so_confirm] ⚠️ 貸記單沖抵失敗: ${cnErr.message?.slice(0, 200)}`);
+        }
+      }
+
       // Step 4: Write INV number to ach_records
       if (invName !== orderName && achRows && achRows.length > 0) {
         try {
@@ -1101,7 +1364,7 @@ async function handleSOConfirmPostback(authClient, event) {
       // Step 5: Chatter 紀錄誰確認的
       const now2 = formatTaiwanDateTime(new Date());
       await odooCall('sale.order', 'message_post', [soIds[0]], {
-        body: `<p>✅ LINE 確認：由 <b>${userName}</b> 於 ${now2} 點擊「正確」確認此訂單</p>${invName !== orderName ? `<p>📄 應收帳款：${invName}</p>` : ''}`,
+        body: `<p>✅ LINE 確認：由 <b>${userName}</b> 於 ${now2} 點擊「正確」確認此訂單</p>${invName !== orderName ? `<p>📄 應收帳款：${invName}</p>` : ''}${creditNoteInfo ? `<p>💰 ${creditNoteInfo.replace(/\n/g, '<br/>')}</p>` : ''}`,
         message_type: 'comment',
         subtype_xmlid: 'mail.mt_note'
       });
@@ -1168,8 +1431,7 @@ async function handleTicketConfirmPostback(event) {
       await pgPool.query(`UPDATE ticket_batches SET status = 'done' WHERE id = $1`, [batchId]);
     }
 
-    const pendingMsg = pendingCount > 0 ? `\n\n目前還有 ${pendingCount} 間店待確認。` : '\n\n✅ 所有店家均已確認完畢！';
-    await replyText(event.replyToken, `✅ 票券折抵已確認！\n\n確認者：${userName}\n批次 #${batchId} 店家 ${storeCode}${pendingMsg}`);
+    await replyText(event.replyToken, `✅ 票券折抵已確認，謝謝 ${userName}！`);
     console.log(`[ticket-confirm] ✅ batch=${batchId} store=${storeCode} by=${userName} remaining=${pendingCount}`);
   } catch (e) {
     console.error('[ticket-confirm] DB error:', e.message);
@@ -1248,7 +1510,33 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
     }
     if (event?.type === 'message' && event?.message?.type === 'text') {
       const text = String(event.message.text || '').trim();
-      
+
+      // ── 應徵者手機號碼綁定（1:1 私訊才觸發） ──
+      if (event.source?.type === 'user' && /^09\d{8}$/.test(text.replace(/[-\s]/g, ''))) {
+        try {
+          const cleanPhone = text.replace(/[-\s]/g, '');
+          const userId = String(event.source.userId || '');
+          const bindRes = await fetch('http://localhost:3000/api/candidate-line-bind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              phone: cleanPhone,
+              store_line_uid: userId,
+              store_name: '', // 不限門市，查所有待配對的候選人
+              secret: 'paopaomao_internal'
+            }),
+            signal: AbortSignal.timeout(5000)
+          });
+          const bindJson = await bindRes.json();
+          if (bindJson.status) {
+            await replyText(event.replyToken, `✅ 綁定成功！\n${bindJson.candidate_name} 您好，面試通知會透過此帳號發送給您。\n\n如有任何問題，請直接回覆此訊息。`);
+            console.log(`[paopao-webhook] 📱 candidate bind: ${cleanPhone} → ${userId.slice(-8)}`);
+            continue;
+          }
+          // 無匹配 → 不攔截，讓訊息繼續正常流程
+        } catch (e) { console.warn('[paopao-webhook] candidate-bind error:', e.message); }
+      }
+
       // 處理群組綁定請求：在 LINE 群組輸入「綁定群組」，自動抓 groupId 寫入 payees
       if (text.includes('綁定群組') && event.source?.type === 'group') {
         const groupId = event.source.groupId || '';

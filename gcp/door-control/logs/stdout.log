@@ -1,0 +1,10 @@
+🚪 Door control server running on port 3881
+[2026/4/5 下午2:51:58] LOGIN_OK from 2001:b011:6c09:15a8:e842:74b2:e77a:1e9f
+[2026/4/5 下午2:54:03] LOGIN_OK from 2a04:4e41:12af:7d91::275a:7d91
+[2026/4/5 下午2:54:07] DOOR_OPEN from 2a04:4e41:12af:7d91::275a:7d91
+🚪 Door control server running on port 3881
+[2026/4/5 下午2:58:53] DOOR_OPEN from ::1 (token)
+[2026/4/5 下午3:00:41] LOGIN_OK from 2a09:bac3:580e:323::50:1bf
+[2026/4/5 下午3:00:42] DOOR_OPEN from 2a09:bac3:580e:323::50:1bf (session)
+🚪 Door control server running on port 3881
+[2026/4/5 下午3:06:56] DOOR_CLOSE from 2001:b011:6c09:15a8:4914:219a:7bd3:717e by API-token

@@ -133,6 +133,9 @@ function parseStores(storeMap) {
     if (!storeId) continue;
     // SayDou 的總公司代碼（0001）通常不提供 dailyIncome，避免讓整批失敗。
     if (storeId === '0001') continue;
+    // 已撤櫃/停業的店家排除（廣三 3973 於 2026/3/31 撤位）
+    const EXCLUDED_STORES = ['3973'];
+    if (EXCLUDED_STORES.includes(storeId)) continue;
     out.push({
       storid: storeId,
       alias: (info?.name != null ? String(info.name) : '').trim() || storeId,
@@ -342,7 +345,7 @@ async function runOneDate(sheets, spreadsheetId, bearerToken, stores, dateStr, r
   }
 
   if (failed > 0) {
-    throw new Error(`[${dateStr}] 有 ${failed} 間店抓取失敗，為避免寫入不完整資料，本日未寫入`);
+    console.warn(`[GCP][daily-report] [${dateStr}] ⚠️ 有 ${failed} 間店抓取失敗，已跳過這些門市，其餘 ${dailyAllRows.length} 間正常寫入`);
   }
 
   const allWrite = await upsertRows(sheets, spreadsheetId, SHEET_ALL, rowMapAll, dailyAllRows);

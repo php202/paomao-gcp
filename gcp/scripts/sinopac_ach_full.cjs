@@ -554,7 +554,8 @@ async function fullFlow(opts) {
                 COALESCE(pp.bank_account, p.bank_account, sp.bank_account) as bank_account,
                 COALESCE(pp.branch_code, p.branch_code, sp.branch_code) as branch_code,
                 COALESCE(ar.payee_code, sp.code) as effective_payee_code,
-                COALESCE(pp.id_number, p.id_number, sp.id_number) as tax_id
+                COALESCE(pp.id_number, p.id_number, sp.id_number) as tax_id,
+                COALESCE(pp.ach_code, p.ach_code, sp.ach_code) as ach_code
          FROM ach_records ar
          LEFT JOIN payees pp ON pp.id = ar.payee_id
          LEFT JOIN payees p ON p.code = ar.payee_code AND ar.payee_code IS NOT NULL AND ar.payee_code != ''
@@ -579,10 +580,10 @@ async function fullFlow(opts) {
       if (!rec.bank_account) throw new Error(`${rec.payee_code || '無代號'} 缺少銀行帳號`);
 
       // Generate file
-      // ACH PIN 欄位用統編（id_number），fallback 到 payee_code 但過濾非 ASCII
-      const rawPin = rec.tax_id || rec.payee_code || '';
+      // ACH PIN: 優先 ach_code（專用 ACH 代碼），fallback tax_id，最後 payee_code
+      const rawPin = rec.ach_code || rec.tax_id || rec.payee_code || '';
       const achPin = rawPin.replace(/[^\x20-\x7E]/g, '').trim();
-      console.log(`[FLOW] ACH PIN: ${achPin} (tax_id: ${rec.tax_id}, payee_code: ${rec.payee_code})`);
+      console.log(`[FLOW] ACH PIN: ${achPin} (ach_code: ${rec.ach_code}, tax_id: ${rec.tax_id}, payee_code: ${rec.payee_code})`);
       const content = generateAchTxt(achPin, rec.bank_account, Math.round(rec.amount));
       filePath = `/tmp/ACH_${rec.store_name.replace(/[^\w\u4e00-\u9fff]/g, '')}_${Date.now()}.txt`;
       fs.writeFileSync(filePath, content);
@@ -598,8 +599,9 @@ async function fullFlow(opts) {
     if (result.success && result.caseNo && achRecordId) {
       try {
         const pool = getPool();
+        const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).replace('T', ' ');
         await pool.query(
-          'UPDATE ach_records SET ach_case_no = $1, updated_at = NOW() WHERE id = $2',
+          `UPDATE ach_records SET ach_case_no = $1, ach_registered = 'success', ach_released = 'success', updated_at = NOW() WHERE id = $2`,
           [result.caseNo, achRecordId]
         );
         console.log(`[DB] ach_records #${achRecordId} → case ${result.caseNo}`);

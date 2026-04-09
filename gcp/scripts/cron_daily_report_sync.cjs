@@ -53,7 +53,7 @@ function today() {
 }
 
 async function getStores(filter) {
-  let q = "SELECT id, store_name, saydou_id FROM stores WHERE saydou_id IS NOT NULL AND saydou_id != '0001'";
+  let q = "SELECT id, store_name, saydou_id FROM stores WHERE saydou_id IS NOT NULL AND saydou_id != '0001' AND is_active = true";
   const params = [];
   if (filter) {
     q += ' AND store_name ILIKE $1';
@@ -76,7 +76,7 @@ async function fetchDailyIncome(token, storeId, dateStr) {
   return json;
 }
 
-function parseIncome(json) {
+function parseIncome(json, dateStr) {
   const row = json?.data?.totalRow;
   if (!row) return null;
 
@@ -92,10 +92,31 @@ function parseIncome(json) {
   const linePending = lineTotal - lineRecord;
   const revenue = row.businessIncome?.service ?? 0;
 
+  // buymode 消費方式
+  const dayData = json?.data?.[dateStr] || {};
+  const buymode = dayData.buymode || [];
+  const buymodeMap = {};
+  buymode.forEach(b => { buymodeMap[b.key] = b.total || 0; });
+
+  // unearn 預收
+  const unearn = dayData.unearn || {};
+  // businessIncome 新舊客
+  const biz = dayData.businessIncome || {};
+
   return {
     cashTotal, cashConsume: cashBusiness, cashStored: cashUnearn,
     thirdPartyTotal: thirdPayTotal, transferReceived: transferRecord,
     lineReceived: lineRecord, transferPending, linePending, revenue,
+    buymodeCash: buymodeMap.cash || 0,
+    buymodeStored: buymodeMap.card || 0,
+    buymodeTicket: buymodeMap.ticket || 0,
+    buymodeCoupon: buymodeMap.rpcash || 0,
+    buymodeGift: buymodeMap.give || 0,
+    buymodeFree: buymodeMap.free || 0,
+    unearnTotal: unearn.total || 0,
+    unearnActual: unearn.actualTotal || 0,
+    oldCustRevenue: biz.oldCust || 0,
+    newCustRevenue: biz.newCust || 0,
   };
 }
 
@@ -107,8 +128,10 @@ async function upsertReport(storeId, storeName, dateStr, data) {
     INSERT INTO daily_reports (store_id, store_name, report_date,
       cash_total, cash_consume, cash_stored, third_party_total,
       transfer_received, line_received, transfer_pending, line_pending,
-      daily_revenue, data_source, synced_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'saydou',NOW())
+      daily_revenue, data_source, synced_at,
+      buymode_cash, buymode_stored, buymode_ticket, buymode_coupon, buymode_gift, buymode_free,
+      unearn_total, unearn_actual, old_cust_revenue, new_cust_revenue)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'saydou',NOW(),$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
     ON CONFLICT (store_name, report_date) DO UPDATE SET
       store_id = EXCLUDED.store_id,
       cash_total = EXCLUDED.cash_total,
@@ -120,6 +143,11 @@ async function upsertReport(storeId, storeName, dateStr, data) {
       transfer_pending = EXCLUDED.transfer_pending,
       line_pending = EXCLUDED.line_pending,
       daily_revenue = EXCLUDED.daily_revenue,
+      buymode_cash = EXCLUDED.buymode_cash, buymode_stored = EXCLUDED.buymode_stored,
+      buymode_ticket = EXCLUDED.buymode_ticket, buymode_coupon = EXCLUDED.buymode_coupon,
+      buymode_gift = EXCLUDED.buymode_gift, buymode_free = EXCLUDED.buymode_free,
+      unearn_total = EXCLUDED.unearn_total, unearn_actual = EXCLUDED.unearn_actual,
+      old_cust_revenue = EXCLUDED.old_cust_revenue, new_cust_revenue = EXCLUDED.new_cust_revenue,
       data_source = 'saydou',
       synced_at = NOW()
   `, [
@@ -127,6 +155,8 @@ async function upsertReport(storeId, storeName, dateStr, data) {
     data.cashTotal, data.cashConsume, data.cashStored, data.thirdPartyTotal,
     data.transferReceived, data.lineReceived, data.transferPending, data.linePending,
     data.revenue,
+    data.buymodeCash||0, data.buymodeStored||0, data.buymodeTicket||0, data.buymodeCoupon||0, data.buymodeGift||0, data.buymodeFree||0,
+    data.unearnTotal||0, data.unearnActual||0, data.oldCustRevenue||0, data.newCustRevenue||0,
   ]);
 }
 
@@ -205,7 +235,7 @@ async function main() {
           }
           continue;
         }
-        const data = parseIncome(res.value);
+        const data = parseIncome(res.value, dateStr);
         if (!data) { skipped++; continue; }
 
         try {

@@ -151,7 +151,22 @@ async function odooToAch() {
     if (existingOdooIds.has(odooId) || existingOdooIds.has(order.name)) continue;
 
     const partnerName = order.partner_id?.[1] || '';
-    const amount = order.amount_total || 0;
+    // 優先用 Invoice 的 amount_residual（已扣貸記單沖抵後的實際應收）
+    let amount = order.amount_total || 0;
+    if (order.invoice_ids && order.invoice_ids.length > 0) {
+      try {
+        const lastInvId = order.invoice_ids[order.invoice_ids.length - 1];
+        const inv = await odooCall('account.move', 'read', [lastInvId], { fields: ['amount_residual', 'state'] });
+        if (inv[0]?.state === 'posted' && inv[0].amount_residual != null) {
+          amount = inv[0].amount_residual;
+          if (amount !== order.amount_total) {
+            console.log(`  📝 ${order.name}: 原價 $${order.amount_total} → 沖抵後 $${amount}`);
+          }
+        }
+      } catch (invErr) {
+        console.warn(`  ⚠️ ${order.name}: 讀取 Invoice residual 失敗，用 SO amount_total: ${invErr.message?.slice(0, 100)}`);
+      }
+    }
     if (amount <= 0) continue;
 
     const storeCode = storeToCode.get(partnerName) || '';
@@ -263,41 +278,80 @@ async function bankCheck() {
   // 解析已下載的 ACH 回覆檔 - 包括成功檔和失敗檔
   const downloadDir = path.join(process.env.HOME, 'Downloads');
   
-  // 成功檔
+  // 成功 M 檔 — 支援整批 (_M_YYYYMMDD.TXT) 和單筆 (_M_YYYYMMDD_N.TXT / _M_YYYYMMDD_N (1).TXT)
   const achFiles = fs.readdirSync(downloadDir)
-    .filter(f => f.match(/^94256530_NEP01_M_\d{8}\.TXT$/))
+    .filter(f => f.match(/^94256530_NEP01_M_\d{8}(_\d+)?( \(\d+\))?\.TXT$/))
+    .filter(f => !f.includes('_F.TXT'))  // 排除失敗檔
     .sort()
     .reverse();
   
-  // 失敗檔
+  // 失敗 M 檔 — 同樣支援單筆格式
   const failFiles = fs.readdirSync(downloadDir)
-    .filter(f => f.match(/^94256530_NEP01_M_\d{8}_F\.TXT$/))
+    .filter(f => f.match(/^94256530_NEP01_M_\d{8}(_\d+)?(_F| \(\d+\))*_?F\.TXT$/))
     .sort()
     .reverse();
   
-  const allFiles = [...achFiles, ...failFiles];
+  // R 檔（報表檔）— 純文字格式，包含 PIN + 金額 + 退件理由
+  const reportFiles = fs.readdirSync(downloadDir)
+    .filter(f => f.match(/^94256530_NEP01_R_\d{8}(_\d+)?( \(\d+\))?\.TXT$/))
+    .filter(f => !f.includes('_F.TXT'))
+    .sort()
+    .reverse();
+  
+  // R 檔失敗檔
+  const reportFailFiles = fs.readdirSync(downloadDir)
+    .filter(f => f.match(/^94256530_NEP01_R_\d{8}.*_F\.TXT$/))
+    .sort()
+    .reverse();
+  
+  const allFiles = [...achFiles, ...failFiles, ...reportFiles, ...reportFailFiles];
   
   if (allFiles.length === 0) {
     console.log('  沒有找到 ACH 回覆檔，需先從永豐下載');
     return { parsed: 0 };
   }
   
-  console.log(`  找到 ${achFiles.length} 個成功檔 + ${failFiles.length} 個失敗檔`);
+  console.log(`  找到 ${achFiles.length} 個成功M檔 + ${failFiles.length} 個失敗M檔 + ${reportFiles.length} 個報表R檔 + ${reportFailFiles.length} 個失敗R檔`);
   
+  // 去重：同 payee+amount 只取一筆（避免重複下載的檔案重複比對）
   const results = [];
+  const seen = new Set();
   
-  for (const file of allFiles.slice(0, 10)) { // 最近 10 個檔
-    const content = fs.readFileSync(path.join(downloadDir, file), 'utf8');
-    const lines = content.split(/\r?\n/).filter(l => l.startsWith('RSD') || l.startsWith('NSD'));
+  for (const file of allFiles) { // 掃全部檔案
+    const filePath = path.join(downloadDir, file);
+    const content = fs.readFileSync(filePath, 'utf8');
+    const isRFile = file.includes('_NEP01_R_');
+    const isFailure = file.includes('_F.TXT');
     
-    for (const line of lines) {
-      const record = parseAchReplyLine(line);
-      if (record) {
-        results.push({ 
-          ...record, 
-          sourceFile: file, 
-          isFailure: file.includes('_F.TXT')
-        });
+    if (isRFile) {
+      // R 檔：純文字報表格式，解析「代收」行
+      const lines = content.split(/\r?\n/).filter(l => l.includes('代收'));
+      for (const line of lines) {
+        const record = parseAchReportLine(line);
+        if (record) {
+          // R 檔的退件理由欄非空 = 失敗
+          const isFail = isFailure || !!record.rejectReason;
+          const dedupeKey = `${record.pin}|${record.amount}|${isFail}`;
+          if (!seen.has(dedupeKey)) {
+            seen.add(dedupeKey);
+            results.push({ ...record, sourceFile: file, isFailure: isFail });
+          }
+        }
+      }
+    } else {
+      // M 檔：固定寬度格式，狀態碼在金額尾 2 碼
+      const lines = content.split(/\r?\n/).filter(l => l.startsWith('RSD') || l.startsWith('NSD'));
+      for (const line of lines) {
+        const record = parseAchReplyLine(line);
+        if (record) {
+          // M 檔的失敗判定：_F 檔名 或 狀態碼非 00
+          const isFail = isFailure || record.isReject;
+          const dedupeKey = `${record.pin}|${record.amount}|${isFail}`;
+          if (!seen.has(dedupeKey)) {
+            seen.add(dedupeKey);
+            results.push({ ...record, sourceFile: file, isFailure: isFail });
+          }
+        }
       }
     }
   }
@@ -309,12 +363,14 @@ async function bankCheck() {
   let failureMatched = 0;
   
   for (const r of results) {
-    // 用身分證/統編 + 金額比對：找已 Robby 放行但尚未確認的紀錄
+    // 比對策略：優先 ach_code，再 id_number，最後 payee_code
     const { rows } = await pool.query(`
-      SELECT ar.id, ar.sheet_row, ar.amount, ar.ach_released, ar.ach_confirmed, p.id_number, ar.created_at
+      SELECT ar.id, ar.sheet_row, ar.amount, ar.ach_released, ar.ach_confirmed, 
+             COALESCE(p.id_number, '') as id_number, COALESCE(p.ach_code, '') as ach_code, ar.payee_code, ar.created_at
       FROM ach_records ar
       LEFT JOIN payees p ON ar.payee_id = p.id
-      WHERE p.id_number = $1 AND ar.amount IS NOT NULL
+      WHERE (p.ach_code = $1 OR p.id_number = $1 OR ar.payee_code = $1 OR ar.payee_code LIKE $1 || '-%')
+        AND ar.amount IS NOT NULL
         AND ar.ach_released IS NOT NULL AND ar.ach_released != ''
         AND (ar.ach_confirmed IS NULL OR ar.ach_confirmed = '' OR ar.ach_confirmed = 'FALSE')
     `, [r.pin]);
@@ -364,18 +420,44 @@ function parseAchReplyLine(line) {
     const bIdx = line.indexOf('B94256530');
     if (bIdx < 0) return null;
     
-    // 金額在 B94256530 前面 10 碼 (以分為單位)
-    const amountStr = line.substring(bIdx - 10, bIdx);
+    // 金額在 B94256530 前面 12 碼：10碼金額(分) + 2碼狀態碼
+    // 狀態碼：00=成功, 01=退件(餘額不足等), 02=其他失敗
+    const fullAmountArea = line.substring(bIdx - 12, bIdx);
+    const statusCode = fullAmountArea.substring(10, 12);
+    const amountStr = fullAmountArea.substring(0, 10);
     const amount = parseInt(amountStr, 10) / 100;
+    const isReject = statusCode !== '00'; // 01, 02 = 失敗
     
     // PIN/統編在 B94256530 後面
     const afterB = line.substring(bIdx + 11).trim(); // skip "B94256530  "
     const pin = afterB.split(/\s/)[0].trim();
     
     // 銀行帳號區域
-    const accountArea = line.substring(14, bIdx - 10);
+    const accountArea = line.substring(14, bIdx - 12);
     
-    return { amount, pin, accountArea };
+    return { amount, pin, accountArea, isReject, statusCode };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 解析 ACH 報表檔 (R 檔) 的一行
+ * 格式：代收  貨款  8070014  8070014  94256530  [統編]  [帳號]  [用戶號碼]  [金額]  [退件理由]
+ */
+function parseAchReportLine(line) {
+  if (!line.includes('代收')) return null;
+  try {
+    // 用正則擷取：94256530 後面的統編、金額、退件理由
+    const match = line.match(/94256530\s+(\S+)\s+(\S+)\s+(\S+)\s+([\d,]+\.\d+)\s*(.*)?$/);
+    if (!match) return null;
+    
+    const pin = match[3].trim(); // 用戶號碼
+    const amount = parseFloat(match[4].replace(/,/g, ''));
+    const rejectReason = (match[5] || '').trim();
+    
+    if (!pin || isNaN(amount)) return null;
+    return { pin, amount, rejectReason, accountArea: match[2] };
   } catch (e) {
     return null;
   }

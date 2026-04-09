@@ -189,7 +189,9 @@ async function main() {
           store_id, payee_id, odoo_quote_id, year)
         VALUES ($1, $2, $3, $4, $5, '貨款', $6, $7, $8, $9, 2026)
         ON CONFLICT (sheet_row, year) DO UPDATE SET
-          store_name=EXCLUDED.store_name, amount=EXCLUDED.amount, payee_code=EXCLUDED.payee_code,
+          store_name=EXCLUDED.store_name,
+          amount = CASE WHEN ach_records.odoo_invoice_id IS NOT NULL AND ach_records.odoo_invoice_id != '' THEN ach_records.amount ELSE EXCLUDED.amount END,
+          payee_code=EXCLUDED.payee_code,
           fee_type=EXCLUDED.fee_type, description=EXCLUDED.description, odoo_quote_id=EXCLUDED.odoo_quote_id, updated_at=NOW()
         RETURNING id
       `, [sheetRow, dateStr, storeName, amount, payeeCode, detail, storeId, payeeId, soName]);

@@ -96,16 +96,33 @@ async function downloadReply(targetDate) {
     const pageTitle = await mainFrame.evaluate(() => document.body?.innerText?.substring(0, 100));
     console.error(`[ach-reply] 頁面: ${pageTitle?.substring(0, 60)}`);
 
-    // Set date range
-    const dateStr = `${targetDate.slice(0,4)}/${targetDate.slice(4,6)}/${targetDate.slice(6,8)}`;
-    await mainFrame.evaluate((d) => {
-      // Try various date input patterns
+    // Set date range: startDate = targetDate, endDate = targetDate + 4 days (or today)
+    const startDateStr = `${targetDate.slice(0,4)}/${targetDate.slice(4,6)}/${targetDate.slice(6,8)}`;
+    const endD = new Date(targetDate.slice(0,4) + '-' + targetDate.slice(4,6) + '-' + targetDate.slice(6,8) + 'T00:00:00+08:00');
+    endD.setDate(endD.getDate() + 4);
+    const todayD = new Date();
+    const finalEnd = endD > todayD ? todayD : endD;
+    const endDateStr = `${finalEnd.getFullYear()}/${String(finalEnd.getMonth()+1).padStart(2,'0')}/${String(finalEnd.getDate()).padStart(2,'0')}`;
+    console.error(`[ach-reply] 查詢區間: ${startDateStr} ~ ${endDateStr}`);
+
+    await mainFrame.evaluate((startD, endD) => {
+      // 永豐 ACH 回覆檔頁面有起始/結束日期欄位
       const inputs = document.querySelectorAll('input[id*="Date"], input[id*="date"], input[id*="txDate"]');
-      for (const input of inputs) {
-        input.value = d;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
+      const dateInputs = Array.from(inputs).filter(i => i.type === 'text' || i.type === '');
+      if (dateInputs.length >= 2) {
+        // 第一個 = 起始日期，第二個 = 結束日期
+        dateInputs[0].value = startD;
+        dateInputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+        dateInputs[1].value = endD;
+        dateInputs[1].dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        // fallback: 全部設同一個日期
+        for (const input of inputs) {
+          input.value = startD;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
       }
-    }, dateStr);
+    }, startDateStr, endDateStr);
     await delay(1000);
 
     // Click 查詢
@@ -120,36 +137,133 @@ async function downloadReply(targetDate) {
     const resultText = await mainFrame.evaluate(() => document.body?.innerText?.substring(0, 500));
     console.error(`[ach-reply] 查詢結果: ${resultText?.substring(0, 200)}`);
 
-    // Set download path
+    // Set download path via CDP
     const client = await page.createCDPSession();
     await client.send('Page.setDownloadBehavior', {
       behavior: 'allow',
       downloadPath: DOWNLOAD_DIR,
     });
 
-    // Find download buttons - look for 媒體檔 download links
-    const downloaded = await mainFrame.evaluate(() => {
-      const clicked = [];
-      // Look for links with download-related onclick or text
-      for (const el of document.querySelectorAll('a, button, input[type="button"]')) {
-        const text = (el.textContent || el.value || '').trim();
-        const onclick = el.getAttribute('onclick') || '';
-        const id = el.id || '';
-        // Match: 下載, 媒體, download, or specific form button IDs
-        if (text.includes('媒體') || text.includes('下載') || 
-            onclick.includes('download') || onclick.includes('Download') ||
-            id.includes('Download') || id.includes('download') || id.includes('btnDown')) {
-          el.click();
-          clicked.push({ text, id, onclick: onclick.substring(0, 60) });
+    // Step 1: 找查詢結果 — 每行「功能」欄有「下載」按鈕（PrimeFaces button）
+    const dlButtons = await mainFrame.evaluate(() => {
+      const buttons = [];
+      for (const btn of document.querySelectorAll('button')) {
+        const text = (btn.textContent || '').trim();
+        const onclick = btn.getAttribute('onclick') || '';
+        if (text === '下載' && onclick.includes('PrimeFaces')) {
+          // 取同行案件編號
+          const row = btn.closest('tr');
+          const cells = row ? row.querySelectorAll('td') : [];
+          const caseNo = cells.length > 1 ? cells[1]?.textContent?.trim() : '';
+          buttons.push({ id: btn.id, caseNo });
         }
       }
-      return clicked;
+      return buttons;
     });
-    
-    console.error(`[ach-reply] 點擊下載: ${JSON.stringify(downloaded)}`);
-    await delay(8000);
+    console.error(`[ach-reply] 找到 ${dlButtons.length} 個下載按鈕`);
 
-    return true;
+    if (dlButtons.length === 0) {
+      console.error('[ach-reply] 查無結果或找不到下載按鈕');
+      return false;
+    }
+
+    // 記錄下載前的檔案清單
+    const beforeFiles = new Set(fs.readdirSync(DOWNLOAD_DIR));
+    const downloadedFiles = [];
+
+    // Step 2: 逐個點「下載」按鈕 → 彈出「檔案下載」彈窗 → 點媒體檔連結
+    for (let i = 0; i < dlButtons.length; i++) {
+      try {
+        const { id: btnId, caseNo } = dlButtons[i];
+        console.error(`[ach-reply] [${i+1}/${dlButtons.length}] 案件 ${caseNo}，點擊下載按鈕...`);
+
+        // 點「下載」按鈕 — 用 Puppeteer 原生 click（確保 PrimeFaces AJAX 正確觸發）
+        // PrimeFaces ID 含冒號，需轉義 CSS selector
+        const btnSelector = '#' + btnId.replace(/:/g, '\\:');
+        try {
+          await mainFrame.click(btnSelector);
+        } catch (_clickErr) {
+          // Fallback: 直接呼叫 PrimeFaces.ab（不用 return false）
+          await mainFrame.evaluate((bid) => {
+            PrimeFaces.ab({s: bid});
+          }, btnId);
+        }
+        await delay(5000);
+
+        // Step 3: 找新出現的 iframe dialog
+        let dialogFrame = null;
+        for (let attempt = 0; attempt < 10; attempt++) {
+          await delay(500);
+          dialogFrame = page.frames().find(f => f.url().includes('CTWACTXQU_2.xhtml'));
+          if (dialogFrame) break;
+        }
+
+        if (!dialogFrame) {
+          console.error('[ach-reply] 錯誤：找不到下載彈窗 iframe');
+          continue; // 繼續處理下一行
+        }
+        console.error('[ach-reply] 找到彈窗 iframe, URL:', dialogFrame.url().substring(0,100));
+
+        // Step 4: 在彈窗 iframe 中點擊媒體檔連結
+        const dlResult = await dialogFrame.evaluate(() => {
+          for (const link of document.querySelectorAll('a')) {
+            const text = (link.textContent || '').trim();
+            // 媒體檔檔名格式: 94256530_NEP01_M_YYYYMMDD_N.TXT
+            if (text.includes('_M_') && text.endsWith('.TXT') && !text.includes('_F')) {
+              link.click();
+              return { clicked: true, file: text };
+            }
+          }
+          return { clicked: false, debug: document.body?.innerText?.substring(0, 300) };
+        });
+
+        console.error(`[ach-reply] 下載結果: ${JSON.stringify(dlResult)}`);
+        if (dlResult.clicked) {
+          await delay(6000); // 等待下載
+
+          // 偵測新下載的檔案
+          const afterFiles = fs.readdirSync(DOWNLOAD_DIR);
+          for (const f of afterFiles) {
+            if (!beforeFiles.has(f) && f.includes('_M_') && f.endsWith('.TXT') && !f.includes('_F')) {
+              downloadedFiles.push(f);
+              beforeFiles.add(f);
+              console.error(`[ach-reply] 新檔案: ${f}`);
+            }
+          }
+        }
+
+        // Step 5: 關閉彈窗 (紅色圓形 ✕ 按鈕)
+        // 這個按鈕在 mainFrame 的父層級，由 PrimeFaces 產生
+        try {
+          // PrimeFaces dialogs are created at the top level of the page's body
+          const closed = await page.evaluate(() => {
+            const closeButtons = document.querySelectorAll('.ui-dialog-titlebar-close');
+            for (const btn of closeButtons) {
+              // 找可見的
+              if (btn.offsetParent !== null) {
+                btn.click();
+                return true;
+              }
+            }
+            return false;
+          });
+          if (closed) console.error('[ach-reply] 已關閉彈窗');
+          else await page.keyboard.press('Escape');
+          await delay(2000);
+        } catch (closeErr) {
+          console.error(`[ach-reply] 關閉彈窗失敗: ${closeErr.message?.substring(0,80)}`);
+        }
+
+      } catch (rowErr) {
+        console.error(`[ach-reply] 第 ${i+1} 行處理失敗: ${rowErr.message?.substring(0, 80)}`);
+      }
+    }
+
+    console.error(`[ach-reply] 共下載 ${downloadedFiles.length} 個媒體檔: ${downloadedFiles.join(', ')}`);
+    if (downloadedFiles.length > 0) {
+      fs.writeFileSync(path.join(DOWNLOAD_DIR, '.ach_reply_latest'), downloadedFiles.join('\n'));
+    }
+    return downloadedFiles.length > 0;
   } finally {
     browser.disconnect();
   }
@@ -179,23 +293,53 @@ async function main() {
     }
   }
 
-  // Parse the reply file
-  const pattern = `94256530_NEP01_M_${targetDate}`;
-  const files = fs.readdirSync(DOWNLOAD_DIR)
-    .filter(f => f.startsWith(pattern) && f.endsWith('.TXT') && !f.includes('_F'))
-    .sort();
+  // Parse the reply file(s)
+  // 1. 先找剛才下載的清單
+  const latestListPath = path.join(DOWNLOAD_DIR, '.ach_reply_latest');
+  let files = [];
+  if (fs.existsSync(latestListPath)) {
+    const latestFiles = fs.readFileSync(latestListPath, 'utf8').trim().split('\n').filter(Boolean);
+    // 只用 1 小時內的
+    const stat = fs.statSync(latestListPath);
+    if (Date.now() - stat.mtime.getTime() < 3600000) {
+      files = latestFiles.filter(f => fs.existsSync(path.join(DOWNLOAD_DIR, f)));
+    }
+  }
 
+  // 2. Fallback: 找 targetDate 的檔案
   if (!files.length) {
-    // Also check for files without date suffix
+    const pattern = `94256530_NEP01_M_${targetDate}`;
+    files = fs.readdirSync(DOWNLOAD_DIR)
+      .filter(f => f.startsWith(pattern) && f.endsWith('.TXT') && !f.includes('_F'))
+      .sort();
+  }
+
+  // 3. Fallback: 找查詢區間內的檔案（targetDate ~ +4天）
+  if (!files.length) {
+    const endD2 = new Date(targetDate.slice(0,4) + '-' + targetDate.slice(4,6) + '-' + targetDate.slice(6,8) + 'T00:00:00+08:00');
+    endD2.setDate(endD2.getDate() + 4);
+    const allMediaFiles = fs.readdirSync(DOWNLOAD_DIR)
+      .filter(f => f.startsWith('94256530_NEP01_M_') && f.endsWith('.TXT') && !f.includes('_F'));
+    for (const f of allMediaFiles) {
+      const match = f.match(/M_(\d{8})/);
+      if (match) {
+        const fDate = match[1];
+        if (fDate >= targetDate && fDate <= endD2.toISOString().slice(0,10).replace(/-/g, '')) {
+          files.push(f);
+        }
+      }
+    }
+    files.sort();
+  }
+
+  // 4. Last resort: 最近 1 小時下載的
+  if (!files.length) {
     const altFiles = fs.readdirSync(DOWNLOAD_DIR)
       .filter(f => f.startsWith('94256530_NEP01_M_') && f.endsWith('.TXT') && !f.includes('_F'))
       .map(f => ({ name: f, mtime: fs.statSync(path.join(DOWNLOAD_DIR, f)).mtime }))
-      .filter(f => Date.now() - f.mtime.getTime() < 3600000) // Last hour
+      .filter(f => Date.now() - f.mtime.getTime() < 3600000)
       .sort((a, b) => b.mtime - a.mtime);
-
-    if (altFiles.length) {
-      files.push(altFiles[0].name);
-    }
+    if (altFiles.length) files.push(altFiles[0].name);
   }
 
   if (!files.length) {

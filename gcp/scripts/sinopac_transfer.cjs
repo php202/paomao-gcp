@@ -25,6 +25,7 @@ async function getWsUrl() {
 const ACCOUNTS = {
   '666': '19201800234666',
   '686': '19201800238686',
+  '789': '17303100058789',
 };
 
 class SinopacTransfer {

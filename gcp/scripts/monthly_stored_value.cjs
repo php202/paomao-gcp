@@ -136,13 +136,14 @@ async function main() {
 
   // 3. Load stores + payees from DB
   const { rows: storePayees } = await pool.query(`
-    SELECT s.id as store_id, s.store_name, s.saydou_id, p.id as payee_id, p.code as payee_code
+    SELECT s.id as store_id, s.store_name, s.saydou_id, s.store_type, p.id as payee_id, p.code as payee_code
     FROM stores s
-    JOIN payees p ON p.store_id = s.id
+    JOIN payees p ON (p.store_id = s.id OR p.id = s.payee_id)
     WHERE s.is_active = true AND s.saydou_id IS NOT NULL AND p.is_active = true
+      AND s.store_type NOT IN ('direct', 'other')
     ORDER BY s.store_name
   `);
-  console.log(`📋 DB stores with payees: ${storePayees.length}`);
+  console.log(`📋 DB stores with payees (排除直營): ${storePayees.length}`);
 
   // Lookup Odoo partner_id for each store
   console.log(`🔍 Looking up Odoo partners...`);
@@ -164,35 +165,41 @@ async function main() {
     }
   }
 
-  // 4. Pull SayDou data for each store + match
+  // 4. Pull SayDou data for each store + match (平行請求，控制並發)
   const results = [];
   const warnings = [];
   const apiFailures = [];
   const headers = { Authorization: 'Bearer ' + saydouToken };
+  let tokenExpired = false;
 
-  console.log(`\n🔄 拉取 SayDou 儲值金資料...`);
-  for (const sp of storePayees) {
+  // 單店抓取函數（3 個 API 平行發）
+  async function fetchStoreData(sp) {
     const shortName = sp.store_name.replace('泡泡貓｜', '').replace('店', '');
+    if (tokenExpired) return null;
     try {
-      // 1. storecashAddRecord (實收)
-      const r1 = await fetch(`https://saywebdatafeed.saydou.com/api/management/unearn/storecashAddRecord?page=0&limit=20&sort=rectim&order=desc&keyword=&start=${fd}&end=${ld}&membid=0&storid%5B%5D=${sp.saydou_id}&type=0&tabIndex=1`, { headers });
+      // 3 個 API 同時發出
+      const [r1, r3, r4] = await Promise.all([
+        fetch(`https://saywebdatafeed.saydou.com/api/management/unearn/storecashAddRecord?page=0&limit=20&sort=rectim&order=desc&keyword=&start=${fd}&end=${ld}&membid=0&storid%5B%5D=${sp.saydou_id}&type=0&tabIndex=1`, { headers }),
+        fetch(`https://saywebdatafeed.saydou.com/api/management/finance/transactionStatistic?page=0&limit=500&sort=ordrsn&order=desc&keyword=&start=${fd}&end=${ld}&store%5B%5D=${sp.saydou_id}&membid=0&godsid=0&usrsid=0&assign=all`, { headers }),
+        fetch(`https://saywebdatafeed.saydou.com/api/management/unearn/ticketRecords?page=0&limit=200&sort=rectim&order=desc&keyword=&noCate=false&notOnShelf=false&start=${fd}&end=${ld}&iotype=I&storid%5B%5D=${sp.saydou_id}&tabIndex=2&membid=0`, { headers }),
+      ]);
+
       if (r1.status === 401) {
-        // Token expired — abort all remaining stores
+        tokenExpired = true;
         const errMsg = `🚨 SayDou token 已過期 (401)！所有店家資料無法取得。請更新 token。`;
         console.error(errMsg);
         apiFailures.push(errMsg);
-        break; // No point trying other stores
+        return null;
       }
-      const d1 = await r1.json();
-      if (d1.error) { apiFailures.push(`${shortName}: API 錯誤: ${JSON.stringify(d1.error).substring(0,100)}`); continue; }
-      const addTotal = d1.total_amount || 0;
 
-      // 2. transactionStatistic (card/coupon/ticket)
-      const r3 = await fetch(`https://saywebdatafeed.saydou.com/api/management/finance/transactionStatistic?page=0&limit=500&sort=ordrsn&order=desc&keyword=&start=${fd}&end=${ld}&store%5B%5D=${sp.saydou_id}&membid=0&godsid=0&usrsid=0&assign=all`, { headers });
-      const d3 = await r3.json();
-      const card = d3.card || 0;
-      const coupon = d3.coupon || 0;
-      const ticket = d3.ticket || 0;
+      const [d1, d3, d4] = await Promise.all([r1.json(), r3.json(), r4.json()]);
+
+      if (d1.error || !d1.status) { apiFailures.push(`${shortName}: API 錯誤: ${JSON.stringify(d1.error || d1).substring(0,100)}`); return null; }
+      const addTotal = d1.data?.summary?.buy || d1.data?.summary?.buyActual || d1.total_amount || 0;
+      const txData = d3.data || d3;
+      const card = txData.card || 0;
+      const coupon = txData.coupon || 0;
+      const ticket = d4.data?.summary?.buy || 0;
 
       const balance = addTotal - card - coupon - ticket;
 
@@ -202,34 +209,44 @@ async function main() {
         warnings.push(`${shortName}: API=$${balance.toLocaleString()} vs Sheet=$${sheetBalance.toLocaleString()} (差異 $${Math.abs(sheetBalance - balance).toLocaleString()})`);
       }
 
-      // API 回 0 但 Sheet 有值 → 可能 token 問題
       if (balance === 0 && addTotal === 0 && sheetBalance && Math.abs(sheetBalance) > 100) {
         apiFailures.push(`${shortName}: API 全部回 0 但 Sheet 有 $${sheetBalance.toLocaleString()}，可能 token 失效或 storid 錯誤`);
-        continue;
+        return null;
       }
 
       if (balance === 0) {
         console.log(`  ⏭️ ${shortName}: 餘額 $0, skip`);
-        continue;
+        return null;
       }
 
       if (!sp.odoo_partner_id) {
         warnings.push(`${shortName}: 找不到 Odoo partner, 無法建單`);
-        continue;
+        return null;
       }
 
-      results.push({
-        ...sp,
-        amount: balance,
-        addTotal, card, coupon, ticket,
-        description: `${targetMonth}月儲值金`,
-      });
-
-      // Throttle to avoid 429
-      await new Promise(r => setTimeout(r, 500));
-
+      console.log(`  ✅ ${shortName}: $${balance.toLocaleString()}`);
+      return { ...sp, amount: balance, addTotal, card, coupon, ticket, description: `${targetMonth}月儲值金` };
     } catch (e) {
       apiFailures.push(`${shortName}: ${e.message}`);
+      return null;
+    }
+  }
+
+  // 平行處理：每批 CONCURRENCY 間店，批次間間隔 BATCH_DELAY_MS
+  const CONCURRENCY = 5;
+  const BATCH_DELAY_MS = 1000;
+
+  console.log(`\n🔄 拉取 SayDou 儲值金資料...（並發 ${CONCURRENCY}，批次間隔 ${BATCH_DELAY_MS}ms）`);
+  for (let i = 0; i < storePayees.length; i += CONCURRENCY) {
+    if (tokenExpired) break;
+    const batch = storePayees.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(batch.map(sp => fetchStoreData(sp)));
+    for (const r of batchResults) {
+      if (r) results.push(r);
+    }
+    // 批次間間隔，避免打太快
+    if (i + CONCURRENCY < storePayees.length && !tokenExpired) {
+      await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
     }
   }
 
@@ -276,17 +293,23 @@ async function main() {
     try {
       let odooOrderName;
 
+      // Product IDs for 4-line detail format (matches S01685 pattern)
+      const PID_STORED = 28;     // 儲值金
+      const PID_CARD = 727;      // 儲值金-消費
+      const PID_COUPON = 726;    // 儲值金-優惠卷
+      const PID_TICKET = 728;    // 儲值金-商品卷
+
       if (r.amount >= 0) {
-        // Create Sale Order
+        // Create Sale Order (4 lines: 儲值金/消費/優惠卷/商品卷)
         const soId = await odooCall('sale.order', 'create', [{
           partner_id: r.odoo_partner_id,
           company_id: 1,
-          order_line: [[0, 0, {
-            product_id: ODOO_PRODUCT_ID,
-            name: r.description,
-            product_uom_qty: 1,
-            price_unit: r.amount,
-          }]],
+          order_line: [
+            [0, 0, { product_id: PID_STORED, name: '儲值金', product_uom_qty: 1, price_unit: r.addTotal }],
+            [0, 0, { product_id: PID_CARD, name: '儲值金-消費', product_uom_qty: 1, price_unit: -r.card }],
+            [0, 0, { product_id: PID_COUPON, name: '儲值金-優惠卷', product_uom_qty: 1, price_unit: -r.coupon }],
+            [0, 0, { product_id: PID_TICKET, name: '儲值金-商品卷', product_uom_qty: 1, price_unit: -r.ticket }],
+          ],
         }]);
         const so = await odooCall('sale.order', 'read', [soId], { fields: ['name'] });
         odooOrderName = so[0].name;
@@ -294,22 +317,22 @@ async function main() {
         await odooCall('sale.order', 'write', [[soId], { state: 'sent' }]);
         console.log(`  ✅ ${shortName}: SO ${odooOrderName} ($${r.amount.toLocaleString()}) → sent`);
       } else {
-        // Create Purchase Order (negative amount)
+        // Create Purchase Order (4 lines: 儲值金=-addTotal, 消費=+card, 優惠卷=+coupon, 商品卷=+ticket)
         const poId = await odooCall('purchase.order', 'create', [{
           partner_id: r.odoo_partner_id,
           company_id: 1,
-          order_line: [[0, 0, {
-            product_id: ODOO_PRODUCT_ID,
-            name: r.description,
-            product_uom_qty: 1,
-            price_unit: Math.abs(r.amount),
-          }]],
+          order_line: [
+            [0, 0, { product_id: PID_STORED, name: '儲值金', product_qty: 1, price_unit: -r.addTotal }],
+            [0, 0, { product_id: PID_CARD, name: '儲值金-消費', product_qty: 1, price_unit: r.card }],
+            [0, 0, { product_id: PID_COUPON, name: '儲值金-優惠卷', product_qty: 1, price_unit: r.coupon }],
+            [0, 0, { product_id: PID_TICKET, name: '儲值金-商品卷', product_qty: 1, price_unit: r.ticket }],
+          ],
         }]);
         const po = await odooCall('purchase.order', 'read', [poId], { fields: ['name'] });
         odooOrderName = po[0].name;
-        // Confirm PO
-        await odooCall('purchase.order', 'button_confirm', [[poId]]);
-        console.log(`  ✅ ${shortName}: PO ${odooOrderName} ($${r.amount.toLocaleString()}) [confirmed]`);
+        // 設 sent 狀態（等客戶確認後才 confirm）
+        await odooCall('purchase.order', 'write', [[poId], { state: 'sent' }]);
+        console.log(`  ✅ ${shortName}: PO ${odooOrderName} ($${r.amount.toLocaleString()}) → sent`);
       }
 
       // Insert DB
