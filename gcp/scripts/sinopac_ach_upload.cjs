@@ -138,24 +138,60 @@ class SinopacAchUpload {
 
   /** Click button/link in popup dialog frames (PrimeFaces dialogs live in separate iframes) */
   async clickInPopupFrame(text) {
+    // 先檢查主框架中的對話框
+    try {
+      const mainFrameResult = await this.mainFrame.evaluate((targetText) => {
+        // 查找對話框中的按鈕
+        const dialogButtons = document.querySelectorAll('.ui-dialog button, .ui-confirm-dialog button, [role="dialog"] button');
+        for (const btn of dialogButtons) {
+          const t = (btn.textContent || btn.value || '').trim();
+          if (t === targetText) {
+            btn.click();
+            return `MAIN_FRAME: ${btn.tagName}#${btn.id}: ${t}`;
+          }
+        }
+        
+        // 備用：所有按鈕
+        const allButtons = document.querySelectorAll('a, button, input[type="submit"], input[type="button"]');
+        for (const el of allButtons) {
+          const t = (el.textContent || el.value || '').trim();
+          if (t === targetText && el.offsetParent !== null) { // 只點擊可見的元素
+            el.click();
+            return `MAIN_FRAME: ${el.tagName}#${el.id}: ${t}`;
+          }
+        }
+        return null;
+      }, text);
+      
+      if (mainFrameResult) {
+        console.log(`[ACH]   popup clicked in main: ${mainFrameResult}`);
+        return mainFrameResult;
+      }
+    } catch (e) {
+      console.log(`[ACH]   main frame click error: ${e.message}`);
+    }
+    
+    // 再檢查其他框架
     for (const frame of this.page.frames()) {
       try {
         const clicked = await frame.evaluate((targetText) => {
-          const els = document.querySelectorAll('a, button, input[type="submit"]');
+          const els = document.querySelectorAll('a, button, input[type="submit"], input[type="button"]');
           for (const el of els) {
             const t = (el.textContent || el.value || '').trim();
-            if (t === targetText) {
+            if (t === targetText && el.offsetParent !== null) {
               el.click();
-              return el.tagName + '#' + el.id + ': ' + t + ' (frame: ' + document.title + ')';
+              return `FRAME: ${el.tagName}#${el.id}: ${t} (${document.title || frame.url})`;
             }
           }
           return null;
         }, text);
         if (clicked) {
-          console.log(`[ACH]   popup clicked: ${clicked}`);
+          console.log(`[ACH]   popup clicked in frame: ${clicked}`);
           return clicked;
         }
-      } catch (_) {}
+      } catch (e) {
+        // 這個框架可能不可存取，繼續下一個
+      }
     }
     return null;
   }
@@ -201,6 +237,34 @@ class SinopacAchUpload {
   async getPageText() {
     return await this.mainFrame.evaluate(() => document.body.innerText.substring(0, 1000));
   }
+  
+  /** 檢查是否有對話框出現 */
+  async detectDialog() {
+    try {
+      const dialogInfo = await this.mainFrame.evaluate(() => {
+        // 尋找各種對話框
+        const dialogs = document.querySelectorAll('.ui-dialog, .ui-confirm-dialog, [role="dialog"], .modal');
+        for (const dialog of dialogs) {
+          if (dialog.offsetParent !== null) { // 可見的對話框
+            const text = dialog.textContent.slice(0, 200);
+            const buttons = Array.from(dialog.querySelectorAll('button, input[type="button"], input[type="submit"]'))
+              .map(btn => btn.textContent || btn.value || '').filter(t => t.trim());
+            return { visible: true, text, buttons };
+          }
+        }
+        return { visible: false };
+      });
+      
+      if (dialogInfo.visible) {
+        console.log(`[ACH] 發現對話框: ${dialogInfo.text}`);
+        console.log(`[ACH] 可用按鈕: ${dialogInfo.buttons.join(', ')}`);
+      }
+      
+      return dialogInfo;
+    } catch (e) {
+      return { visible: false, error: e.message };
+    }
+  }
 
   // ══════════════════════════════════════════════════
   // ACH 檔案上傳主流程
@@ -223,11 +287,35 @@ class SinopacAchUpload {
 
     // Handle confirmation dialog: 「請確認是否發動即時或即時(預約)交易？」
     // Dialog is in a popup iframe, not mainFrame
-    await delay(2000);
+    await delay(3000); // 增加等待時間
     console.log('[ACH] --- 處理即時交易確認彈窗 ---');
-    const dialogHandled = await this.clickInPopupFrame('確定');
-    console.log(`[ACH] 彈窗: ${dialogHandled || '未找到'}`);
-    await delay(2000);
+    
+    // 多次嘗試處理對話框
+    let dialogHandled = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      // 先檢查是否有對話框
+      const dialogInfo = await this.detectDialog();
+      if (dialogInfo.visible) {
+        console.log(`[ACH] 第${attempt + 1}次嘗試處理對話框...`);
+        
+        const result = await this.clickInPopupFrame('確定');
+        if (result) {
+          dialogHandled = true;
+          console.log(`[ACH] 彈窗處理成功 (第${attempt + 1}次嘗試): ${result}`);
+          break;
+        }
+      } else {
+        console.log(`[ACH] 第${attempt + 1}次嘗試找不到對話框`);
+      }
+      
+      await delay(2000);
+    }
+    
+    if (!dialogHandled) {
+      console.log('[ACH] ⚠️ 無法處理確認彈窗，繼續執行...');
+    }
+    
+    await delay(3000);
 
     // 格式: form:newFormatFlag:1 = 新格式 (value=1)
     await this.selectRadioById('form:newFormatFlag:1');
@@ -253,9 +341,38 @@ class SinopacAchUpload {
 
     // Step 4b: Handle 「請確認是否發動即時或即時(預約)交易？」dialog
     console.log('[ACH] --- 處理上傳確認彈窗 ---');
-    const uploadConfirm = await this.clickInPopupFrame('確定');
-    console.log(`[ACH] 上傳確認: ${uploadConfirm || '未找到彈窗(可能已自動處理)'}`);
-    await delay(10000);
+    
+    // 多次嘗試處理上傳確認對話框
+    let uploadConfirmed = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const dialogInfo = await this.detectDialog();
+      if (dialogInfo.visible) {
+        console.log(`[ACH] 上傳第${attempt + 1}次嘗試處理確認對話框...`);
+        
+        const result = await this.clickInPopupFrame('確定');
+        if (result) {
+          uploadConfirmed = true;
+          console.log(`[ACH] 上傳確認成功 (第${attempt + 1}次嘗試): ${result}`);
+          break;
+        }
+      }
+      
+      // 檢查是否已經轉到結果頁面
+      const currentText = await this.getPageText();
+      if (currentText.includes('檢核') || currentText.includes('成功') || currentText.includes('失敗')) {
+        console.log(`[ACH] 偵測到已轉到結果頁面，停止等待確認對話框`);
+        uploadConfirmed = true;
+        break;
+      }
+      
+      await delay(2000);
+    }
+    
+    if (!uploadConfirmed) {
+      console.log('[ACH] ⚠️ 上傳確認對話框處理超時，繼續執行...');
+    }
+    
+    await delay(5000);
 
     // Step 5: Check result — look for 檢核成功/失敗
     await this.findMainFrame();

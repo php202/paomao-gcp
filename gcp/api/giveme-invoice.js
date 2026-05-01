@@ -4,6 +4,10 @@
  * 依 order.storid 從試算表「店家基本資料」M/N 欄取憑證；找不到則 fallback 環境變數。
  * 架構：直連 Giveme 時強制 IPv4（與 VM 中繼一致），避免 Cloud Run 走 IPv6 導致連線慢／逾時。
  * 若仍逾時可改設 GIVEME_PROXY_URL 指向 VM 中繼（見 invoice-proxy/）。
+ * 
+ * ⚠️ 儲值金防護：多層檢查確保儲值金絕對不開發票
+ * - billing-issue-invoice.js: 腳本層防護（主要）
+ * - giveme-invoice.js: API 層終極防呆（本檔案）
  */
 
 import crypto from 'crypto';
@@ -11,6 +15,7 @@ import https from 'node:https';
 import fetch from 'node-fetch';
 import { getAuth } from '../lib/auth.js';
 import { readSheet } from '../lib/sheets.js';
+import { guardAgainstStoredValue } from '../lib/ultimate-stored-value-guard.cjs';
 import pool from '../lib/db.js';
 
 // 與 VM 中繼一致：強制 IPv4 連線，避免 Cloud Run 走 IPv6 導致 Giveme 連線慢或逾時
@@ -451,6 +456,49 @@ export async function handleGivemeInvoice(req, res, { rawBody }) {
   if (totalFee < 1) {
     send(res, 400, { success: false, msg: '總金額需大於 0' });
     return;
+  }
+
+  // 🛡️ 終極儲值金防護 - 多重檢查
+  const orderStr = JSON.stringify(order || {}).toLowerCase();
+  const optionsStr = JSON.stringify(options || {}).toLowerCase();
+  const isStoredValue = (
+    orderStr.includes('儲值金') ||
+    orderStr.includes('stored') ||
+    orderStr.includes('月儲') ||
+    optionsStr.includes('儲值金') ||
+    optionsStr.includes('stored') ||
+    (order?.type && String(order.type).includes('儲值')) ||
+    (order?.buytype && String(order.buytype).includes('儲值')) ||
+    (order?.feeType && String(order.feeType).includes('儲值')) ||
+    (options?.buyType && String(options.buyType).includes('儲值'))
+  );
+  
+  if (isStoredValue) {
+    console.warn('[giveme-invoice]', reqId, '❌ 儲值金記錄拒絕開發票:', { 
+      storid, 
+      orderType: order?.type, 
+      buytype: order?.buytype, 
+      feeType: order?.feeType,
+      buyType: options?.buyType 
+    });
+    send(res, 400, { success: false, msg: '儲值金不開發票（系統防護）', blocked: true });
+    return;
+  }
+  
+  // 🛡️ 額外終極防護：如果有發票編號，檢查 ACH 記錄
+  if (order?.invoiceName || options?.invoiceName) {
+    try {
+      const invoiceName = order?.invoiceName || options?.invoiceName;
+      await guardAgainstStoredValue(invoiceName, {
+        user: 'gcp-api',
+        script: 'giveme-invoice-api',
+        function: 'handleGivemeInvoice'
+      });
+    } catch (guardError) {
+      console.warn('[giveme-invoice]', reqId, '🛡️', guardError.message);
+      send(res, 400, { success: false, msg: guardError.message, blocked: true });
+      return;
+    }
   }
 
   const items = getInvoiceItems(order, options);

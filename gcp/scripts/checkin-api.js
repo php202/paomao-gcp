@@ -56,10 +56,15 @@ function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-// ─── 公司列表：從 DB 讀取（需要建 stores 表，暫時先用記憶體 + 一次性從 Sheet 載入或硬編碼） ───
+// ─── 公司列表：從 DB 讀取，每 10 分鐘自動刷新 ───
 let storeLocations = null;
+let storeLocationsLoadedAt = 0;
+const STORE_LOCATIONS_TTL = 10 * 60 * 1000; // 10 分鐘
 
-async function loadStoreLocations() {
+async function loadStoreLocations(force = false) {
+  // 如果有快取且未過期，跳過
+  if (!force && storeLocations && (Date.now() - storeLocationsLoadedAt < STORE_LOCATIONS_TTL)) return;
+
   // 先試 DB
   try {
     const { rows } = await pool.query(
@@ -67,6 +72,7 @@ async function loadStoreLocations() {
     );
     if (rows.length > 0) {
       storeLocations = rows.map(r => ({ name: r.store_name, lat: parseFloat(r.latitude), lon: parseFloat(r.longitude) }));
+      storeLocationsLoadedAt = Date.now();
       return;
     }
   } catch (e) {
@@ -117,7 +123,7 @@ async function loadStoreLocations() {
 }
 
 async function checkLocation(lat, lon) {
-  if (!storeLocations) await loadStoreLocations();
+  await loadStoreLocations(); // 自動檢查 TTL，過期就重讀 DB
   if (!storeLocations || !storeLocations.length) return [];
   const data = storeLocations.map((s) => ({
     name: s.name,

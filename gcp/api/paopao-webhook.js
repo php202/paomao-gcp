@@ -33,14 +33,49 @@ const EXTERNAL_SS_ID = (process.env.EXTERNAL_SS_ID || '').trim();
 /** 工作表分頁名稱（須與試算表底部標籤完全一致，含斜線／繁簡體）；可設 ACH_SHEET_NAME 覆寫 */
 const ACH_SHEET_NAME = (process.env.ACH_SHEET_NAME || '2026/ACH紀錄').trim() || '2026/ACH紀錄';
 
-async function replyText(replyToken, text) {
-  if (!replyToken || !PAOPAO_TOKEN) return;
-  await fetch('https://api.line.me/v2/bot/message/reply', {
-    method: 'post',
-    headers: { Authorization: `Bearer ${PAOPAO_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ replyToken, messages: [{ type: 'text', text: String(text || '') }] }),
-    signal: AbortSignal.timeout(15000),
-  });
+async function replyText(replyToken, text, userId) {
+  if (!PAOPAO_TOKEN) return;
+  const msg = [{ type: 'text', text: String(text || '') }];
+  // 先嘗試 reply，失敗則 fallback 到 push
+  if (replyToken) {
+    try {
+      const res = await fetch('https://api.line.me/v2/bot/message/reply', {
+        method: 'post',
+        headers: { Authorization: `Bearer ${PAOPAO_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ replyToken, messages: msg }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (res.ok) return;
+      const errBody = await res.text().catch(() => '');
+      // Invalid reply token → fallback push
+      if (errBody.includes('Invalid reply token') && userId) {
+        console.warn(`[line] reply token 過期，fallback push to ${userId}`);
+      } else {
+        console.error(`[line] reply failed ${res.status}: ${errBody.substring(0, 100)}`);
+        return;
+      }
+    } catch (e) {
+      if (userId) {
+        console.warn(`[line] reply error (${e.message}), fallback push to ${userId}`);
+      } else {
+        console.error(`[line] reply error: ${e.message}`);
+        return;
+      }
+    }
+  }
+  // Fallback: push message
+  if (userId) {
+    try {
+      await fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'post',
+        headers: { Authorization: `Bearer ${PAOPAO_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: userId, messages: msg }),
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (pushErr) {
+      console.error(`[line] push fallback failed: ${pushErr.message}`);
+    }
+  }
 }
 
 async function fetchDisplayName(userId) {
@@ -366,7 +401,7 @@ async function handleSlotStoryRequest(event) {
 
   const rawStoreName = match[1].replace(/[【】\s]/g, '').replace(/店$/, '').trim();
   if (!rawStoreName) {
-    await replyText(event.replyToken, '⚠️ 請指定店名\n\n格式：幫我發送空位：竹北光明店');
+    await replyText(event.replyToken, '⚠️ 請指定店名\n\n格式：幫我發送空位：竹北光明店', event.source?.userId);
     return true;
   }
 
@@ -399,12 +434,12 @@ async function handleSlotStoryRequest(event) {
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
   const rateKey = `${today}:${rawStoreName}`;
   if (slotStoryDailyUsage.has(rateKey)) {
-    await replyText(event.replyToken, `⚠️ ${rawStoreName}店 今天已經發送過空位 Story 了\n\n每間店每天限發一次`);
+    await replyText(event.replyToken, `⚠️ ${rawStoreName}店 今天已經發送過空位 Story 了\n\n每間店每天限發一次`, event.source?.userId);
     return true;
   }
 
   // 回覆「處理中」
-  await replyText(event.replyToken, `⏳ 正在查詢 ${rawStoreName}店 空位並產生 IG Story...`);
+  await replyText(event.replyToken, `⏳ 正在查詢 ${rawStoreName}店 空位並產生 IG Story...`, event.source?.userId);
 
   try {
     const { execSync } = await import('child_process');
@@ -510,11 +545,11 @@ async function handlePublishStoryPostback(event, params) {
   const imageUrl = decodeURIComponent(params.url || '');
   
   if (!imageUrl) {
-    await replyText(event.replyToken, '❌ 找不到預覽圖片 URL');
+    await replyText(event.replyToken, '❌ 找不到預覽圖片 URL', event.source?.userId);
     return;
   }
 
-  await replyText(event.replyToken, `⏳ 正在發布 ${storeName}店 空位到 IG Story...`);
+  await replyText(event.replyToken, `⏳ 正在發布 ${storeName}店 空位到 IG Story...`, event.source?.userId);
 
   try {
     const META_TOKEN = fs.readFileSync(`${process.env.HOME}/.openclaw/secrets/meta-token.txt`, 'utf8').trim();
@@ -582,7 +617,7 @@ async function handleDeleteOrder(event) {
   const deleteData = parseDeleteOrderText(text);
   
   if (!deleteData.customerName || !deleteData.phone || !deleteData.orderId) {
-    await replyText(event.replyToken, '⚠️ 刪單資訊不完整，請確認格式：\n客人姓名、訂單編號、電話 必填');
+    await replyText(event.replyToken, '⚠️ 刪單資訊不完整，請確認格式：\n客人姓名、訂單編號、電話 必填', event.source?.userId);
     return true;
   }
   
@@ -602,7 +637,7 @@ async function handleDeleteOrder(event) {
   
   if (!searchResult.found) {
     // 查不到，回覆請重新提供資料
-    await replyText(event.replyToken, '❌ 查無此筆訂單，麻煩再提供正確資料。');
+    await replyText(event.replyToken, '❌ 查無此筆訂單，麻煩再提供正確資料。', event.source?.userId);
     return true;
   }
   
@@ -620,9 +655,9 @@ async function handleDeleteOrder(event) {
     if (existing.length > 0) {
       const e = existing[0];
       if (e.status === 'deleted') {
-        await replyText(event.replyToken, `ℹ️ 訂單 ${deleteData.orderId} 已刪除完成，無需重複處理。`);
+        await replyText(event.replyToken, `ℹ️ 訂單 ${deleteData.orderId} 已刪除完成，無需重複處理。`, event.source?.userId);
       } else {
-        await replyText(event.replyToken, `ℹ️ 訂單 ${deleteData.orderId} 已在審核中，請勿重複提交。`);
+        await replyText(event.replyToken, `ℹ️ 訂單 ${deleteData.orderId} 已在審核中，請勿重複提交。`, event.source?.userId);
       }
       return true;
     }
@@ -657,7 +692,7 @@ async function handleDeleteOrder(event) {
       userId
     ]);
     
-    await replyText(event.replyToken, '泡泡貓會計正在審核中，請稍後。');
+    await replyText(event.replyToken, '泡泡貓會計正在審核中，請稍後。', event.source?.userId);
 
     // 通知 TG 辦公室群有新的刪單待處理
     const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN || (() => { try { return fs.readFileSync(`${process.env.HOME}/.openclaw/secrets/tg-bot-token.txt`, 'utf8').trim(); } catch { return ''; } })();
@@ -672,7 +707,7 @@ async function handleDeleteOrder(event) {
     } catch (tgErr) { console.error('[delete-order] TG notify error:', tgErr.message); }
     
   } catch (dbError) {
-    await replyText(event.replyToken, '❌ 系統錯誤，請稍後再試。');
+    await replyText(event.replyToken, '❌ 系統錯誤，請稍後再試。', event.source?.userId);
     console.error('[delete-order] DB insert failed:', dbError.message);
   }
   
@@ -701,11 +736,11 @@ async function handleConfirmPostback(authClient, event) {
 
   // Must have either dbId or odooId
   if (!dbId && !odooId) {
-    await replyText(event.replyToken, '⚠️ 無法取得單號，請重試。');
+    await replyText(event.replyToken, '⚠️ 無法取得單號，請重試。', event.source?.userId);
     return;
   }
   if (!EXTERNAL_SS_ID) {
-    await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
+    await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG, event.source?.userId);
     return;
   }
 
@@ -723,11 +758,11 @@ async function handleConfirmPostback(authClient, event) {
         'SELECT store_name, customer_confirmed FROM ach_records WHERE id = $1 AND year = 2026', [dbId]
       );
       if (dbRows.length === 0) {
-        await replyText(event.replyToken, `⚠️ 找不到單號 ${dbId} 的資料。`);
+        await replyText(event.replyToken, `⚠️ 找不到單號 ${dbId} 的資料。`, event.source?.userId);
         return;
       }
       if (dbRows[0].customer_confirmed && String(dbRows[0].customer_confirmed).trim()) {
-        await replyText(event.replyToken, `⚠️ ${userName} 您好，\n這筆資料已經確認過囉！\n\n紀錄：\n${dbRows[0].customer_confirmed}`);
+        await replyText(event.replyToken, `⚠️ ${userName} 您好，\n這筆資料已經確認過囉！\n\n紀錄：\n${dbRows[0].customer_confirmed}`, event.source?.userId);
         return;
       }
       resolvedStoreName = dbRows[0].store_name || storeNameFromPostback;
@@ -741,7 +776,7 @@ async function handleConfirmPostback(authClient, event) {
       rows = await readSheet(authClient, EXTERNAL_SS_ID, `'${ACH_SHEET_NAME}'!A:P`);
     } catch (err) {
       console.error('[paopao-webhook] readSheet ACH 失敗:', err?.message);
-      await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
+      await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG, event.source?.userId);
       return;
     }
     for (let i = 1; i < rows.length; i++) {
@@ -755,7 +790,7 @@ async function handleConfirmPostback(authClient, event) {
       }
     }
     if (rowIndex < 0) {
-      await replyText(event.replyToken, `⚠️ 找不到符合的資料列（單號: ${odooId}${storeNameFromPostback ? '，店名: ' + storeNameFromPostback : ''}）`);
+      await replyText(event.replyToken, `⚠️ 找不到符合的資料列（單號: ${odooId}${storeNameFromPostback ? '，店名: ' + storeNameFromPostback : ''}）`, event.source?.userId);
       return;
     }
     // Check existing G column from Sheet
@@ -763,7 +798,7 @@ async function handleConfirmPostback(authClient, event) {
     try { sheetRows = await readSheet(authClient, EXTERNAL_SS_ID, `'${ACH_SHEET_NAME}'!G${rowIndex}`); } catch {}
     const existingG = sheetRows?.[0]?.[0];
     if (existingG && String(existingG).trim()) {
-      await replyText(event.replyToken, `⚠️ ${userName} 您好，\n這筆資料已經確認過囉！\n\n紀錄：\n${existingG}`);
+      await replyText(event.replyToken, `⚠️ ${userName} 您好，\n這筆資料已經確認過囉！\n\n紀錄：\n${existingG}`, event.source?.userId);
       return;
     }
   }
@@ -788,7 +823,7 @@ async function handleConfirmPostback(authClient, event) {
     console.log(`[paopao-webhook] ✅ ACH confirmed: dbId=${resolvedDbId || '?'} sheetRow=${rowIndex} by ${userName}`);
   } catch (dbErr) {
     console.error('[paopao-webhook] DB write failed:', dbErr?.message);
-    await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG);
+    await replyText(event.replyToken, CUSTOMER_FALLBACK_MSG, event.source?.userId);
     return;
   }
 
@@ -905,7 +940,7 @@ async function handleConfirmPostback(authClient, event) {
   }
 
   // 4. Reply + receipt
-  await replyText(event.replyToken, '✅ 已確認，謝謝！');
+  await replyText(event.replyToken, '✅ 已確認，謝謝！', event.source?.userId);
   try {
     await pushFlexReceipt(targetId, resolvedStoreName, resolvedDbId || odooId, userName);
   } catch (e) {
@@ -922,7 +957,7 @@ async function handleDirectConfirmPostback(event) {
 
   const odooOrder = params.odooOrder ? String(params.odooOrder).trim() : '';
   if (!odooOrder) {
-    await replyText(event.replyToken, '⚠️ 無法取得訂單號碼。');
+    await replyText(event.replyToken, '⚠️ 無法取得訂單號碼。', event.source?.userId);
     return true;
   }
 
@@ -937,7 +972,7 @@ async function handleDirectConfirmPostback(event) {
     // 1. Find SO
     const soIds = await odooCall('sale.order', 'search', [[['name', '=', odooOrder]]]);
     if (!soIds || soIds.length === 0) {
-      await replyText(event.replyToken, `⚠️ 找不到 Odoo 訂單 ${odooOrder}`);
+      await replyText(event.replyToken, `⚠️ 找不到 Odoo 訂單 ${odooOrder}`, event.source?.userId);
       return true;
     }
 
@@ -951,11 +986,11 @@ async function handleDirectConfirmPostback(event) {
       console.log(`[direct-confirm] SO ${odooOrder} already in state: ${so[0].state}`);
     }
 
-    await replyText(event.replyToken, `✅ ${odooOrder} 已確認，謝謝 ${userName}！`);
+    await replyText(event.replyToken, `✅ ${odooOrder} 已確認，謝謝 ${userName}！`, event.source?.userId);
     console.log(`[direct-confirm] ✅ ${odooOrder} confirmed by ${userName}`);
   } catch (e) {
     console.error(`[direct-confirm] ❌ ${odooOrder} failed:`, e.message?.slice(0, 300));
-    await replyText(event.replyToken, `⚠️ 處理失敗：${e.message?.slice(0, 100)}\n請通知總公司。`);
+    await replyText(event.replyToken, `⚠️ 處理失敗：${e.message?.slice(0, 100)}\n請通知總公司。`, event.source?.userId);
   }
   return true;
 }
@@ -981,7 +1016,7 @@ async function handleSOConfirmPostback(authClient, event) {
   if (!userName) userName = '操作者';
 
   if (!orderName) {
-    await replyText(event.replyToken, '⚠️ 無法取得訂單號碼，請重試。');
+    await replyText(event.replyToken, '⚠️ 無法取得訂單號碼，請重試。', event.source?.userId);
     return;
   }
 
@@ -1020,7 +1055,7 @@ async function handleSOConfirmPostback(authClient, event) {
       } else {
         // 全部已確認 — 回覆已處理，不重複執行
         console.log(`[paopao-webhook] so_confirm: ${orderName} 所有 ach_records 已確認，跳過重複`);
-        await replyText(event.replyToken, `ℹ️ ${orderName} 已經確認過囉，${userName}！`);
+        await replyText(event.replyToken, `ℹ️ ${orderName} 已經確認過囉，${userName}！`, event.source?.userId);
         return;
       }
     } else {
@@ -1047,7 +1082,7 @@ async function handleSOConfirmPostback(authClient, event) {
       if (soIds && soIds.length > 0) {
         const so = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['state', 'invoice_ids'] });
 
-        // Step 1: Confirm SO
+        // Step 1: Confirm SO (會自動處理貸記單連結)
         if (so[0].state === 'draft' || so[0].state === 'sent') {
           await odooCall('sale.order', 'action_confirm', [soIds]);
           console.log(`[so_confirm] ✅ 服務費 ${orderName} confirmed (was ${so[0].state})`);
@@ -1168,7 +1203,7 @@ async function handleSOConfirmPostback(authClient, event) {
     } catch (odooErr) {
       console.error(`[so_confirm] 服務費 ${orderName} Odoo error:`, odooErr?.message?.slice(0, 200));
     }
-    await replyText(event.replyToken, `✅ ${orderName} 已確認，謝謝 ${userName}！`);
+    await replyText(event.replyToken, `✅ ${orderName} 已確認，謝謝 ${userName}！`, event.source?.userId);
     return;
   }
 
@@ -1277,8 +1312,10 @@ async function handleSOConfirmPostback(authClient, event) {
       }
 
       // Step 3.5: 自動沖抵貸記單（credit notes）
+      // ⚠️ 儲值金品項不能用貸記單，跳過沖抵
       let creditNoteInfo = '';
-      if (invoiceIds.length > 0) {
+      const isStoredValue = feeType === '儲值金' || (achRows.length > 0 && achRows[0].fee_type === '儲值金');
+      if (invoiceIds.length > 0 && !isStoredValue) {
         try {
           const lastInvId = invoiceIds[invoiceIds.length - 1];
           const invData = await odooCall('account.move', 'read', [lastInvId], { fields: ['partner_id', 'amount_residual', 'state'] });
@@ -1375,21 +1412,145 @@ async function handleSOConfirmPostback(authClient, event) {
     console.error(`[so_confirm] ❌ Odoo error for ${orderName}:`, odooErr?.message?.slice(0, 200));
   }
 
-  await replyText(event.replyToken, `✅ ${orderName} 已確認，謝謝 ${userName}！`);
+  await replyText(event.replyToken, `✅ ${orderName} 已確認，謝謝 ${userName}！`, event.source?.userId);
+}
+
+/** PO「正確」按鈕 postback：action=po_confirm&orderName=P00xxx */
+async function handlePOConfirmPostback(event) {
+  const params = parsePostbackParams(event?.postback?.data);
+  const orderName = params.orderName ? String(params.orderName).trim() : '';
+  const source = event.source || {};
+  const userId = source.userId;
+  let userName = await fetchDisplayNameInSource(userId, source);
+  if (!userName) userName = '操作者';
+
+  if (!orderName) {
+    await replyText(event.replyToken, '⚠️ 無法取得訂單號碼，請重試。', event.source?.userId);
+    return;
+  }
+
+  try {
+    // Odoo: confirm PO
+    const poIds = await odooCall('purchase.order', 'search', [[['name', '=', orderName]]]);
+    if (poIds && poIds.length > 0) {
+      const po = await odooCall('purchase.order', 'read', [poIds[0]], { fields: ['state'] });
+      if (po[0].state === 'draft' || po[0].state === 'sent') {
+        await odooCall('purchase.order', 'button_confirm', [poIds]);
+        console.log(`[po_confirm] ✅ ${orderName} confirmed (was ${po[0].state}) by ${userName}`);
+      } else {
+        console.log(`[po_confirm] ${orderName} already ${po[0].state}`);
+      }
+    }
+  } catch (odooErr) {
+    console.error(`[po_confirm] ❌ Odoo error for ${orderName}:`, odooErr?.message?.slice(0, 200));
+  }
+
+  // 通知 TG
+  try {
+    const tgToken = require('fs').readFileSync('/Users/paopaomao/.openclaw/secrets/telegram-bot-token.txt', 'utf8').trim();
+    await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: '-5220564261', text: `✅ PO ${orderName} 已確認 by ${userName}`, parse_mode: 'HTML' })
+    });
+  } catch(e) { /* ignore */ }
+
+  await replyText(event.replyToken, `✅ ${orderName} 已確認，謝謝 ${userName}！`, event.source?.userId);
+}
+
+/** PO「有問題」按鈕 postback：action=po_dispute&orderName=P00xxx */
+async function handlePODisputePostback(event) {
+  const params = parsePostbackParams(event?.postback?.data);
+  const orderName = params.orderName ? String(params.orderName).trim() : '';
+  const source = event.source || {};
+  const userId = source.userId;
+  let userName = await fetchDisplayNameInSource(userId, source);
+  if (!userName) userName = '操作者';
+
+  // 通知 TG 辦公室群組
+  try {
+    const tgToken = require('fs').readFileSync('/Users/paopaomao/.openclaw/secrets/telegram-bot-token.txt', 'utf8').trim();
+    await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: '-5220564261', text: `⚠️ PO ${orderName} 有問題！由 ${userName} 回報，請確認`, parse_mode: 'HTML' })
+    });
+  } catch(e) { /* ignore */ }
+
+  await replyText(event.replyToken, `📝 ${orderName} 已標記為有問題，總公司會盡快確認，謝謝 ${userName}！`, event.source?.userId);
 }
 
 /** Dashboard「取消」按鈕 postback：action=so_cancel&orderId=xxx&orderName=S01xxx */
 async function handleSOCancelPostback(event) {
   const params = parsePostbackParams(event?.postback?.data);
   const orderName = params.orderName ? String(params.orderName).trim() : '';
+  const orderId = params.orderId ? parseInt(params.orderId) : 0;
 
   const source = event.source || {};
   const userId = source.userId;
   let userName = await fetchDisplayNameInSource(userId, source);
   if (!userName) userName = '操作者';
 
-  await replyText(event.replyToken, `❌ ${orderName} 已取消確認。\n\n操作者：${userName}\n如有疑問請聯繫總公司。`);
-  console.log(`[paopao-webhook] so_cancel: ${orderName} by ${userName}`);
+  // ═══ Odoo 取消訂單 ═══
+  let odooResult = '';
+  try {
+    if (orderId) {
+      // 先查訂單狀態
+      const soState = await odooCall('sale.order', 'read', [orderId], { fields: ['state', 'name'] });
+      if (soState && soState.length) {
+        const state = soState[0].state;
+        if (state === 'cancel') {
+          odooResult = '\nℹ️ Odoo 訂單已是取消狀態';
+        } else if (['draft', 'sent'].includes(state)) {
+          await odooCall('sale.order', 'action_cancel', [[orderId]]);
+          odooResult = '\n✅ Odoo 訂單已取消';
+          console.log(`[so_cancel] ✅ ${orderName} (id=${orderId}) cancelled in Odoo (was ${state})`);
+        } else if (state === 'sale') {
+          // 已確認的訂單也可以取消
+          await odooCall('sale.order', 'action_cancel', [[orderId]]);
+          odooResult = '\n✅ Odoo 訂單已取消（原狀態：已確認）';
+          console.log(`[so_cancel] ✅ ${orderName} (id=${orderId}) cancelled in Odoo (was sale)`);
+        } else {
+          odooResult = `\n⚠️ Odoo 訂單狀態 ${state}，無法自動取消，請聯繫總公司`;
+          console.log(`[so_cancel] ⚠️ ${orderName} state=${state}, cannot cancel`);
+        }
+      } else {
+        odooResult = '\n⚠️ 找不到 Odoo 訂單';
+      }
+    } else if (orderName) {
+      // 用 orderName 搜尋
+      const soIds = await odooCall('sale.order', 'search', [[['name', '=', orderName]]]);
+      if (soIds && soIds.length) {
+        const so = await odooCall('sale.order', 'read', [soIds[0]], { fields: ['state'] });
+        const state = so[0]?.state;
+        if (state === 'cancel') {
+          odooResult = '\nℹ️ Odoo 訂單已是取消狀態';
+        } else {
+          await odooCall('sale.order', 'action_cancel', [soIds]);
+          odooResult = '\n✅ Odoo 訂單已取消';
+          console.log(`[so_cancel] ✅ ${orderName} cancelled in Odoo`);
+        }
+      } else {
+        odooResult = '\n⚠️ 找不到 Odoo 訂單';
+      }
+    }
+  } catch (odooErr) {
+    odooResult = `\n⚠️ Odoo 取消失敗：${odooErr.message?.slice(0, 80)}`;
+    console.error(`[so_cancel] Odoo error for ${orderName}:`, odooErr.message?.slice(0, 200));
+  }
+
+  // ═══ ACH 記錄也標記取消 ═══
+  try {
+    if (orderName) {
+      await pgPool.query(
+        `UPDATE ach_records SET is_active = false, updated_at = NOW() WHERE odoo_quote_id = $1 AND is_active = true`,
+        [orderName]
+      );
+    }
+  } catch (dbErr) {
+    console.error(`[so_cancel] DB error for ${orderName}:`, dbErr.message);
+  }
+
+  await replyText(event.replyToken, `❌ ${orderName} 已取消確認。${odooResult}\n\n操作者：${userName}\n如有疑問請聯繫總公司。`, event.source?.userId);
+  console.log(`[paopao-webhook] so_cancel: ${orderName} by ${userName}${odooResult}`);
 }
 
 /** 票券折抵確認 postback：ticket_confirm:batchId:storeCode */
@@ -1417,7 +1578,7 @@ async function handleTicketConfirmPostback(event) {
     );
 
     if (rowCount === 0) {
-      await replyText(event.replyToken, `ℹ️ ${userName} 您好，這筆票券折抵已經確認過囉！`);
+      await replyText(event.replyToken, `ℹ️ ${userName} 您好，這筆票券折抵已經確認過囉！`, event.source?.userId);
       return;
     }
 
@@ -1431,11 +1592,11 @@ async function handleTicketConfirmPostback(event) {
       await pgPool.query(`UPDATE ticket_batches SET status = 'done' WHERE id = $1`, [batchId]);
     }
 
-    await replyText(event.replyToken, `✅ 票券折抵已確認，謝謝 ${userName}！`);
+    await replyText(event.replyToken, `✅ 票券折抵已確認，謝謝 ${userName}！`, event.source?.userId);
     console.log(`[ticket-confirm] ✅ batch=${batchId} store=${storeCode} by=${userName} remaining=${pendingCount}`);
   } catch (e) {
     console.error('[ticket-confirm] DB error:', e.message);
-    await replyText(event.replyToken, '⚠️ 系統錯誤，請稍後再試或聯繫總公司。');
+    await replyText(event.replyToken, '⚠️ 系統錯誤，請稍後再試或聯繫總公司。', event.source?.userId);
   }
 }
 
@@ -1501,10 +1662,14 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
         await handleSOConfirmPostback(authClient, event);
       } else if (params.action === 'so_cancel') {
         await handleSOCancelPostback(event);
+      } else if (params.action === 'po_confirm') {
+        await handlePOConfirmPostback(event);
+      } else if (params.action === 'po_dispute') {
+        await handlePODisputePostback(event);
       } else if (params.action === 'publish_story') {
         await handlePublishStoryPostback(event, params);
       } else if (params.action === 'cancel_story') {
-        await replyText(event.replyToken, '👌 已取消發布');
+        await replyText(event.replyToken, '👌 已取消發布', event.source?.userId);
       }
       continue;
     }
@@ -1529,7 +1694,7 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
           });
           const bindJson = await bindRes.json();
           if (bindJson.status) {
-            await replyText(event.replyToken, `✅ 綁定成功！\n${bindJson.candidate_name} 您好，面試通知會透過此帳號發送給您。\n\n如有任何問題，請直接回覆此訊息。`);
+            await replyText(event.replyToken, `✅ 綁定成功！\n${bindJson.candidate_name} 您好，面試通知會透過此帳號發送給您。\n\n如有任何問題，請直接回覆此訊息。`, event.source?.userId);
             console.log(`[paopao-webhook] 📱 candidate bind: ${cleanPhone} → ${userId.slice(-8)}`);
             continue;
           }
@@ -1554,16 +1719,16 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
             );
             if (rows.length === 1) {
               await pgPool.query('UPDATE payees SET line_group_id = $1 WHERE id = $2', [groupId, rows[0].id]);
-              await replyText(event.replyToken, `✅ 已綁定群組\n\n群組名稱：${groupName}\n群組 ID：${groupId}\n對應代付戶：${rows[0].payee_name}\n門市：${rows[0].store_name || '-'}`);
+              await replyText(event.replyToken, `✅ 已綁定群組\n\n群組名稱：${groupName}\n群組 ID：${groupId}\n對應代付戶：${rows[0].payee_name}\n門市：${rows[0].store_name || '-'}`, event.source?.userId);
             } else if (rows.length > 1) {
               const list = rows.map(r => `• ${r.payee_name} (${r.store_name || '-'})`).join('\n');
-              await replyText(event.replyToken, `⚠️ 找到多個匹配的代付戶，請手動在 Dashboard 設定：\n\n${list}\n\n群組 ID：${groupId}`);
+              await replyText(event.replyToken, `⚠️ 找到多個匹配的代付戶，請手動在 Dashboard 設定：\n\n${list}\n\n群組 ID：${groupId}`, event.source?.userId);
             } else {
-              await replyText(event.replyToken, `⚠️ 找不到匹配的代付戶\n\n群組名稱：${groupName}\n群組 ID：${groupId}\n\n請在 Dashboard 門市管理 → 代收代付 手動設定此 ID`);
+              await replyText(event.replyToken, `⚠️ 找不到匹配的代付戶\n\n群組名稱：${groupName}\n群組 ID：${groupId}\n\n請在 Dashboard 門市管理 → 代收代付 手動設定此 ID`, event.source?.userId);
             }
           } catch (e) {
             console.error('[bind-group] DB error:', e.message);
-            await replyText(event.replyToken, `群組 ID：${groupId}\n（DB 寫入失敗，請手動設定）`);
+            await replyText(event.replyToken, `群組 ID：${groupId}\n（DB 寫入失敗，請手動設定）`, event.source?.userId);
           }
         }
         continue;
@@ -1582,15 +1747,15 @@ export async function handlePaopaoWebhook(req, res, { authClient, rawBody }) {
       if (text.includes('店家回覆狀態')) {
         try {
           if (!LINE_STORE_SS_ID) {
-            await replyText(event.replyToken, '店家回覆狀態需設定 LINE_STORE_SS_ID（各店訊息一覽表），請聯繫管理員。');
+            await replyText(event.replyToken, '店家回覆狀態需設定 LINE_STORE_SS_ID（各店訊息一覽表），請聯繫管理員。', event.source?.userId);
           } else {
             const result = await getDirectStoreReplyStatusText(authClient, LINE_STORE_SS_ID);
             const replyMsg = result.ok ? result.text : (result.message || '無法取得店家回覆狀態，請稍後再試。');
-            await replyText(event.replyToken, replyMsg);
+            await replyText(event.replyToken, replyMsg, event.source?.userId);
           }
         } catch (err) {
           const fallback = '查詢店家回覆狀態時發生錯誤，請稍後再試或聯繫管理員。';
-          await replyText(event.replyToken, fallback).catch(() => {});
+          await replyText(event.replyToken, fallback).catch(() => {}, event.source?.userId);
         }
       }
     }

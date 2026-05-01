@@ -138,8 +138,9 @@
 
 <script>
 (function() {
-  /** 設定區：已搬遷至 GCP，先打 GCP、失敗再打 GAS */
-  const GCP_CHECKIN_URL = "https://pao-checkin-api-254258679209.asia-east1.run.app/checkin";
+  /** 設定區：主要打本機 API（透過 Tunnel），備援打 Cloud Run，最後打 GAS */
+  const GCP_CHECKIN_URL = "https://gcp.paopaomao.tw/checkin";
+  const CLOUD_RUN_CHECKIN_URL = "https://pao-checkin-api-254258679209.asia-east1.run.app/checkin";
   const GAS_API_URL = "https://script.google.com/macros/s/AKfycby4JvdNSueVmq1_gG-mrRL0IfR4kPm1nX2itxMDg1c7MWIvEgP2xd7rmSfoxmM3Lung2w/exec";
   const GCP_TIMEOUT_MS = 15000;
   const GAS_TIMEOUT_MS = 20000;
@@ -159,43 +160,40 @@
     return false;
   }
 
-  /** 先打 GCP，失敗再打 GAS（備援） */
+  /** 三層 fallback: 本機 Tunnel → Cloud Run → GAS */
   async function postCheckin(body) {
-    let res = null, data = null, responseText = "";
-    try {
-      res = await fetch(GCP_CHECKIN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(GCP_TIMEOUT_MS),
-      });
-      responseText = await res.text();
-      try { data = responseText ? JSON.parse(responseText) : null; } catch (_) { data = null; }
-    } catch (e) {
-      res = null;
-      data = null;
-      responseText = "";
-    }
-    if (shouldFallbackToGas(res, data, responseText)) {
+    const endpoints = [
+      { url: GCP_CHECKIN_URL, timeout: GCP_TIMEOUT_MS, type: "json", name: "local" },
+      { url: CLOUD_RUN_CHECKIN_URL, timeout: GCP_TIMEOUT_MS, type: "json", name: "cloudrun" },
+      { url: GAS_API_URL, timeout: GAS_TIMEOUT_MS, type: "text", name: "gas" },
+    ];
+    let lastData = null, lastRes = null;
+    for (const ep of endpoints) {
       try {
-        res = await fetch(GAS_API_URL, {
+        const opts = {
           method: "POST",
-          redirect: "follow",
-          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          headers: ep.type === "json" ? { "Content-Type": "application/json" } : { "Content-Type": "text/plain;charset=utf-8" },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(GAS_TIMEOUT_MS),
-        });
-        responseText = await res.text();
-        try { data = responseText ? JSON.parse(responseText) : null; } catch (_) { data = null; }
+          signal: AbortSignal.timeout(ep.timeout),
+        };
+        if (ep.type === "text") opts.redirect = "follow";
+        lastRes = await fetch(ep.url, opts);
+        const responseText = await lastRes.text();
+        try { lastData = responseText ? JSON.parse(responseText) : null; } catch (_) { lastData = null; }
+        if (!shouldFallbackToGas(lastRes, lastData, responseText)) {
+          return lastData;
+        }
+        console.log("[checkin] " + ep.name + " fallback, trying next...");
       } catch (e) {
-        res = null;
-        data = null;
+        console.log("[checkin] " + ep.name + " error: " + e.message);
+        lastRes = null;
+        lastData = null;
       }
     }
-    if (!res || !res.ok) {
-      throw new Error((data && (data.text || data.message)) || "打卡請求失敗，請稍後再試");
+    if (!lastRes || !lastRes.ok) {
+      throw new Error((lastData && (lastData.text || lastData.message)) || "打卡請求失敗，請稍後再試");
     }
-    return data;
+    return lastData;
   }
 
   function updateStatus(text, className) {

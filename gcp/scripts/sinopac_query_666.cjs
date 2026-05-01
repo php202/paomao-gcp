@@ -199,11 +199,12 @@ async function main() {
         break;
       }
 
-      // 防重複：用 date+debit+credit+memo 作為 key 去重
-      const existingKeys = new Set(allTransactions.map(t => `${t.date}|${t.debit}|${t.credit}|${t.memo}`));
+      // 防重複：用 date+debit+credit+balance+memo 作為 key 去重
+      // 加入 balance 可區分同日同金額的不同筆交易
+      const existingKeys = new Set(allTransactions.map(t => `${t.date}|${t.debit}|${t.credit}|${t.balance}|${t.memo}`));
       let newCount = 0;
       for (const t of transactions) {
-        const key = `${t.date}|${t.debit}|${t.credit}|${t.memo}`;
+        const key = `${t.date}|${t.debit}|${t.credit}|${t.balance}|${t.memo}`;
         if (!existingKeys.has(key)) {
           allTransactions.push(t);
           existingKeys.add(key);

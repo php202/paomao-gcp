@@ -8,3 +8,4 @@
 [2026/4/5 下午3:00:42] DOOR_OPEN from 2a09:bac3:580e:323::50:1bf (session)
 🚪 Door control server running on port 3881
 [2026/4/5 下午3:06:56] DOOR_CLOSE from 2001:b011:6c09:15a8:4914:219a:7bd3:717e by API-token
+🚪 Door control server running on port 3881

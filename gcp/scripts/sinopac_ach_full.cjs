@@ -83,7 +83,15 @@ const SINOPAC = {
 const DB_URL = process.env.DATABASE_URL || 'postgresql://localhost/paomao';
 let _pool = null;
 function getPool() {
-  if (!_pool) _pool = new Pool({ connectionString: DB_URL, max: 2 });
+  if (!_pool) {
+    _pool = new Pool({ 
+      connectionString: DB_URL, 
+      max: 2,
+      host: '/tmp', // Unix socket
+      database: 'paomao',
+      user: 'paopaomao'
+    });
+  }
   return _pool;
 }
 
@@ -542,6 +550,7 @@ async function fullFlow(opts) {
 
     let filePath = opts.file;
     let achRecordId = null;
+    let achFeeType = null;
 
     // Step 1: Generate ACH file if not provided
     if (!filePath && (opts.invoiceName || opts.invoiceId)) {
@@ -550,7 +559,7 @@ async function fullFlow(opts) {
 
       // Find ACH record — fallback to stores.payee_id (主要關聯代號) if payee_code empty
       const { rows } = await pool.query(
-        `SELECT ar.id, ar.store_name, ar.amount, ar.payee_code, ar.store_id, ar.payee_id,
+        `SELECT ar.id, ar.store_name, ar.amount, ar.payee_code, ar.store_id, ar.payee_id, ar.fee_type,
                 COALESCE(pp.bank_account, p.bank_account, sp.bank_account) as bank_account,
                 COALESCE(pp.branch_code, p.branch_code, sp.branch_code) as branch_code,
                 COALESCE(ar.payee_code, sp.code) as effective_payee_code,
@@ -565,10 +574,17 @@ async function fullFlow(opts) {
          ORDER BY ar.id DESC LIMIT 1`,
         [opts.invoiceName]
       );
+      
+      // ℹ️ 儲值金：允許 ACH 扣款，但不開電子發票
+      if (rows[0] && rows[0].fee_type === '儲值金') {
+        console.log(`[ACH] 💰 儲值金記錄: ${opts.invoiceName} (${rows[0].store_name} $${rows[0].amount})`);
+        console.log(`[ACH]    → 允許 ACH 扣款，跳過電子發票`);
+      }
 
       if (!rows[0]) throw new Error(`找不到 ACH 紀錄: ${opts.invoiceName}`);
       const rec = rows[0];
       achRecordId = rec.id;
+      achFeeType = rec.fee_type;
       // If payee_code was empty, fill it from stores.payee_id
       if (!rec.payee_code && rec.effective_payee_code) {
         rec.payee_code = rec.effective_payee_code;
@@ -576,6 +592,65 @@ async function fullFlow(opts) {
         console.log(`[FLOW] ACH #${rec.id}: payee_code filled from store default: ${rec.payee_code}`);
       }
       console.log(`[FLOW] ACH #${rec.id}: ${rec.store_name} $${rec.amount} (${rec.payee_code})`);
+
+      // ─── 自動校正金額：用 Odoo payment 金額（扣除貸記單/折讓後的實付金額）───
+      if (rec.fee_type !== '儲值金') {
+        try {
+          const { odooCall } = require('../lib/odoo.cjs');
+          const soName = rows[0].odoo_quote_id || opts.invoiceName;
+          // 先找 invoice
+          let invoiceIds = [];
+          if (soName && soName.startsWith('S0')) {
+            const sos = await odooCall('sale.order', 'search_read', [[['name', '=', soName]]], { fields: ['invoice_ids'], limit: 1 });
+            invoiceIds = sos[0]?.invoice_ids || [];
+          } else if (soName && soName.startsWith('INV/')) {
+            const invs = await odooCall('account.move', 'search_read', [[['name', '=', soName], ['move_type', '=', 'out_invoice']]], { fields: ['id'], limit: 1 });
+            invoiceIds = invs.map(i => i.id);
+          }
+          if (invoiceIds.length) {
+            const invData = await odooCall('account.move', 'read', [invoiceIds], { fields: ['id', 'state', 'amount_total', 'payment_state'] });
+            const posted = invData.find(i => i.state === 'posted');
+            if (posted) {
+              // 查 payment 實際付款金額
+              const payments = await odooCall('account.payment', 'search_read',
+                [[['ref', 'ilike', posted.id.toString()], ['state', '=', 'posted']]],
+                { fields: ['amount'], limit: 5 }
+              ).catch(() => []);
+              // 也可直接用 reconciled_invoices → 但用 payment amount 更精準
+              // fallback: 直接查 invoice 的 amount_total vs amount_residual
+              let correctedAmount = null;
+              if (payments.length) {
+                const totalPaid = payments.reduce((s, p) => s + (p.amount || 0), 0);
+                if (totalPaid > 0 && Math.abs(totalPaid - rec.amount) > 0.5) {
+                  correctedAmount = Math.round(totalPaid);
+                }
+              }
+              // fallback: 如果 payment_state=in_payment 且 amount_total 不同
+              if (!correctedAmount && posted.amount_total && Math.abs(posted.amount_total - rec.amount) > 0.5) {
+                // 有可能有貸記單，查一下
+                const partner = await odooCall('account.move', 'read', [[posted.id]], { fields: ['partner_id'] });
+                const pid = partner[0]?.partner_id?.[0];
+                if (pid) {
+                  const credits = await odooCall('account.move', 'search_read',
+                    [[['partner_id', '=', pid], ['move_type', '=', 'out_refund'], ['state', '=', 'posted'], ['payment_state', '!=', 'paid']]],
+                    { fields: ['amount_total'] });
+                  if (credits.length) {
+                    const creditTotal = credits.reduce((s, c) => s + c.amount_total, 0);
+                    correctedAmount = Math.round(posted.amount_total - creditTotal);
+                  }
+                }
+              }
+              if (correctedAmount && correctedAmount !== Math.round(rec.amount) && correctedAmount > 0) {
+                console.log(`[FLOW] ⚡ 金額校正: $${Math.round(rec.amount)} → $${correctedAmount} (Odoo payment/貸記單扣除)`);
+                rec.amount = correctedAmount;
+                await pool.query('UPDATE ach_records SET amount = $1 WHERE id = $2', [correctedAmount, rec.id]);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(`[FLOW] ⚠️ 金額校正查詢失敗 (不影響上傳): ${e.message}`);
+        }
+      }
 
       if (!rec.bank_account) throw new Error(`${rec.payee_code || '無代號'} 缺少銀行帳號`);
 
@@ -600,11 +675,15 @@ async function fullFlow(opts) {
       try {
         const pool = getPool();
         const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).replace('T', ' ');
+        // 儲值金：自動標記不需要 666→686 轉帳
+        const isStoredValue = achFeeType === '儲值金';
+        const extraFields = isStoredValue ? ", transfer_666_686 = 'x', transfer_case_no = 'x'" : '';
+        
         await pool.query(
-          `UPDATE ach_records SET ach_case_no = $1, ach_registered = 'success', ach_released = 'success', updated_at = NOW() WHERE id = $2`,
+          `UPDATE ach_records SET ach_case_no = $1, ach_registered = 'success', ach_released = 'success'${extraFields}, updated_at = NOW() WHERE id = $2`,
           [result.caseNo, achRecordId]
         );
-        console.log(`[DB] ach_records #${achRecordId} → case ${result.caseNo}`);
+        console.log(`[DB] ach_records #${achRecordId} → case ${result.caseNo}${isStoredValue ? ' (儲值金，不轉686)' : ''}`);
       } catch (e) {
         console.error(`[DB] 更新失敗: ${e.message}`);
       }

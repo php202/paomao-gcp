@@ -26,6 +26,7 @@ import { handleGivemeInvoice, handleGivemeInvoiceCheck, handleGivemeInvoicePrint
 import { handleCheckinApi } from './scripts/checkin-api.js';
 import { appendWebhookError } from './lib/webhook-error-log.js';
 import { handleIgWebhookVerify, handleIgWebhookEvent } from './api/ig-webhook.js';
+import { handleEmployeeAttendanceApi } from './api/employee-attendance-api.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -703,6 +704,59 @@ export function startServer() {
         await handleReportApi(req, res, { url: fullUrl });
         return;
       }
+    }
+
+    // ─── Employee Attendance API ───
+    if (url === '/attendance-api') {
+      if (method === 'OPTIONS') {
+        res.writeHead(204, {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Max-Age': '86400',
+        });
+        res.end();
+        return;
+      }
+      let bodyJson = null;
+      if (method === 'POST') {
+        const rawBody = await parseBody(req);
+        bodyJson = (() => { try { return JSON.parse(rawBody.toString('utf8')); } catch { return null; } })();
+      }
+      await handleEmployeeAttendanceApi(req, res, { url: fullUrl, bodyJson });
+      return;
+    }
+
+    // ─── My Dashboard (員工補打卡) ───
+    if (method === 'GET' && url === '/my') {
+      const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+      const host = req.headers['x-forwarded-host'] || req.headers['host'] || '';
+      const apiBase = `${proto}://${host}`;
+      const p = path.join(__dirname, 'public', 'my-dashboard.html');
+      try {
+        let html = fs.readFileSync(p, 'utf8');
+        html = html.replace(/__API_BASE__/g, apiBase);
+        send(res, 200, html, 'text/html; charset=utf-8');
+      } catch (e) {
+        send(res, 500, '員工出勤頁面暫時無法載入。', 'text/html; charset=utf-8');
+      }
+      return;
+    }
+
+    // ─── Manager Attendance (店長出勤管理) ───
+    if (method === 'GET' && url === '/manager-attendance') {
+      const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+      const host = req.headers['x-forwarded-host'] || req.headers['host'] || '';
+      const apiBase = `${proto}://${host}`;
+      const p = path.join(__dirname, 'public', 'manager-attendance.html');
+      try {
+        let html = fs.readFileSync(p, 'utf8');
+        html = html.replace(/__API_BASE__/g, apiBase);
+        send(res, 200, html, 'text/html; charset=utf-8');
+      } catch (e) {
+        send(res, 500, '店長出勤頁面暫時無法載入。', 'text/html; charset=utf-8');
+      }
+      return;
     }
 
     res.writeHead(404, { 'Content-Type': 'application/json' });

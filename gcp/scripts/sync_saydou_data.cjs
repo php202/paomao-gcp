@@ -24,9 +24,12 @@ const TOKEN_PATH = path.join(process.env.HOME, '.openclaw/workspace/booking-site
 const SAYDOU_API = 'https://saywebdatafeed.saydou.com';
 
 // ─── Config ───
-const CONCURRENCY = 5;            // Worker 池大小（SayDou API 甜蜜點）
+const CONCURRENCY = 2;            // Worker 池大小（降低以避免 429）
 const API_TIMEOUT_MS = 30000;     // 單次 API request timeout
-const RATE_LIMIT_MS = 200;        // 分頁間隔
+const RATE_LIMIT_MS = 500;        // 分頁間隔（加大以避免限流）
+const RETRY_MAX = 3;              // 最大重試次數（429 + 5xx）
+const RETRY_BASE_MS = 5000;       // 重試基礎等待（exponential backoff）
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const CIRCUIT_BREAKER = {
   checkWindow: '12 hours',        // 檢查時間窗口
   warnAfter: 3,                   // 連續失敗 3 次 → 警告
@@ -67,23 +70,35 @@ function createSemaphore(limit) {
 }
 
 // ─── Instrumented API fetch ───
-// 回傳 { data, latencyMs, status }
+// 回傳 { data, latencyMs, status } — 429 + 5xx retry with exponential backoff
 async function fetchJSON(url, token) {
-  const start = Date.now();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    });
-    const latencyMs = Date.now() - start;
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    return { data, latencyMs, status: res.status };
-  } finally {
-    clearTimeout(timeout);
+  for (let attempt = 0; attempt <= RETRY_MAX; attempt++) {
+    const start = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+      const latencyMs = Date.now() - start;
+      if (RETRYABLE_STATUS.has(res.status)) {
+        clearTimeout(timeout);
+        if (attempt >= RETRY_MAX) throw new Error(`HTTP ${res.status} (max retries exceeded)`);
+        const waitMs = RETRY_BASE_MS * Math.pow(2, attempt);
+        const label = res.status === 429 ? '429 rate limited' : `${res.status} server error`;
+        console.log(`   ⚠️ ${label}, retry ${attempt + 1}/${RETRY_MAX} after ${waitMs}ms...`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      return { data, latencyMs, status: res.status };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
+  throw new Error('HTTP error (exhausted retries)');
 }
 
 // Get all stores with SayDou IDs
@@ -147,43 +162,73 @@ async function fetchStorecash(token, storeId, startDate, endDate, kpi) {
   return allItems;
 }
 
-// ─── DB Write with timing ───
+// ─── DB Write with batch upsert ───
+const BATCH_SIZE = 50;
+
+function prepareTxRow(tx, storeName, yearMonth, kpi) {
+  const ordcid = tx.ordcid;
+  if (!ordcid) { kpi.nullRecords++; return null; }
+
+  const memnam = tx.memnam || tx.memb?.memnam;
+  if (!memnam) kpi.nullRecords++;
+
+  const items = (tx.ordds || []).map(d => ({
+    godnam: d.godnam, godsid: d.godsid,
+    price: d.rprice || d.price_, gocnam: d.gocnam,
+    workers: (d.work || []).map(w => ({
+      usrsid: w.usrsid, usrnam: w.usrnam,
+      usrcod: (w.usrcod_usrnam || '').split('-')[0],
+      achn: w.achn__, bonus: w.bonus_,
+      pclnam: w.pcls?.pclnam,
+    })),
+    payment: {
+      cash: d.gbmd?.cash || 0, card: d.gbmd?.card || 0,
+      ticket: d.gbmd?.ticket || 0, rpcash: d.gbmd?.rpcash || 0,
+      give: d.gbmd?.give || 0, free: d.gbmd?.free || 0,
+    },
+  }));
+
+  return [
+    ordcid, tx.ordrsn, tx.membid || tx.memb?.membid, memnam,
+    tx.storid, storeName || tx.stor?.stonam,
+    tx.rectim, tx.rprice || 0,
+    tx.cash || 0, tx.card || 0, tx.ticket || 0, tx.rpcash || 0, tx.give || 0, tx.free || 0,
+    tx.remark || '', JSON.stringify(items), JSON.stringify(tx), yearMonth,
+    tx.rectim ? tx.rectim.substring(0, 10) : null,
+    tx.rectim ? tx.rectim.substring(11, 16) : null,
+  ];
+}
+
 async function upsertTransactions(transactions, storeName, yearMonth, kpi) {
   if (DRY_RUN) return transactions.length;
-  let count = 0;
   const writeStart = Date.now();
+  let count = 0;
 
+  // 準備所有 rows
+  const rows = [];
   for (const tx of transactions) {
-    const ordcid = tx.ordcid;
-    if (!ordcid) { kpi.nullRecords++; continue; }
+    const row = prepareTxRow(tx, storeName, yearMonth, kpi);
+    if (row) rows.push(row);
+  }
 
-    // Check for null member name
-    const memnam = tx.memnam || tx.memb?.memnam;
-    if (!memnam) kpi.nullRecords++;
-
-    const items = (tx.ordds || []).map(d => ({
-      godnam: d.godnam, godsid: d.godsid,
-      price: d.rprice || d.price_, gocnam: d.gocnam,
-      workers: (d.work || []).map(w => ({
-        usrsid: w.usrsid, usrnam: w.usrnam,
-        usrcod: (w.usrcod_usrnam || '').split('-')[0],
-        achn: w.achn__, bonus: w.bonus_,
-        pclnam: w.pcls?.pclnam,
-      })),
-      payment: {
-        cash: d.gbmd?.cash || 0, card: d.gbmd?.card || 0,
-        ticket: d.gbmd?.ticket || 0, rpcash: d.gbmd?.rpcash || 0,
-        give: d.gbmd?.give || 0, free: d.gbmd?.free || 0,
-      },
-    }));
-
+  // 批次 upsert
+  const COLS = 20; // 每筆的欄位數
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    const values = [];
+    const placeholders = [];
+    for (let j = 0; j < batch.length; j++) {
+      const offset = j * COLS;
+      placeholders.push(`(${Array.from({length: COLS}, (_, k) => `$${offset + k + 1}`).join(',')},NOW(),FALSE)`);
+      values.push(...batch[j]);
+    }
     try {
       await pool.query(`
-        INSERT INTO saydou_transactions 
+        INSERT INTO saydou_transactions
           (ordcid, ordrsn, membid, memnam, storid, store_name, rectim, rprice,
            cash, card, ticket, rpcash, give, free, remark, items, raw_data, year_month,
            order_date, order_time, updated_at, is_deleted)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW(),FALSE)
+        VALUES ${placeholders.join(',')}
         ON CONFLICT (ordcid) DO UPDATE SET
           rprice=EXCLUDED.rprice, cash=EXCLUDED.cash, card=EXCLUDED.card,
           ticket=EXCLUDED.ticket, rpcash=EXCLUDED.rpcash, give=EXCLUDED.give, free=EXCLUDED.free,
@@ -191,18 +236,32 @@ async function upsertTransactions(transactions, storeName, yearMonth, kpi) {
           items=EXCLUDED.items, raw_data=EXCLUDED.raw_data,
           order_date=EXCLUDED.order_date, order_time=EXCLUDED.order_time,
           synced_at=NOW(), updated_at=NOW(), is_deleted=FALSE
-      `, [
-        ordcid, tx.ordrsn, tx.membid || tx.memb?.membid, memnam,
-        tx.storid, storeName || tx.stor?.stonam,
-        tx.rectim, tx.rprice || 0,
-        tx.cash || 0, tx.card || 0, tx.ticket || 0, tx.rpcash || 0, tx.give || 0, tx.free || 0,
-        tx.remark || '', JSON.stringify(items), JSON.stringify(tx), yearMonth,
-        tx.rectim ? tx.rectim.substring(0, 10) : null,
-        tx.rectim ? tx.rectim.substring(11, 16) : null,
-      ]);
-      count++;
+      `, values);
+      count += batch.length;
     } catch (e) {
-      console.error(`  ⚠️ tx ${ordcid}: ${e.message}`);
+      // batch 失敗時 fallback 到逐筆，不讓整批都丟
+      console.error(`  ⚠️ batch tx error (${batch.length} rows): ${e.message}, falling back...`);
+      for (const row of batch) {
+        try {
+          await pool.query(`
+            INSERT INTO saydou_transactions
+              (ordcid, ordrsn, membid, memnam, storid, store_name, rectim, rprice,
+               cash, card, ticket, rpcash, give, free, remark, items, raw_data, year_month,
+               order_date, order_time, updated_at, is_deleted)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW(),FALSE)
+            ON CONFLICT (ordcid) DO UPDATE SET
+              rprice=EXCLUDED.rprice, cash=EXCLUDED.cash, card=EXCLUDED.card,
+              ticket=EXCLUDED.ticket, rpcash=EXCLUDED.rpcash, give=EXCLUDED.give, free=EXCLUDED.free,
+              memnam=EXCLUDED.memnam, remark=EXCLUDED.remark,
+              items=EXCLUDED.items, raw_data=EXCLUDED.raw_data,
+              order_date=EXCLUDED.order_date, order_time=EXCLUDED.order_time,
+              synced_at=NOW(), updated_at=NOW(), is_deleted=FALSE
+          `, row);
+          count++;
+        } catch (e2) {
+          console.error(`  ⚠️ tx ${row[0]}: ${e2.message}`);
+        }
+      }
     }
   }
 

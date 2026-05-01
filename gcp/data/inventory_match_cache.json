@@ -185,11 +185,6 @@
     "odooName": "超聲波鏟皮機"
   },
   {
-    "sheetName": "光譜儀電源線／",
-    "odooId": 573,
-    "odooName": "光譜儀電源線"
-  },
-  {
     "sheetName": "水潤精華膜(一箱250片)／",
     "odooId": 646,
     "odooName": "水潤精華膜(一箱300片)"
@@ -292,7 +287,7 @@
   {
     "sheetName": "110蒸臉器／",
     "odooId": 402,
-    "odooName": "110蒸臉器"
+    "odooName": "110蒸臉器(熱蒸)"
   },
   {
     "sheetName": "櫃檯燈／",
@@ -441,8 +436,8 @@
   },
   {
     "sheetName": "220熱蒸／",
-    "odooId": 712,
-    "odooName": "熱蒸維修"
+    "odooId": 402,
+    "odooName": "110蒸臉器(熱蒸)"
   },
   {
     "sheetName": "水感潤澤精華霜冬季版(一箱12瓶)／",

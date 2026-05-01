@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>泡泡貓｜我的出勤</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans TC', sans-serif; background: #f5f5f5; color: #333; }
+.container { max-width: 480px; margin: 0 auto; padding: 16px; }
+
+/* Header */
+.header { background: linear-gradient(135deg, #008BD5, #00b4d8); color: #fff; padding: 20px 16px; border-radius: 12px; margin-bottom: 16px; }
+.header h1 { font-size: 20px; margin-bottom: 4px; }
+.header .sub { font-size: 14px; opacity: 0.85; }
+.header .emp-info { margin-top: 8px; font-size: 13px; opacity: 0.9; }
+
+/* Card */
+.card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+
+/* Day row */
+.day-row { border-bottom: 1px solid #f0f0f0; padding: 10px 0; }
+.day-row:last-child { border-bottom: none; }
+.day-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.day-date { font-weight: 600; font-size: 14px; color: #444; }
+.day-weekday { font-size: 12px; color: #888; }
+.day-actions { display: flex; gap: 4px; }
+.punch-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.punch-label { font-size: 13px; color: #666; min-width: 50px; }
+.punch-time { font-size: 15px; font-weight: 500; }
+.punch-time.missing { color: #ccc; cursor: pointer; }
+.punch-time.editable { cursor: pointer; text-decoration: underline dotted #008BD5; color: #008BD5; }
+.punch-time.editable:hover { color: #005f8a; }
+
+/* Makeup badge */
+.badge-makeup { display: inline-block; background: #fff3cd; color: #856404; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-left: 6px; cursor: help; font-weight: 500; }
+.badge-manager { background: #d4edda; color: #155724; }
+
+/* Tooltip */
+.tooltip-wrap { position: relative; display: inline-block; }
+.tooltip-content { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 12px; white-space: nowrap; z-index: 100; margin-bottom: 6px; }
+.tooltip-content::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-top-color: #333; }
+.tooltip-wrap:hover .tooltip-content { display: block; }
+
+/* Button */
+.btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 8px; font-size: 13px; border: none; cursor: pointer; font-weight: 500; transition: all 0.15s; }
+.btn-sm { padding: 4px 8px; font-size: 12px; }
+.btn-primary { background: #008BD5; color: #fff; }
+.btn-primary:hover { background: #006fa3; }
+.btn-outline { background: transparent; color: #008BD5; border: 1px solid #008BD5; }
+.btn-outline:hover { background: #008BD510; }
+
+/* Modal */
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.45); z-index: 200; justify-content: center; align-items: center; }
+.modal-overlay.active { display: flex; }
+.modal { background: #fff; border-radius: 16px; padding: 24px; width: 90%; max-width: 400px; }
+.modal h3 { font-size: 17px; margin-bottom: 16px; }
+.form-group { margin-bottom: 14px; }
+.form-group label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; font-weight: 500; }
+.form-group input, .form-group select, .form-group textarea { width: 100%; padding: 10px 12px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 14px; font-family: inherit; }
+.form-group textarea { resize: vertical; min-height: 60px; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: #008BD5; outline: none; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+.btn-cancel { background: #eee; color: #666; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.btn-submit { background: #008BD5; color: #fff; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
+.btn-submit:disabled { background: #ccc; cursor: not-allowed; }
+
+/* Status */
+.status-msg { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; display: none; }
+.status-msg.success { display: block; background: #d4edda; color: #155724; }
+.status-msg.error { display: block; background: #f8d7da; color: #721c24; }
+
+/* Loading */
+.loading { text-align: center; padding: 40px; color: #999; }
+.loading::after { content: ''; display: inline-block; width: 20px; height: 20px; border: 2px solid #ddd; border-top-color: #008BD5; border-radius: 50%; animation: spin 0.7s linear infinite; margin-left: 8px; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Auth screen */
+.auth-screen { text-align: center; padding: 60px 20px; }
+.auth-screen p { color: #666; margin-bottom: 20px; }
+
+/* Responsive tooltip */
+@media (max-width: 480px) {
+  .tooltip-content { white-space: normal; min-width: 200px; }
+}
+</style>
+</head>
+<body>
+<div class="container" id="app">
+  <!-- Auth check -->
+  <div class="auth-screen" id="authScreen">
+    <h2>🐱 泡泡貓出勤系統</h2>
+    <p>正在驗證身份...</p>
+    <div class="loading">載入中</div>
+  </div>
+</div>
+
+<!-- Makeup punch modal -->
+<div class="modal-overlay" id="makeupModal">
+  <div class="modal">
+    <h3 id="modalTitle">📝 補打卡</h3>
+    <div id="modalStatus" class="status-msg"></div>
+    <form id="makeupForm" onsubmit="return false;">
+      <input type="hidden" id="fEditType" value="add">
+      <input type="hidden" id="fCheckType" value="">
+      <input type="hidden" id="fDate" value="">
+      <div class="form-group">
+        <label>日期</label>
+        <input type="text" id="fDateDisplay" readonly style="background:#f5f5f5;">
+      </div>
+      <div class="form-group">
+        <label>類型</label>
+        <input type="text" id="fTypeDisplay" readonly style="background:#f5f5f5;">
+      </div>
+      <div class="form-group">
+        <label>時間 <span style="color:#c00;">*</span></label>
+        <input type="time" id="fTime" required>
+      </div>
+      <div class="form-group">
+        <label>原因 <span style="color:#c00;">*</span></label>
+        <textarea id="fReason" placeholder="請填寫補打卡原因（至少2個字）" required></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-cancel" onclick="closeModal()">取消</button>
+        <button type="submit" class="btn-submit" id="btnSubmit" onclick="submitMakeup()">提交</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const API_BASE = '__API_BASE__';
+let currentUser = null;
+
+// Get line_user_id from URL hash or query
+function getLineUserId() {
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = params.get('uid') || params.get('line_user_id');
+  if (fromQuery) return fromQuery;
+  const hash = window.location.hash.replace('#', '');
+  if (hash && hash.startsWith('U')) return hash;
+  return null;
+}
+
+// Weekday names
+const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+
+async function init() {
+  const uid = getLineUserId();
+  if (!uid) {
+    document.getElementById('authScreen').innerHTML = `
+      <h2>🐱 泡泡貓出勤系統</h2>
+      <p style="color:#c00;">無法識別身份，請從 LINE 開啟此頁面</p>
+    `;
+    return;
+  }
+
+  try {
+    const resp = await fetch(`${API_BASE}/attendance-api?action=my-attendance&line_user_id=${uid}&days=7`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '載入失敗');
+    
+    currentUser = { line_user_id: uid, ...data.employee };
+    renderDashboard(data);
+  } catch (e) {
+    document.getElementById('authScreen').innerHTML = `
+      <h2>🐱 泡泡貓出勤系統</h2>
+      <p style="color:#c00;">${e.message}</p>
+    `;
+  }
+}
+
+function renderDashboard(data) {
+  const app = document.getElementById('app');
+  const emp = data.employee;
+  
+  let html = `
+    <div class="header">
+      <h1>🐱 我的出勤</h1>
+      <div class="sub">近 7 天打卡記錄</div>
+      <div class="emp-info">👤 ${emp.name}　📍 ${emp.store_name || '-'}</div>
+    </div>
+    <div id="statusMsg" class="status-msg"></div>
+    <div class="card">
+      <div class="card-title">📋 打卡記錄</div>
+  `;
+
+  for (const day of data.days) {
+    const d = new Date(day.date + 'T00:00:00+08:00');
+    const weekday = WEEKDAYS[d.getDay()];
+    const isToday = day.date === new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+    
+    const inRecord = day.records.find(r => r.check_type === 'in');
+    const outRecord = day.records.find(r => r.check_type === 'out');
+    
+    html += `<div class="day-row">
+      <div class="day-header">
+        <div>
+          <span class="day-date">${day.date.slice(5)} (${weekday})</span>
+          ${isToday ? '<span style="color:#008BD5;font-size:12px;margin-left:6px;">今天</span>' : ''}
+        </div>
+      </div>
+      <div class="punch-row">
+        <span class="punch-label">☀️ 上班</span>
+        ${renderPunchTime(inRecord, day.date, 'in')}
+      </div>
+      <div class="punch-row">
+        <span class="punch-label">🌙 下班</span>
+        ${renderPunchTime(outRecord, day.date, 'out')}
+      </div>
+    </div>`;
+  }
+
+  html += '</div>';
+  
+  // Legend
+  html += `
+    <div class="card" style="padding:12px 16px;">
+      <div style="font-size:12px;color:#888;">
+        <span class="badge-makeup" style="cursor:default;">補</span> 員工自行補打卡
+        <span class="badge-makeup badge-manager" style="cursor:default;margin-left:8px;">改</span> 店長修改
+        <span style="margin-left:8px;">點擊 <span style="text-decoration:underline dotted #008BD5;color:#008BD5;">時間</span> 或 <span style="color:#ccc;">-</span> 可補打卡</span>
+      </div>
+    </div>
+  `;
+
+  app.innerHTML = html;
+}
+
+function renderPunchTime(record, date, checkType) {
+  if (!record) {
+    // No record — show dash that can be clicked to add
+    return `<span class="punch-time missing" onclick="openAddModal('${date}', '${checkType}')">-</span>
+            <button class="btn btn-sm btn-outline" onclick="openAddModal('${date}', '${checkType}')">補</button>`;
+  }
+
+  let badges = '';
+  if (record.is_makeup || record.source === 'employee_makeup') {
+    const editInfo = record.edits && record.edits.length > 0 ? record.edits[record.edits.length - 1] : null;
+    const tooltip = editInfo
+      ? `原時間：${editInfo.old_time || '-'}&#10;原因：${editInfo.edit_reason || '-'}&#10;修改者：${editInfo.editor_name || '-'}`
+      : '員工自行補打卡';
+    badges += `<span class="tooltip-wrap"><span class="badge-makeup">補</span><span class="tooltip-content">${tooltip}</span></span>`;
+  }
+  if (record.is_edited && record.edits) {
+    for (const edit of record.edits) {
+      if (edit.edit_source === 'manager_edit') {
+        const tooltip = `原時間：${edit.old_time || '-'}&#10;原因：${edit.edit_reason || '-'}&#10;修改者：${edit.editor_name || '-'}`;
+        badges += `<span class="tooltip-wrap"><span class="badge-makeup badge-manager">改</span><span class="tooltip-content">${tooltip}</span></span>`;
+      }
+    }
+  }
+
+  return `<span class="punch-time editable" onclick="openEditModal('${date}', '${checkType}', '${record.time}')">${record.time}</span>${badges}`;
+}
+
+function openAddModal(date, checkType) {
+  document.getElementById('fEditType').value = 'add';
+  document.getElementById('fCheckType').value = checkType;
+  document.getElementById('fDate').value = date;
+  document.getElementById('fDateDisplay').value = date;
+  document.getElementById('fTypeDisplay').value = checkType === 'in' ? '上班打卡' : '下班打卡';
+  document.getElementById('fTime').value = checkType === 'in' ? '10:30' : '20:00';
+  document.getElementById('fReason').value = '';
+  document.getElementById('modalTitle').textContent = '📝 新增補打卡';
+  document.getElementById('modalStatus').className = 'status-msg';
+  document.getElementById('modalStatus').textContent = '';
+  document.getElementById('btnSubmit').disabled = false;
+  document.getElementById('makeupModal').classList.add('active');
+}
+
+function openEditModal(date, checkType, currentTime) {
+  document.getElementById('fEditType').value = 'edit';
+  document.getElementById('fCheckType').value = checkType;
+  document.getElementById('fDate').value = date;
+  document.getElementById('fDateDisplay').value = date;
+  document.getElementById('fTypeDisplay').value = (checkType === 'in' ? '上班' : '下班') + ' (目前: ' + currentTime + ')';
+  document.getElementById('fTime').value = currentTime;
+  document.getElementById('fReason').value = '';
+  document.getElementById('modalTitle').textContent = '✏️ 修改打卡時間';
+  document.getElementById('modalStatus').className = 'status-msg';
+  document.getElementById('modalStatus').textContent = '';
+  document.getElementById('btnSubmit').disabled = false;
+  document.getElementById('makeupModal').classList.add('active');
+}
+
+function closeModal() {
+  document.getElementById('makeupModal').classList.remove('active');
+}
+
+async function submitMakeup() {
+  const btn = document.getElementById('btnSubmit');
+  const statusEl = document.getElementById('modalStatus');
+  btn.disabled = true;
+  statusEl.className = 'status-msg';
+  statusEl.textContent = '';
+
+  const payload = {
+    line_user_id: currentUser.line_user_id,
+    date: document.getElementById('fDate').value,
+    time: document.getElementById('fTime').value,
+    reason: document.getElementById('fReason').value.trim(),
+    edit_type: document.getElementById('fEditType').value,
+    check_type: document.getElementById('fCheckType').value || undefined,
+  };
+
+  if (!payload.reason || payload.reason.length < 2) {
+    statusEl.className = 'status-msg error';
+    statusEl.textContent = '請填寫修改原因（至少2個字）';
+    btn.disabled = false;
+    return;
+  }
+
+  try {
+    const resp = await fetch(`${API_BASE}/attendance-api?action=makeup-punch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '提交失敗');
+
+    statusEl.className = 'status-msg success';
+    statusEl.textContent = '✅ ' + data.message;
+
+    // Refresh after brief delay
+    setTimeout(() => {
+      closeModal();
+      init();
+      // Show success on main page
+      setTimeout(() => {
+        const mainStatus = document.getElementById('statusMsg');
+        if (mainStatus) {
+          mainStatus.className = 'status-msg success';
+          mainStatus.textContent = '✅ ' + data.message;
+          setTimeout(() => { mainStatus.className = 'status-msg'; }, 3000);
+        }
+      }, 300);
+    }, 1000);
+
+  } catch (e) {
+    statusEl.className = 'status-msg error';
+    statusEl.textContent = '❌ ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+// Close modal on overlay click
+document.getElementById('makeupModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+// Init
+init();
+</script>
+</body>
+</html>

@@ -17,6 +17,7 @@ const { google } = require('googleapis');
 const pg = require('pg');
 const fs = require('fs');
 const { odooCall } = require('../lib/odoo.cjs');
+const { StoreGroupResolver } = require('../lib/store-group.cjs');
 
 // ─── Config ───
 const ACH_SHEET_ID = '17hX7CjeDj2xdKBIt9TKG6iJF5lB38uXwj2kdhb4oIQE';
@@ -100,12 +101,14 @@ async function main() {
     return;
   }
 
-  // 2. Get SayDou token from Sheet
-  const tokenRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: STORED_VALUE_SHEET_ID,
-    range: `'預約表單'!C2`,
-  });
-  const saydouToken = tokenRes.data.values?.[0]?.[0];
+  // 2. Get SayDou token from file (no longer depends on Google Sheets)
+  const TOKEN_FILE = require('path').join(process.env.HOME || '', '.openclaw/workspace/booking-site/.saydou-token');
+  let saydouToken;
+  try {
+    saydouToken = require('fs').readFileSync(TOKEN_FILE, 'utf8').trim();
+  } catch (e) {
+    saydouToken = null;
+  }
   if (!saydouToken) {
     const errMsg = '🚨 SayDou token 不存在！無法拉儲值金資料。';
     console.error(errMsg);
@@ -138,7 +141,7 @@ async function main() {
   const { rows: storePayees } = await pool.query(`
     SELECT s.id as store_id, s.store_name, s.saydou_id, s.store_type, p.id as payee_id, p.code as payee_code
     FROM stores s
-    JOIN payees p ON (p.store_id = s.id OR p.id = s.payee_id)
+    JOIN payees p ON p.id = s.payee_id
     WHERE s.is_active = true AND s.saydou_id IS NOT NULL AND p.is_active = true
       AND s.store_type NOT IN ('direct', 'other')
     ORDER BY s.store_name
@@ -199,7 +202,11 @@ async function main() {
       const txData = d3.data || d3;
       const card = txData.card || 0;
       const coupon = txData.coupon || 0;
-      const ticket = d4.data?.summary?.buy || 0;
+      // ticket: 僅計算「儲值金購買」的票券，排除現金/贈送/免費
+      // buy = 所有購買方式總額, buyActual = 非儲值金購買（現金等）
+      const ticketTotal = d4.data?.summary?.buy || 0;
+      const ticketNonCard = d4.data?.summary?.buyActual || 0;
+      const ticket = ticketTotal - ticketNonCard;
 
       const balance = addTotal - card - coupon - ticket;
 
@@ -369,7 +376,108 @@ async function main() {
     }
   }
 
-  // 6. Send TG summary
+  // 6. Send LINE Flex notifications (SO + PO)
+  const PAOPAO_LINE_TOKEN = process.env.LINE_TOKEN_PAOPAO || '';
+  if (PAOPAO_LINE_TOKEN && created.length > 0 && !dryRun) {
+    try {
+      const resolver = new StoreGroupResolver(pool);
+      await resolver.init();
+      let lineSent = 0;
+
+      function buildStoredValueBubble(orderName, orderId, storeName, amt, lines, isPO) {
+        const themeColor = isPO ? '#E74C3C' : '#1DB446';
+        const title = isPO ? '\ud83d\udc31 \u5132\u503c\u91d1\u5c0d\u5e33' : '\ud83d\udc31 \u8acb\u6b3e\u63d0\u9192';
+        const confirmAction = isPO ? 'po_confirm' : 'so_confirm';
+        const cancelAction = isPO ? 'po_dispute' : 'so_cancel';
+        const cancelLabel = isPO ? '\u6709\u554f\u984c' : '\u53d6\u6d88';
+        const footerText = isPO
+          ? `\u7e3d\u516c\u53f8\u5c07\u532f\u6b3e\uff1a$${Math.abs(amt).toLocaleString()} \u5143`
+          : `ACH \u5c07\u81ea\u52d5\u6263\u6b3e\uff1a$${amt.toLocaleString()} \u5143`;
+        const itemContents = lines.filter(l => l.price_subtotal !== 0).map(l => ({
+          type: 'box', layout: 'horizontal', margin: 'sm',
+          contents: [
+            { type: 'text', text: (l.name || '').replace(/\n/g, ' '), size: 'xs', color: '#555555', wrap: true, flex: 5 },
+            { type: 'text', text: 'x1', size: 'xs', color: '#888888', flex: 1, align: 'center' },
+            { type: 'text', text: `$${Math.round(l.price_subtotal).toLocaleString()}`, size: 'xs', color: '#333333', flex: 2, align: 'end' }
+          ]
+        }));
+        return {
+          type: 'bubble',
+          header: { type: 'box', layout: 'vertical', contents: [
+            { type: 'text', text: title, weight: 'bold', color: themeColor, size: 'sm' },
+            { type: 'text', text: `\u55ae\u865f: ${orderName}`, size: 'xs', color: '#aaaaaa', margin: 'xs' }
+          ]},
+          body: { type: 'box', layout: 'vertical', contents: [
+            { type: 'text', text: storeName || '\u5e97\u5bb6', weight: 'bold', size: 'md' },
+            { type: 'separator', margin: 'md' },
+            { type: 'box', layout: 'vertical', margin: 'md', spacing: 'sm', contents: itemContents.length ? itemContents : [{ type: 'text', text: `$${Math.abs(amt).toLocaleString()}`, size: 'sm', color: '#333333' }] },
+            { type: 'separator', margin: 'md' },
+            { type: 'box', layout: 'vertical', margin: 'md', contents: [
+              { type: 'text', text: '\u5982\u679c\u4ee5\u4e0a\u5167\u5bb9\u6b63\u78ba\uff0c\u8acb\u9ede\u64ca\u4e0b\u65b9\u6309\u9215\u78ba\u8a8d\u3002', size: 'xs', color: '#888888', wrap: true },
+              { type: 'text', text: footerText, size: 'sm', weight: 'bold', margin: 'xs', color: '#333333' }
+            ]}
+          ]},
+          footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+            { type: 'button', style: 'primary', color: themeColor, height: 'sm',
+              action: { type: 'postback', label: '\u6b63\u78ba', data: `action=${confirmAction}&orderId=${orderId}&orderName=${orderName}` } },
+            { type: 'button', style: 'link', color: '#e53935', height: 'sm',
+              action: { type: 'postback', label: cancelLabel, data: `action=${cancelAction}&orderId=${orderId}&orderName=${orderName}` } }
+          ]}
+        };
+      }
+
+      // Group by LINE group
+      const groupBubbles = {};
+      for (const c of created) {
+        const storeRow = results.find(r => r.store_name.includes(c.store) || c.store.includes(r.store_name.replace('\u6ce1\u6ce1\u8c93\uff5c', '').replace('\u5e97', '')));
+        if (!storeRow) continue;
+        const mapping = await resolver.resolve(storeRow.odoo_partner_id, storeRow.store_name);
+        if (!mapping) { console.log(`  \u23ed\ufe0f LINE: ${c.odoo} (${c.store}) \u627e\u4e0d\u5230\u7fa4\u7d44`); continue; }
+
+        const isPO = c.amount < 0;
+        const model = isPO ? 'purchase.order' : 'sale.order';
+        const lineModel = isPO ? 'purchase.order.line' : 'sale.order.line';
+        let orderId, lines = [];
+        try {
+          const orders = await odooCall(model, 'search_read', [[['name', '=', c.odoo]]], { fields: ['id', 'order_line'] });
+          if (orders.length) {
+            orderId = orders[0].id;
+            lines = await odooCall(lineModel, 'read', [orders[0].order_line], { fields: ['name', 'price_subtotal'] });
+          }
+        } catch(e) { /* ignore, will use fallback */ }
+
+        const storeName = (mapping.storeName || c.store).replace('\u6ce1\u6ce1\u8c93\uff5c', '');
+        const bubble = buildStoredValueBubble(c.odoo, orderId, storeName, c.amount, lines, isPO);
+        if (!groupBubbles[mapping.groupId]) groupBubbles[mapping.groupId] = [];
+        groupBubbles[mapping.groupId].push({ bubble, storeName, orderName: c.odoo });
+      }
+
+      // Send
+      for (const [groupId, items] of Object.entries(groupBubbles)) {
+        const storeNames = [...new Set(items.map(i => i.storeName))].join('/');
+        const flexContent = items.length === 1 ? items[0].bubble : { type: 'carousel', contents: items.map(i => i.bubble) };
+        try {
+          const res = await fetch('https://api.line.me/v2/bot/message/push', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${PAOPAO_LINE_TOKEN}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ to: groupId, messages: [{ type: 'flex', altText: `\ud83d\udc31 \u6ce1\u6ce1\u8c93\u5132\u503c\u91d1\u5c0d\u5e33 - ${storeNames}`, contents: flexContent }] })
+          });
+          if (res.ok) {
+            lineSent += items.length;
+            console.log(`  \u2705 LINE: ${items.map(i => i.orderName).join(', ')} \u2192 ${storeNames}`);
+          } else {
+            console.error(`  \u274c LINE: ${storeNames} \u767c\u9001\u5931\u6557: ${await res.text()}`);
+          }
+        } catch(e) { console.error(`  \u274c LINE: ${storeNames} \u932f\u8aa4: ${e.message}`); }
+        await new Promise(r => setTimeout(r, 300));
+      }
+      console.log(`[stored-value] LINE \u901a\u77e5: ${lineSent} \u7b46`);
+    } catch(lineErr) {
+      console.error('[stored-value] LINE \u901a\u77e5\u932f\u8aa4:', lineErr.message);
+    }
+  }
+
+  // 7. Send TG summary
   const soCount = created.filter(c => c.amount >= 0).length;
   const poCount = created.filter(c => c.amount < 0).length;
   const totalAmount = created.reduce((sum, c) => sum + c.amount, 0);

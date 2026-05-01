@@ -44,7 +44,7 @@ async function odooAuth() {
   return _odooUid;
 }
 
-async function odooCall(model, method, args, kwargs = {}) {
+async function odooCall(model, method, args, kwargs = {}, _retried = false) {
   const cfg = getOdooConfig();
   const uid = await odooAuth();
   const res = await fetch(`${cfg.url}/jsonrpc`, {
@@ -61,7 +61,18 @@ async function odooCall(model, method, args, kwargs = {}) {
     }),
   });
   const json = await res.json();
-  if (json.error) throw new Error(JSON.stringify(json.error));
+  if (json.error) {
+    const errStr = JSON.stringify(json.error);
+    // Session 過期或認證失敗 → 自動 re-auth 一次
+    if (!_retried && (errStr.includes('Session') || errStr.includes('session') ||
+        errStr.includes('AccessDenied') || errStr.includes('Odoo Server Error') ||
+        errStr.includes('INVALID_CSRF'))) {
+      console.warn(`[odoo] 認證失敗，重新驗證: ${errStr.substring(0, 80)}`);
+      resetOdooAuth();
+      return odooCall(model, method, args, kwargs, true);
+    }
+    throw new Error(errStr);
+  }
   return json.result;
 }
 

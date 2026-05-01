@@ -8,7 +8,8 @@
 
 import { getAuth } from '../lib/auth.js';
 import { readSheet, batchUpdateValues } from '../lib/sheets.js';
-import { getOdooInvoice, issueInvoice } from '../api/core-api.js';
+import { getOdooInvoice } from '../api/core-api.js';
+import { getUnifiedInvoiceService } from '../lib/unified-invoice.cjs';
 
 const ACH_SHEET_NAME = '2026/ACH紀錄';
 const STORE_SHEET_NAME = '店家基本資訊';
@@ -64,6 +65,17 @@ export async function run() {
     const invoiceNumber = row[13];
     const odooNumber = row[14];
     const buytype = String(row[4] ?? '').trim() || '請款';
+    const feeType = buytype; // E 欄位就是 fee_type
+    const description = String(row[2] ?? '').trim(); // 描述欄位
+
+    // ⚠️ 儲值金不開發票，直接跳過（多重判斷確保不會遺漏）
+    if (feeType === '儲值金' || 
+        description.includes('儲值金') || 
+        description.includes('月儲') ||
+        buytype === '儲值金') {
+      console.log(`[billing-issue-invoice] 列 ${i + 2} 儲值金記錄跳過開發票 (${odooNumber}) - feeType: ${feeType}, desc: ${description}`);
+      continue;
+    }
 
     if (achBank !== true || !odooNumber || (invoiceNumber && String(invoiceNumber).trim() !== '')) {
       continue;
@@ -116,11 +128,33 @@ export async function run() {
 
     console.log(`[billing-issue-invoice] 列 ${i + 2} 開票 storeCode=${storeCode} odooNumber=${odooNumber}`);
 
-    const result = await issueInvoice({ storeInfo, odooNumber, buyType: buytype, items });
-    const data = result?.data || result;
-    const ok = data && data.success === 'true';
-    const code = ok ? (data.code || '') : '';
-    const msg = ok ? '' : (data?.msg != null ? String(data.msg) : '開立發票失敗');
+    // 🎯 使用統一開票服務
+    const unifiedInvoice = getUnifiedInvoiceService();
+    let code = '';
+    let msg = '';
+    
+    try {
+      const result = await unifiedInvoice.issueInvoice({
+        buyerTaxId: storeInfo.taxId,
+        buyerName: storeInfo.name,
+        amount: storeInfo.amount || 0,
+        items: items || [{ name: buytype, money: storeInfo.amount || 0, number: 1 }],
+        content: `${buytype} - ${odooNumber}`,
+        buyType: buytype, // 用於儲值金檢查
+        callerInfo: {
+          user: 'system',
+          script: 'billing-issue-invoice',
+          function: 'processRow'
+        }
+      });
+      
+      code = result.invoiceNo || '';
+      msg = '';
+    } catch (error) {
+      code = '';
+      msg = error.message || '開立發票失敗';
+      console.error(`[billing-issue-invoice] 列 ${i + 2} 開票失敗:`, error.message);
+    }
 
     updates.push(
       { range: `'${ACH_SHEET_NAME}'!N${i + 2}`, values: [[code]] },

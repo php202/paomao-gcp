@@ -119,6 +119,31 @@ check_memory() {
   fi
 }
 
+# ─── 6. TCP Port 健康度 ───
+check_tcp_ports() {
+  local tw_count=$(netstat -an 2>/dev/null | grep -c TIME_WAIT)
+  local warn_threshold=5000
+  local critical_threshold=10000
+  
+  if [ "$tw_count" -gt "$critical_threshold" ]; then
+    log "🚨 TCP TIME_WAIT 嚴重: ${tw_count} (>$critical_threshold)"
+    ISSUES+=("🚨 TCP port exhaustion 風險! TIME_WAIT: ${tw_count}，系統可能即將無法建立新連線")
+    
+    # 自動降低 MSL 緊急應對
+    local current_msl=$(sysctl -n net.inet.tcp.msl 2>/dev/null)
+    if [ "$current_msl" -gt 5000 ]; then
+      log "⚡ 嘗試自動降低 MSL: ${current_msl} → 1000"
+      sysctl -w net.inet.tcp.msl=1000 2>/dev/null && \
+        FIXED+=("TCP MSL 已自動從 ${current_msl} 降至 1000")
+    fi
+  elif [ "$tw_count" -gt "$warn_threshold" ]; then
+    log "⚠️ TCP TIME_WAIT 偏高: ${tw_count} (>$warn_threshold)"
+    ISSUES+=("TCP TIME_WAIT 偏高: ${tw_count}，請注意 port exhaustion 風險")
+  else
+    log "✅ TCP: ${tw_count} TIME_WAIT"
+  fi
+}
+
 # ═══ 執行所有檢查 ═══
 log "========== 監控開始 =========="
 
@@ -131,6 +156,7 @@ check_postgres
 check_tunnel
 check_disk
 check_memory
+check_tcp_ports
 
 # ═══ 結果彙整 ═══
 if [ ${#ISSUES[@]} -eq 0 ]; then

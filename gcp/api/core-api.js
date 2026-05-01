@@ -585,6 +585,29 @@ export async function issueInvoice({ storeInfo, odooNumber, buyType, items }) {
   const safeItems = Array.isArray(items) ? items : [];
   const itemCount = safeItems.length;
   console.log('[issueInvoice] 請求 odooNumber=%s buyType=%s company=%s items=%s', odoo, String(buyType || ''), company, itemCount);
+  
+  // ⚠️ 儲值金防護：絕對不開發票（core-api.js 層級檢查）
+  const isStoredValue = (
+    String(buyType || '').includes('儲值金') ||
+    String(buyType || '').includes('儲值') ||
+    String(buyType || '').includes('月儲') ||
+    String(odoo || '').toLowerCase().includes('stored') ||
+    String(company || '').includes('儲值') ||
+    (safeItems || []).some(item => 
+      String(item.name || '').includes('儲值金') ||
+      String(item.name || '').includes('儲值')
+    )
+  );
+  
+  if (isStoredValue) {
+    console.warn('[issueInvoice] ❌ 儲值金記錄拒絕開發票 (core-api.js 防護):', {
+      odooNumber: odoo,
+      buyType,
+      company,
+      items: safeItems.map(i => i.name).join(', ')
+    });
+    return { status: 'error', message: '儲值金不開發票（系統防護）', blocked: true };
+  }
 
   if (!GIVEME_IDNO || !GIVEME_PASSWORD || !GIVEME_UNCODE) {
     console.error('[issueInvoice] Giveme 設定未完成');

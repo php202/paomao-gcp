@@ -1,0 +1,6 @@
+[2026-04-20T18:58+08:00] SYNC FAILED - killed by timeout
+  - Heavy 429 rate limiting from SayDou API
+  - Failed stores: 北屯潭子店(2643), unknown(1437)
+  - Multiple stores still retrying when process was SIGTERM'd
+  - ~18/38 stores completed before failure
+  - Suggestion: reduce concurrency or increase retry backoff

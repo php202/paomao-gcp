@@ -1,28 +1,32 @@
 import fetch from 'node-fetch';
-import { readSheet } from './sheets.js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
-const TOKEN_SHEET_NAME = '預約表單';
-const TOKEN_CELL = 'C2';
+/** Token 檔案路徑（唯一來源，不再依賴 Google Sheets） */
+const TOKEN_FILE = join(process.env.HOME || '', '.openclaw/workspace/booking-site/.saydou-token');
 
-/** 從試算表讀取的 Token 快取 TTL（5 分鐘），減少 Google Sheets Read 配額消耗（查空位等會多次呼叫 getBearerToken） */
-const TOKEN_FROM_SHEET_CACHE_TTL_MS = 5 * 60 * 1000;
-let tokenFromSheetCache = { value: '', expiresAt: 0 };
+/** Token 快取 TTL（5 分鐘） */
+const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
+let tokenCache = { value: '', expiresAt: 0 };
 
-/** 清除試算表 Token 快取（例如收到 401 後讓下次請求重新讀取）。env SAYDOU_BEARER_TOKEN 不受影響。 */
+/** 清除 Token 快取（例如收到 401 後讓下次請求重新讀取檔案） */
 export function invalidateTokenCache() {
-  tokenFromSheetCache = { value: '', expiresAt: 0 };
+  tokenCache = { value: '', expiresAt: 0 };
 }
 
-/** 從 env 或試算表取得 Bearer Token。若從試算表讀取會短期快取以降低 Sheets API Read 配額。 */
-export async function getBearerToken(auth) {
+/** 從 env 或 token 檔案取得 Bearer Token。不再依賴 Google Sheets。 */
+export async function getBearerToken(_auth) {
   if (process.env.SAYDOU_BEARER_TOKEN?.trim()) return process.env.SAYDOU_BEARER_TOKEN.trim();
   const now = Date.now();
-  if (tokenFromSheetCache.value && tokenFromSheetCache.expiresAt > now) return tokenFromSheetCache.value;
-  const ssId = process.env.TOKEN_SHEET_SS_ID || '1-t4KPVK-uzJ2xUoy_NR3d4XcUohLHVETEFXTlvj4baE';
-  const vals = await readSheet(auth, ssId, `'${TOKEN_SHEET_NAME}'!${TOKEN_CELL}`);
-  const token = (vals[0]?.[0] ?? '').toString().trim();
-  tokenFromSheetCache = { value: token, expiresAt: now + TOKEN_FROM_SHEET_CACHE_TTL_MS };
-  return token;
+  if (tokenCache.value && tokenCache.expiresAt > now) return tokenCache.value;
+  try {
+    const token = readFileSync(TOKEN_FILE, 'utf8').trim();
+    tokenCache = { value: token, expiresAt: now + TOKEN_CACHE_TTL_MS };
+    return token;
+  } catch (e) {
+    console.error('[saydou] 無法讀取 token 檔案:', TOKEN_FILE, e.message);
+    return '';
+  }
 }
 
 const TEST_URL = 'https://saywebdatafeed.saydou.com/api/management/unearn/memberStorecash?page=0&limit=1&sort=stcash&order=desc&keyword=0&showGroup=0&tabIndex=0';

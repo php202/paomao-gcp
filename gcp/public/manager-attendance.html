@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>泡泡貓｜門市出勤管理</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans TC', sans-serif; background: #f5f5f5; color: #333; }
+.container { max-width: 640px; margin: 0 auto; padding: 16px; }
+.header { background: linear-gradient(135deg, #5a3e2b, #8b6914); color: #fff; padding: 20px 16px; border-radius: 12px; margin-bottom: 16px; }
+.header h1 { font-size: 20px; margin-bottom: 4px; }
+.header .sub { font-size: 14px; opacity: 0.85; }
+
+.card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+
+/* Controls */
+.controls { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+.controls input, .controls select { padding: 8px 12px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 14px; }
+.btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 14px; border-radius: 8px; font-size: 13px; border: none; cursor: pointer; font-weight: 500; }
+.btn-primary { background: #5a3e2b; color: #fff; }
+.btn-primary:hover { background: #3e2a1c; }
+
+/* Attendance table */
+.att-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.att-table th { background: #f8f8f8; padding: 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #eee; }
+.att-table td { padding: 8px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+.att-table tr:hover { background: #fafafa; }
+
+.time-cell { cursor: pointer; color: #5a3e2b; text-decoration: underline dotted; }
+.time-cell:hover { color: #000; }
+.time-missing { color: #ccc; }
+
+.badge-makeup { display: inline-block; background: #fff3cd; color: #856404; font-size: 10px; padding: 1px 5px; border-radius: 3px; margin-left: 4px; cursor: help; }
+.badge-manager { background: #d4edda; color: #155724; }
+
+.tooltip-wrap { position: relative; display: inline-block; }
+.tooltip-content { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 11px; white-space: nowrap; z-index: 100; margin-bottom: 6px; }
+.tooltip-content::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: #333; }
+.tooltip-wrap:hover .tooltip-content { display: block; }
+
+/* Audit log */
+.log-item { padding: 10px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+.log-item:last-child { border-bottom: none; }
+.log-meta { color: #888; font-size: 11px; margin-top: 4px; }
+.log-source { font-size: 11px; padding: 2px 6px; border-radius: 3px; }
+.log-source.emp { background: #fff3cd; color: #856404; }
+.log-source.mgr { background: #d4edda; color: #155724; }
+
+/* Tabs */
+.tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid #eee; }
+.tab { padding: 10px 18px; cursor: pointer; font-size: 14px; font-weight: 500; color: #888; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+.tab.active { color: #5a3e2b; border-bottom-color: #5a3e2b; }
+
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.status-msg { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; display: none; }
+.status-msg.success { display: block; background: #d4edda; color: #155724; }
+.status-msg.error { display: block; background: #f8d7da; color: #721c24; }
+.loading { text-align: center; padding: 30px; color: #999; }
+
+/* Manager edit modal */
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.45); z-index: 200; justify-content: center; align-items: center; }
+.modal-overlay.active { display: flex; }
+.modal { background: #fff; border-radius: 16px; padding: 24px; width: 90%; max-width: 400px; }
+.modal h3 { font-size: 17px; margin-bottom: 16px; }
+.form-group { margin-bottom: 14px; }
+.form-group label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+.form-group input, .form-group textarea { width: 100%; padding: 10px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 14px; font-family: inherit; }
+.form-group textarea { resize: vertical; min-height: 60px; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+.btn-cancel { background: #eee; color: #666; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.btn-submit { background: #5a3e2b; color: #fff; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
+.btn-submit:disabled { background: #ccc; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🏪 門市出勤管理</h1>
+    <div class="sub" id="headerSub">載入中...</div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('attendance')">📋 今日出勤</div>
+    <div class="tab" onclick="switchTab('audit')">🧾 補打卡審計</div>
+  </div>
+
+  <div id="statusMsg" class="status-msg"></div>
+
+  <!-- Attendance Tab -->
+  <div class="tab-content active" id="tab-attendance">
+    <div class="card">
+      <div class="controls">
+        <input type="date" id="attDate" onchange="loadAttendance()">
+        <select id="attStore" onchange="loadAttendance()"></select>
+      </div>
+      <div id="attContent"><div class="loading">載入中...</div></div>
+    </div>
+  </div>
+
+  <!-- Audit Tab -->
+  <div class="tab-content" id="tab-audit">
+    <div class="card">
+      <div class="controls">
+        <input type="month" id="auditMonth" onchange="loadAuditLog()">
+        <button class="btn btn-primary" onclick="loadAuditLog()">查詢</button>
+      </div>
+      <div class="card-title">🧾 補打卡審計記錄</div>
+      <div id="auditContent"><div class="loading">載入中...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Manager edit modal -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal">
+    <h3>✏️ 修改打卡時間</h3>
+    <div id="editModalStatus" class="status-msg"></div>
+    <form onsubmit="return false;">
+      <input type="hidden" id="editRecordId">
+      <div class="form-group">
+        <label>員工</label>
+        <input type="text" id="editEmpName" readonly style="background:#f5f5f5;">
+      </div>
+      <div class="form-group">
+        <label>類型</label>
+        <input type="text" id="editType" readonly style="background:#f5f5f5;">
+      </div>
+      <div class="form-group">
+        <label>新時間 *</label>
+        <input type="time" id="editTime" required>
+      </div>
+      <div class="form-group">
+        <label>修改原因</label>
+        <textarea id="editReason" placeholder="請填寫修改原因"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-cancel" onclick="closeEditModal()">取消</button>
+        <button type="button" class="btn-submit" id="btnEdit" onclick="submitManagerEdit()">確認修改</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const API_BASE = '__API_BASE__';
+let managerInfo = null;
+
+function getParams() {
+  const p = new URLSearchParams(window.location.search);
+  return {
+    uid: p.get('uid') || p.get('line_user_id') || '',
+    store: p.get('store') || p.get('store_name') || '',
+  };
+}
+
+function today() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+}
+
+function thisMonth() {
+  const d = new Date();
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }).slice(0, 7);
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    t.classList.toggle('active', i === (name === 'attendance' ? 0 : 1));
+  });
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById(`tab-${name}`).classList.add('active');
+}
+
+async function init() {
+  const params = getParams();
+  document.getElementById('attDate').value = today();
+  document.getElementById('auditMonth').value = thisMonth();
+
+  // Load store list
+  const storeSelect = document.getElementById('attStore');
+  if (params.store) {
+    storeSelect.innerHTML = `<option value="${params.store}">${params.store}</option>`;
+  }
+
+  managerInfo = { line_user_id: params.uid, store_name: params.store };
+  document.getElementById('headerSub').textContent = params.store || '全門市';
+
+  loadAttendance();
+  loadAuditLog();
+}
+
+async function loadAttendance() {
+  const date = document.getElementById('attDate').value;
+  const store = document.getElementById('attStore').value;
+  const params = getParams();
+  const container = document.getElementById('attContent');
+  container.innerHTML = '<div class="loading">載入中...</div>';
+
+  try {
+    const url = `${API_BASE}/attendance-api?action=manager-attendance&store_name=${encodeURIComponent(store)}&date=${date}&line_user_id=${params.uid}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '載入失敗');
+
+    if (data.employees.length === 0) {
+      container.innerHTML = '<p style="color:#888;text-align:center;padding:20px;">該日無打卡記錄</p>';
+      return;
+    }
+
+    let html = `<table class="att-table">
+      <thead><tr><th>員工</th><th>上班</th><th>下班</th></tr></thead><tbody>`;
+
+    for (const emp of data.employees) {
+      const inRec = emp.records.find(r => r.check_type === 'in');
+      const outRec = emp.records.find(r => r.check_type === 'out');
+      html += `<tr>
+        <td><strong>${emp.name}</strong></td>
+        <td>${renderManagerTime(inRec, emp.name)}</td>
+        <td>${renderManagerTime(outRec, emp.name)}</td>
+      </tr>`;
+    }
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = `<p style="color:#c00;text-align:center;padding:20px;">${e.message}</p>`;
+  }
+}
+
+function renderManagerTime(record, empName) {
+  if (!record) return '<span class="time-missing">-</span>';
+
+  let badges = '';
+  const isMakeup = record.is_makeup || record.source === 'employee_makeup' || record.source === 'makeup';
+  
+  if (isMakeup) {
+    const edit = record.edits?.[record.edits.length - 1];
+    const tip = edit ? `原：${edit.old_time||'-'} | 因：${edit.edit_reason||'-'}` : '員工補打卡';
+    badges += `<span class="tooltip-wrap"><span class="badge-makeup">補</span><span class="tooltip-content">${tip}</span></span>`;
+  }
+  if (record.edits) {
+    for (const e of record.edits) {
+      if (e.edit_source === 'manager_edit') {
+        badges += `<span class="tooltip-wrap"><span class="badge-makeup badge-manager">改</span><span class="tooltip-content">原：${e.old_time||'-'} | 因：${e.edit_reason||'-'} | 改：${e.editor_name||'-'}</span></span>`;
+      }
+    }
+  }
+
+  return `<span class="time-cell" onclick="openManagerEdit(${record.id}, '${empName}', '${record.check_type}', '${record.time}')">${record.time}</span>${badges}`;
+}
+
+function openManagerEdit(recordId, empName, checkType, currentTime) {
+  document.getElementById('editRecordId').value = recordId;
+  document.getElementById('editEmpName').value = empName;
+  document.getElementById('editType').value = checkType === 'in' ? '上班' : '下班';
+  document.getElementById('editTime').value = currentTime;
+  document.getElementById('editReason').value = '';
+  document.getElementById('editModalStatus').className = 'status-msg';
+  document.getElementById('btnEdit').disabled = false;
+  document.getElementById('editModal').classList.add('active');
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').classList.remove('active');
+}
+
+async function submitManagerEdit() {
+  const btn = document.getElementById('btnEdit');
+  const statusEl = document.getElementById('editModalStatus');
+  btn.disabled = true;
+
+  const payload = {
+    checkin_record_id: parseInt(document.getElementById('editRecordId').value),
+    new_time: document.getElementById('editTime').value,
+    reason: document.getElementById('editReason').value.trim(),
+    editor_line_user_id: managerInfo.line_user_id,
+  };
+
+  try {
+    const resp = await fetch(`${API_BASE}/attendance-api?action=manager-edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '修改失敗');
+
+    statusEl.className = 'status-msg success';
+    statusEl.textContent = '✅ ' + data.message;
+    setTimeout(() => {
+      closeEditModal();
+      loadAttendance();
+    }, 1000);
+  } catch (e) {
+    statusEl.className = 'status-msg error';
+    statusEl.textContent = '❌ ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+async function loadAuditLog() {
+  const month = document.getElementById('auditMonth').value;
+  const store = document.getElementById('attStore').value;
+  const container = document.getElementById('auditContent');
+  container.innerHTML = '<div class="loading">載入中...</div>';
+
+  try {
+    const url = `${API_BASE}/attendance-api?action=makeup-log&store_name=${encodeURIComponent(store)}&month=${month}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '載入失敗');
+
+    if (data.logs.length === 0) {
+      container.innerHTML = '<p style="color:#888;text-align:center;padding:20px;">無修改記錄</p>';
+      return;
+    }
+
+    let html = '';
+    for (const log of data.logs) {
+      const sourceLabel = log.edit_source === 'employee_makeup'
+        ? '<span class="log-source emp">🧾 員工自行</span>'
+        : '<span class="log-source mgr">🔧 店長修改</span>';
+      const timeChange = `${log.old_time} → <strong>${log.new_time}</strong>`;
+      const typeLabel = log.check_type === 'in' ? '上班' : '下班';
+      
+      html += `<div class="log-item">
+        <div>${sourceLabel} <strong>${log.employee_name}</strong> — ${log.edit_date} ${typeLabel}</div>
+        <div style="margin-top:4px;">⏰ ${timeChange}</div>
+        ${log.edit_reason ? `<div style="margin-top:2px;color:#666;">📝 ${log.edit_reason}</div>` : ''}
+        <div class="log-meta">修改者：${log.editor_name} | ${new Date(log.created_at).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})}</div>
+      </div>`;
+    }
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = `<p style="color:#c00;text-align:center;padding:20px;">${e.message}</p>`;
+  }
+}
+
+document.getElementById('editModal').addEventListener('click', function(e) {
+  if (e.target === this) closeEditModal();
+});
+
+init();
+</script>
+</body>
+</html>
