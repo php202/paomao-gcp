@@ -13,3 +13,4 @@ gas/.git.bak/
 # 系統/敏感檔案
 .DS_Store
 gas/.env
+logs/
