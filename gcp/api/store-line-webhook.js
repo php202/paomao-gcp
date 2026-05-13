@@ -605,7 +605,7 @@ const MESS_FILTER_RULES = [
   { keyword: '女神節', type: 'TICKET_38', desc: '38女神節限定方案', useAI: false, template: null },
   { keyword: '呼叫喵小編', type: 'CALL_STAFF', desc: '呼叫真人客服', useAI: false, template: null },
 
-  { keyword: '線上預約', type: 'BOOKING', desc: '查詢空位', useAI: false, template: 'Hi ${name}，想預約嗎？系統查到最近還有空位：\n${slots}\n\n有哪一個時段對妳來說比較方便嗎？\n如果想預約的話，再麻煩留下你的【姓名、電話】，稍後為妳登記保留喔。' },
+  { keyword: '線上預約', type: 'BOOKING', desc: '查詢空位', useAI: false, template: 'Hi ${name}，想預約嗎？系統查到最近還有空位：\n${slots}\n\n有哪一個時段對妳來說比較方便嗎？\n如果想預約的話，再麻煩留下你的【姓名、電話】，稍後為妳登記保留喔。\n\n如小編未能即時回覆，可直接利用線上預約系統預約心儀時段，避免因回覆較慢而被其他客人搶先預約✨' },
   { keyword: '您已取消預約', type: 'BOOKING', desc: '取消挽回', useAI: true, prompt: '客人剛取消了預約。請產生一段貼心、不給壓力的文案，表示遺憾，並主動列出系統查到的最近空位(${slots})，詢問是否改約。' },
 ];
 
@@ -825,7 +825,7 @@ async function replyOnlineBookingOnly(auth, { displayName, replyToken, store, ac
     slotsStr = (out?.slotsStr && String(out.slotsStr).trim()) || '';
     slotsDebug = out?.debug || '';
   }
-  const template = 'Hi ${name}，想預約嗎？系統查到最近還有空位：\n${slots}\n\n有哪一個時段對妳來說比較方便嗎？\n如果想預約的話，再麻煩留下你的【姓名、電話】，稍後為妳登記保留喔。';
+  const template = 'Hi ${name}，想預約嗎？系統查到最近還有空位：\n${slots}\n\n有哪一個時段對妳來說比較方便嗎？\n如果想預約的話，再麻煩留下你的【姓名、電話】，稍後為妳登記保留喔。\n\n如小編未能即時回覆，可直接利用線上預約系統預約心儀時段，避免因回覆較慢而被其他客人搶先預約✨';
   let finalContent = slotsStr
     ? template.replace(/\$\{name\}/g, name).replace(/\$\{slots\}/g, slotsStr.trim())
     : `Hi ${name}，近幾天都滿了，可以呼叫貓小編協助看預約時間唷～`;
