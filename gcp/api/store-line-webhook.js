@@ -104,6 +104,103 @@ async function searchMemberSayDou(keyword, token) {
   return { total: d?.data?.total || 0, items: d?.data?.items || [] };
 }
 
+// ── CRM 會員手機綁定（客人在 LINE 輸入手機號碼 → 自動綁定 SayDou 會員） ──
+async function handleCrmPhoneBind(userId, phone, displayName, store, accessToken, replyToken) {
+  if (!userId || !phone) return false;
+  const cleanPhone = phone.replace(/[-\s]/g, '');
+  if (!/^09\d{8}$/.test(cleanPhone)) return false;
+
+  // 1. 檢查是否已綁定
+  const existing = memberLinker.getMember(userId);
+  if (existing && existing.phone === cleanPhone) {
+    // 已綁定同一支手機，提示客人
+    const alreadyMsg = [{ type: 'flex', altText: '✅ 您已是泡泡貓會員', contents: {
+      type: 'bubble', size: 'kilo',
+      body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: '20px', contents: [
+        { type: 'text', text: '🐱 您已是泡泡貓會員', weight: 'bold', size: 'md', color: '#008BD5', align: 'center' },
+        { type: 'separator', margin: 'lg' },
+        { type: 'text', text: `${existing.memnam || displayName} 您好\n您的會員卡已開通 🎉`, size: 'sm', color: '#555', wrap: true, margin: 'lg' },
+        { type: 'text', text: '點下方按鈕查看消費紀錄、儲值金和預約↓', size: 'xs', color: '#999', wrap: true, margin: 'md' },
+      ]},
+      footer: { type: 'box', layout: 'vertical', contents: [
+        { type: 'button', action: { type: 'uri', label: '💳 開啟會員卡', uri: 'https://liff.line.me/2009604420-OXs2C8AJ' }, style: 'primary', color: '#18BAE1' },
+      ]}
+    }}];
+    let replied = false;
+    try { replied = await lineReplyMessages(replyToken, alreadyMsg, accessToken); } catch {}
+    if (!replied) try { await linePushMessages(userId, alreadyMsg, accessToken); } catch {}
+    return true;
+  }
+
+  // 2. 查 SayDou 會員
+  let saydouToken = '';
+  try { saydouToken = await getValidSaydouToken(); } catch {}
+  if (!saydouToken) {
+    console.warn('[crm-bind] no saydou token');
+    return false;
+  }
+
+  const result = await searchMemberSayDou(cleanPhone, saydouToken);
+  if (!result.items.length) {
+    // 查無此手機 → 不攔截，讓訊息繼續正常流程
+    return false;
+  }
+
+  // 找到會員（取第一筆）
+  const member = result.items[0];
+  const membid = member.membid;
+  const memnam = member.memnam || '';
+  const storeCash = parseFloat(member.stcash || member.storecard?.stcash || 0);
+
+  // 3. 寫入 member-linker
+  memberLinker.manualLink(userId, membid, displayName || memnam, memnam, cleanPhone);
+  console.log(`[crm-bind] ✅ ${displayName || memnam} (${cleanPhone}) → membid=${membid} @ ${store.storeName}`);
+
+  // 4. 寫入 Dashboard DB (line_customers)
+  try {
+    const pool = (await import('../lib/db.js')).default;
+    await pool.query(`
+      INSERT INTO line_customers (line_user_id, phone, display_name, bind_status, saydou_member_id, member_level, store_cash, preferred_store, bound_at, last_login)
+      VALUES ($1, $2, $3, 'bound', $4, $5, $6, $7, NOW(), NOW())
+      ON CONFLICT (line_user_id) DO UPDATE SET
+        phone = $2,
+        display_name = COALESCE($3, line_customers.display_name),
+        bind_status = CASE WHEN line_customers.bind_status = 'verified' THEN 'verified' ELSE 'bound' END,
+        saydou_member_id = $4,
+        store_cash = $6,
+        preferred_store = COALESCE($7, line_customers.preferred_store),
+        bound_at = COALESCE(line_customers.bound_at, NOW()),
+        last_login = NOW()
+    `, [userId, cleanPhone, displayName || memnam, String(membid), '一般', storeCash, store.storeName]);
+    console.log(`[crm-bind] DB line_customers updated: ${userId.slice(-8)}`);
+  } catch (e) { console.error('[crm-bind] DB error:', e.message); }
+
+  // 5. 回覆成功 Flex Message
+  const cashDisplay = storeCash > 0 ? `\n💰 儲值金餘額：NT$${storeCash.toLocaleString()}` : '';
+  const successMsg = [{ type: 'flex', altText: '🎉 會員綁定成功', contents: {
+    type: 'bubble', size: 'kilo',
+    body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: '20px', contents: [
+      { type: 'text', text: '🐱 歡迎加入泡泡貓會員', weight: 'bold', size: 'md', color: '#008BD5', align: 'center' },
+      { type: 'separator', margin: 'lg' },
+      { type: 'text', text: `${memnam} 您好！\n會員卡已開通 🎉${cashDisplay}`, size: 'sm', color: '#555', wrap: true, margin: 'lg' },
+      { type: 'text', text: '點下方按鈕查看消費紀錄、預約和更多↓', size: 'xs', color: '#999', wrap: true, margin: 'md' },
+    ]},
+    footer: { type: 'box', layout: 'vertical', contents: [
+      { type: 'button', action: { type: 'uri', label: '💳 開啟會員卡', uri: 'https://liff.line.me/2009604420-OXs2C8AJ' }, style: 'primary', color: '#18BAE1' },
+    ]}
+  }}];
+  let replied = false;
+  try { replied = await lineReplyMessages(replyToken, successMsg, accessToken); } catch {}
+  if (!replied) try { await linePushMessages(userId, successMsg, accessToken); } catch {}
+
+  // 6. 通知 TG 自動訊息群組
+  try {
+    await tgNotify(`🐱 <b>CRM 會員綁定</b> | ${tgEscape(store.storeName)}\n👤 ${tgEscape(memnam)} (${cleanPhone})\n💰 儲值金: $${storeCash.toLocaleString()}\n📱 LINE: ${userId.slice(-8)}`);
+  } catch {}
+
+  return true;
+}
+
 // ── 38女神節 complete auto-purchase flow (synced with auto-reply server) ──
 
 // 封測白名單（已解除，全部開放）
@@ -931,7 +1028,11 @@ export async function handleStoreLineWebhook(req, res, { authClient, rawBody }) 
           console.log(`[store-webhook] 📱 candidate bind: ${cleanPhone} → ${userId.slice(-8)} @ ${store.storeName}`);
           continue;
         }
-        // 無匹配 → 不攔截，讓訊息繼續正常流程
+        // 無匹配應徵者 → 嘗試 CRM 會員綁定
+        try {
+          const crmBindOk = await handleCrmPhoneBind(userId, cleanPhone, displayName, store, accessToken, replyToken);
+          if (crmBindOk) continue;
+        } catch (e) { console.warn('[store-webhook] crm-phone-bind error:', e.message); }
       } catch (e) { console.warn('[store-webhook] candidate-bind check error:', e.message); }
     }
 
