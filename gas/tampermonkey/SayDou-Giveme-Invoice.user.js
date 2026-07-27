@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SayDou 結帳同步 Giveme 發票
 // @namespace    http://tampermonkey.net/
-// @version      2026.3.30
+// @version      2026.7.27
 // @description  Saydou 結帳成功或修改結帳時跳出發票綁定視窗，開立 Giveme 電子發票（可連動印表機）
 // @author       You
 // @match        *://m.saydou.com/*
@@ -16,6 +16,9 @@
 
     // 請改成你的 GCP Cloud Run 網址（與 set-env.sh REPORT_API_BASE 同服務、不含路徑）
     const GCP_BASE = "https://gcp.paopaomao.tw";
+
+    // 感熱紙寬度（mm）。80mm 機種改成 80 即可，@page 與畫面上的列印說明會一起跟著變。
+    const PAPER_WIDTH_MM = 58;
 
     /**
      * 攔截 checkout 相關 API，觸發開發票視窗
@@ -150,20 +153,45 @@
             alert('開單成功！請允許彈出視窗以列印發票，或至 Giveme 發票查詢列印。');
             return;
         }
+        // 紙寬統一由 PAPER_WIDTH_MM 決定：@page 的 size、螢幕預覽寬度、下方說明文字都用同一個值，
+        // 避免「@page 排 80mm、實際餵 58mm 紙」造成的縮圖與左右被裁。
+        const css =
+            '@page{margin:0;size:' + PAPER_WIDTH_MM + 'mm auto;}' +
+            'html,body{margin:0;padding:0;background:#fff;}' +
+            // 螢幕上就照實際紙寬預覽，所見即所得；點陣圖用 pixelated 避免縮放糊掉，感熱紙上細字才清楚
+            '#inv{display:block;margin:0 auto;width:' + PAPER_WIDTH_MM + 'mm;height:auto;' +
+            'image-rendering:-webkit-optimize-contrast;image-rendering:pixelated;}' +
+            '@media print{.print-hide{display:none!important;}' +
+            // 撐滿整個紙寬（= @page 的 size），發票不會只印在紙張中間一小條
+            '#inv{width:100%;margin:0;}}';
+
         w.document.write(
             '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + (title || '發票列印').replace(/</g, '&lt;') + '</title>' +
-            '<style>@page{margin:0;size:80mm auto;}body{margin:0;padding:0;background:#fff;}@media print{body{margin:0;padding:0;}.print-hide{display:none!important;}img{display:block;margin:0 auto;max-width:100%;height:auto;}}</style></head>' +
+            '<style>' + css + '</style></head>' +
             '<body>' +
             '<div class="print-hide" style="margin:8px;font-size:12px;color:#333;line-height:1.6;">' +
             '<p style="margin:0 0 6px 0;font-weight:bold;">感熱紙列印設定：</p>' +
             '<ul style="margin:0;padding-left:18px;">' +
             '<li>展開「更多設定」→ 邊界選 <b>無</b></li>' +
-            '<li>紙張大小：58mm 感熱紙（如 58×3276mm）</li>' +
+            '<li>紙張大小：' + PAPER_WIDTH_MM + 'mm 感熱紙（如 ' + PAPER_WIDTH_MM + '×3276mm）</li>' +
             '<li>縮放：預設或 100%</li>' +
             '<li><b>請勿勾選</b>「頁首及頁尾」「背景圖形」</li>' +
             '</ul>' +
-            '<p style="margin:6px 0 0;color:#666;">預覽若未顯示發票可點「符合視窗寬度」後再列印。</p></div>' +
-            '<img src="' + dataUrl.replace(/"/g, '&quot;') + '" alt="發票" onload="window.focus();window.print();">' +
+            '<p style="margin:6px 0 0;color:#666;">列印完本分頁會自動關閉。</p></div>' +
+            '<img id="inv" src="' + dataUrl.replace(/"/g, '&quot;') + '" alt="發票">' +
+            '<script>(function(){' +
+            'var i=document.getElementById("inv"),done=false;' +
+            // 等 layout 穩定再叫列印，避免偶爾印出空白頁
+            'function go(){if(done)return;done=true;window.focus();' +
+            'requestAnimationFrame(function(){setTimeout(function(){window.print();},80);});}' +
+            'i.addEventListener("load",go);' +
+            // 圖載不出來時不要卡在空白分頁，明確告知改走 Giveme 查詢列印
+            'i.addEventListener("error",function(){done=true;document.body.insertAdjacentHTML("afterbegin",' +
+            '"<p style=\\"margin:8px;color:#c00;font-weight:bold;\\">發票圖載入失敗，請至 Giveme 發票查詢列印。</p>");});' +
+            'if(i.complete&&i.naturalWidth>0)go();' +
+            // 列印／取消後自動關分頁，櫃檯不會累積一堆列印視窗
+            'window.addEventListener("afterprint",function(){setTimeout(function(){window.close();},300);});' +
+            '})();<\/script>' +
             '</body></html>'
         );
         w.document.close();
